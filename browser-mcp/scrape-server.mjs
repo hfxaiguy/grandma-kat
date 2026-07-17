@@ -21,6 +21,7 @@ import {
   evaluate,
   safeClose,
   scanClickables,
+  waitForLoad,
 } from './cdp-browser.mjs';
 import { startCollect, collect, endCollect } from './json-collect.mjs';
 
@@ -193,6 +194,14 @@ server.setRequestHandler(ListToolsRequestSchema, () => ({
       inputSchema: { type: 'object', properties: {} },
     },
     {
+      name: 'wait_for_load',
+      description: 'Wait for the page to finish loading (Page.loadEventFired or readyState complete + stable). Returns true on load, false on timeout.',
+      inputSchema: {
+        type: 'object',
+        properties: { timeoutMs: { type: 'number' } },
+      },
+    },
+    {
       name: 'start_collect',
       description: 'Start a streaming JSON array output file.',
       inputSchema: {
@@ -236,7 +245,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         state.targetUrl = args.url;
         const pageClient = await ensurePage();
         await pageClient.Page.navigate({ url: args.url });
-        await new Promise((r) => setTimeout(r, 1000));
+        await waitForLoad(pageClient, 10000);
         result = await evaluate(pageClient, '({ url: location.href, title: document.title })');
         break;
       }
@@ -383,6 +392,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'scan_clickables': {
         const pageClient = await ensurePage();
         result = await scanClickables(pageClient);
+        break;
+      }
+
+      case 'wait_for_load': {
+        const pageClient = await ensurePage();
+        const loaded = await waitForLoad(pageClient, args.timeoutMs || 10000);
+        result = { loaded };
         break;
       }
 

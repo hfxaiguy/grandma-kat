@@ -1,12 +1,30 @@
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 
-export function loadConfig(configPath = path.resolve('threads.config.json')) {
+export function loadConfig(providerName, configPath = path.resolve('threads.config.json')) {
   loadDotenv(path.resolve('.env'));
 
   const raw = readFileSync(configPath, 'utf8');
   const config = JSON.parse(raw);
 
+  // New multi-provider format
+  if (config.providers) {
+    const name = providerName || config.default || Object.keys(config.providers)[0];
+    const provider = config.providers[name];
+    if (!provider) {
+      throw new Error(`Provider "${name}" not found. Available: ${Object.keys(config.providers).join(', ')}`);
+    }
+    return {
+      provider: {
+        name,
+        baseURL: provider.baseURL,
+        apiKey: resolveEnvToken(provider.apiKey),
+      },
+      model: provider.model,
+    };
+  }
+
+  // Legacy single-provider format
   return {
     provider: {
       name: config.provider?.name,
@@ -15,6 +33,14 @@ export function loadConfig(configPath = path.resolve('threads.config.json')) {
     },
     model: config.model,
   };
+}
+
+export function listProviders(configPath = path.resolve('threads.config.json')) {
+  loadDotenv(path.resolve('.env'));
+  const raw = readFileSync(configPath, 'utf8');
+  const config = JSON.parse(raw);
+  if (config.providers) return Object.keys(config.providers);
+  return [config.provider?.name || 'default'].filter(Boolean);
 }
 
 function loadDotenv(envPath) {

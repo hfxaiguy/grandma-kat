@@ -1,7 +1,32 @@
 import { loadConfig } from './config.mjs';
 
+let cachedConfig = null;
+let cachedProvider = null;
+
+export function setProvider(name) {
+  cachedProvider = name;
+  cachedConfig = null;
+}
+
+export function getProvider() {
+  return cachedProvider;
+}
+
 export async function callLlm(messages, options = {}) {
-  const config = loadConfig();
+  console.log('\n--- Sending to LLM ---');
+  for (const msg of messages) {
+    const preview = msg.content.length > 200 ? msg.content.slice(0, 200) + '...' : msg.content;
+    console.log(`[${msg.role}] ${preview}`);
+  }
+  console.log('--- End LLM Input ---\n');
+
+  if (!cachedConfig || (options.provider && options.provider !== cachedProvider)) {
+    const providerName = options.provider || cachedProvider;
+    if (providerName) cachedProvider = providerName;
+    cachedConfig = loadConfig(providerName);
+  }
+  const config = cachedConfig;
+
   const baseURL = config.provider.baseURL.replace(/\/$/, '');
   const url = `${baseURL}/chat/completions`;
 
@@ -12,12 +37,14 @@ export async function callLlm(messages, options = {}) {
   };
   if (options.max_tokens) body.max_tokens = options.max_tokens;
 
+  const headers = { 'Content-Type': 'application/json' };
+  if (config.provider.apiKey && config.provider.apiKey !== 'no-key') {
+    headers.Authorization = `Bearer ${config.provider.apiKey}`;
+  }
+
   const res = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${config.provider.apiKey}`,
-    },
+    headers,
     body: JSON.stringify(body),
   });
 

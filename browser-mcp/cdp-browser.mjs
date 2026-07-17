@@ -121,6 +121,54 @@ export async function safeClose(client) {
 }
 
 /**
+ * Wait for the page to finish loading. Listens for Page.loadEventFired and
+ * falls back to polling document.readyState (works for SPA route changes that
+ * don't fire a load event). Resolves true on load, false on timeout.
+ * @param {CDP.Client} pageClient
+ * @param {number} timeoutMs
+ * @returns {Promise<boolean>}
+ */
+export async function waitForLoad(pageClient, timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs;
+
+  let loadFired = false;
+  try {
+    pageClient.Page.loadEventFired(() => { loadFired = true; });
+  } catch {}
+
+  let lastHeight = -1;
+  let stableSince = 0;
+  while (Date.now() < deadline) {
+    if (loadFired) return true;
+
+    let ready = 'unknown';
+    let h = 0;
+    try {
+      const r = await pageClient.Runtime.evaluate({
+        expression: `JSON.stringify({ ready: document.readyState, h: document.body ? document.body.scrollHeight : 0 })`,
+        returnByValue: true,
+      });
+      if (r.result?.value) {
+        const o = JSON.parse(r.result.value);
+        ready = o.ready;
+        h = o.h;
+      }
+    } catch {}
+
+    const now = Date.now();
+    if (h === lastHeight) {
+      if (stableSince === 0) stableSince = now;
+      if (now - stableSince >= 500 && ready === 'complete') return true;
+    } else {
+      stableSince = 0;
+      lastHeight = h;
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return false;
+}
+
+/**
  * Resolve the CDP objectId for the first DOM element matching a selector.
  * Returns { objectId, value } or null if not found.
  * @param {CDP.Client} pageClient

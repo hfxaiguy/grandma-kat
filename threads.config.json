@@ -1,8 +1,15 @@
 {
-  "provider": {
-    "name": "huggingface",
-    "baseURL": "https://router.huggingface.co/v1",
-    "apiKey": "{env:HF_TOKEN}"
+  "providers": {
+    "huggingface": {
+      "baseURL": "https://router.huggingface.co/v1",
+      "apiKey": "{env:HF_TOKEN}",
+      "model": "Qwen/Qwen3-4B-Thinking-2507:nscale"
+    },
+    "local": {
+      "baseURL": "http://localhost:8080/v1",
+      "apiKey": "no-key",
+      "model": "LFM2.5-1.2B-Thinking-Q4_K_M"
+    }
   },
-  "model": "Qwen/Qwen3-4B-Thinking-2507:nscale"
+  "default": "huggingface"
 }
