@@ -21,21 +21,6 @@ List the most promising candidates, one per line. For each candidate, copy the E
 
 If none would lead to an address: Respond with exactly: no`;
 
-const STEP2_1_VERIFY_PROMPT = `Below is a list of all clickable elements found on the page (the source of truth):
-
-{elements}
-
-And here is a list of candidates chosen by another assistant. They may be incomplete or slightly different from the source list:
-
-{candidates}
-
-Your task: For each candidate, find the matching element in the source list above by comparing the HTML tag, visible text, and URL. Then copy the matching element EXACTLY as it appears in the source list.
-
-List one matched element per line.
-
-If a candidate does not match any element in the source list, skip it.
-If no candidates match: Respond with exactly: no`;
-
 const FILTER_PROMPT = `Below is a list of candidate clickable elements that might lead to a business address.
 
 {candidates}
@@ -44,7 +29,7 @@ These elements have already been tried in previous iterations:
 
 {memory}
 
-Your task: Remove any candidates that have already been tried (matching by text, href, or tag). List ONLY the remaining candidates, one per line. Copy each candidate exactly as it appears above, including the number, HTML tag, text, and URL.
+Your task: Remove any candidates that have already been tried (matching by text, href, or tag). List ONLY the remaining candidates, one per line. Copy each candidate exactly as it appears above.
 
 If no candidates remain: Respond with exactly: no`;
 
@@ -102,10 +87,6 @@ function formatClickable(el) {
   if (el.href) suffix += ` (${el.href})`;
   if (el.listeners?.length) suffix += ` [${el.listeners.map((l) => l.type).join(',')}]`;
   return `${tag} ${text}${suffix}`.trim();
-}
-
-function numbered(lines) {
-  return lines.map((line, i) => `${i + 1}. ${line}`).join('\n');
 }
 
 function parseCandidateList(content) {
@@ -188,15 +169,14 @@ export async function runFindAddress() {
         console.log('\nStep 2: Scanning clickable elements...');
         const clickables = await callTool(client, 'scan_clickables', {});
         const lines = clickables.map(formatClickable);
-        const numberedLines = numbered(lines);
 
         console.log('\n--- Clickable Elements ---');
-        console.log(numberedLines);
+        console.log(lines.join('\n'));
         console.log('--- End Clickable Elements ---\n');
 
         const step2 = await callLlm([
           { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: numberedLines },
+          { role: 'user', content: lines.join('\n') },
           { role: 'user', content: STEP2_PROMPT },
         ]);
 
@@ -208,27 +188,13 @@ export async function runFindAddress() {
         }
         console.log(step2.content);
 
-        // Step 2.1: Reconcile raw step 2 output back to exact source elements
-        console.log('\nStep 2.1: Reconciling candidates with source elements...');
-        const verifyResp = await callLlm([
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: STEP2_1_VERIFY_PROMPT.replace('{elements}', numberedLines).replace('{candidates}', step2.content) },
-        ]);
-
-        console.log('--- Step 2.1: Reconciliation ---');
-        if (verifyResp.reasoning) {
-          console.log('Thinking:');
-          console.log(verifyResp.reasoning);
-          console.log('\nResponse:');
-        }
-        console.log(verifyResp.content);
-
-        let candidates = parseCandidateList(verifyResp.content);
+        let candidates = parseCandidateList(step2.content);
         if (!candidates.length) {
-          console.log('\nNo candidates matched source elements. Stopping.');
+          console.log('\nNo candidates found. Stopping.');
           break;
         }
-        console.log(`\n${candidates.length} reconciled candidate(s):`);
+
+        console.log(`\n${candidates.length} candidate(s):`);
         candidates.forEach((c) => console.log(`  ${c}`));
 
         // Substep 2.5: Filter out already-tried elements using memory
