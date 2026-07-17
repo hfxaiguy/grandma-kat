@@ -1,2 +1,0 @@
-FROM lfm2.5-thinking:latest
-PARAMETER num_ctx 32768
