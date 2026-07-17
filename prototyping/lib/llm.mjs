@@ -36,6 +36,7 @@ export async function callLlm(messages, options = {}) {
     temperature: options.temperature ?? 0,
   };
   if (options.max_tokens) body.max_tokens = options.max_tokens;
+  if (options.tools) body.tools = options.tools;
 
   const headers = { 'Content-Type': 'application/json' };
   if (config.provider.apiKey && config.provider.apiKey !== 'no-key') {
@@ -70,5 +71,10 @@ export async function callLlm(messages, options = {}) {
     }
   }
 
-  return { content, reasoning, raw: data };
+  return {
+    content,
+    reasoning,
+    tool_calls: message.tool_calls,
+    raw: data,
+  };
 }

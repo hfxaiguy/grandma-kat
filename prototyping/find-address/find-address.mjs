@@ -10,22 +10,31 @@ Your task: Does this page contain a business address? A business address has a s
 If YES: Write the full address on one line.
 If NO: Respond with exactly one word: no`;
 
-const STEP2_PROMPT = `Below is a list of clickable elements found on the web page. Each line shows the HTML tag, the visible text, and either a URL in parentheses or event types in brackets.
+const STEP2_PROMPT = `Below is a list of clickable elements found on the web page. Each line is formatted as:
+<html_tag> "text" (url)
 
 Your task: Which elements are most likely to lead to a page containing a business address?
 
-Rules:
-- Links with URLs in parentheses can be opened.
-- Prefer elements like "Contact", "About", "Visit Us", directions, or footer links.
+Think about which pages on a website typically contain a business address. A business address has a street number, street name, city, and country or postal code.
 
-List the most promising candidates, one per line, in this exact format:
-<tag> "text" (href)
-
-Examples:
-<a> "Contact" (https://example.com/contact)
-<a> "About Us" (https://example.com/about)
+List the most promising candidates, one per line. For each candidate, copy the ENTIRE line from the list above, exactly as it appears, including the HTML tag, the text, and the URL.
 
 If none would lead to an address: Respond with exactly: no`;
+
+const STEP2_1_VERIFY_PROMPT = `Below is a list of all clickable elements found on the page (the source of truth):
+
+{elements}
+
+And here is a list of candidates chosen by another assistant. They may be incomplete or slightly different from the source list:
+
+{candidates}
+
+Your task: For each candidate, find the matching element in the source list above by comparing the HTML tag, visible text, and URL. Then copy the matching element EXACTLY as it appears in the source list.
+
+List one matched element per line.
+
+If a candidate does not match any element in the source list, skip it.
+If no candidates match: Respond with exactly: no`;
 
 const FILTER_PROMPT = `Below is a list of candidate clickable elements that might lead to a business address.
 
@@ -35,8 +44,7 @@ These elements have already been tried in previous iterations:
 
 {memory}
 
-Your task: Remove any candidates that have already been tried (matching by text, href, or tag). List ONLY the remaining candidates, one per line, in the same format:
-<tag> "text" (href)
+Your task: Remove any candidates that have already been tried (matching by text, href, or tag). List ONLY the remaining candidates, one per line. Copy each candidate exactly as it appears above, including the number, HTML tag, text, and URL.
 
 If no candidates remain: Respond with exactly: no`;
 
@@ -44,20 +52,42 @@ const STEP3_PROMPT = `Below are filtered candidate clickable elements that shoul
 
 {candidates}
 
-Choose ONE element to interact with. You have two tools:
-
-1. navigate - Opens a URL in the browser tab. Use this when the element has a URL in parentheses.
-2. click - Clicks an element on the page by a CSS selector. Use this when the element has no URL but has click handlers in brackets.
-
-Respond with exactly one action in this format:
-- To navigate: NAVIGATE <url>
-- To click: CLICK <css-selector>
-
-Examples:
-NAVIGATE https://example.com/contact
-CLICK a[href*="contact"]
+Choose ONE element to interact with. Call the appropriate tool:
+- Call "navigate" with the URL when the element has a URL in parentheses.
+- Call "click" with a CSS selector when the element has no URL.
 
 Pick the element most likely to contain a business address.`;
+
+const STEP3_TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'navigate',
+      description: 'Open a URL in the browser tab.',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'The URL to navigate to.' },
+        },
+        required: ['url'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'click',
+      description: 'Click an element on the page by CSS selector.',
+      parameters: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string', description: 'A CSS selector targeting the element to click.' },
+        },
+        required: ['selector'],
+      },
+    },
+  },
+];
 
 const MAX_ITERATIONS = 3;
 
@@ -83,7 +113,7 @@ function parseCandidateList(content) {
     .split('\n')
     .map((l) => l.trim())
     .filter(Boolean);
-  // Keep lines that look like candidate entries: "<tag> ..."
+  // Accept lines starting with <tag> (proper format only)
   return lines.filter((l) => /^<\w+>/.test(l));
 }
 
@@ -178,13 +208,27 @@ export async function runFindAddress() {
         }
         console.log(step2.content);
 
-        let candidates = parseCandidateList(step2.content);
+        // Step 2.1: Reconcile raw step 2 output back to exact source elements
+        console.log('\nStep 2.1: Reconciling candidates with source elements...');
+        const verifyResp = await callLlm([
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: STEP2_1_VERIFY_PROMPT.replace('{elements}', numberedLines).replace('{candidates}', step2.content) },
+        ]);
+
+        console.log('--- Step 2.1: Reconciliation ---');
+        if (verifyResp.reasoning) {
+          console.log('Thinking:');
+          console.log(verifyResp.reasoning);
+          console.log('\nResponse:');
+        }
+        console.log(verifyResp.content);
+
+        let candidates = parseCandidateList(verifyResp.content);
         if (!candidates.length) {
-          console.log('\nNo candidates found. Stopping.');
+          console.log('\nNo candidates matched source elements. Stopping.');
           break;
         }
-
-        console.log(`\nParsed ${candidates.length} candidate(s):`);
+        console.log(`\n${candidates.length} reconciled candidate(s):`);
         candidates.forEach((c) => console.log(`  ${c}`));
 
         // Substep 2.5: Filter out already-tried elements using memory
@@ -221,11 +265,13 @@ export async function runFindAddress() {
         // Step 3: Ask the LLM to choose an action (navigate or click)
         console.log('\nStep 3: Choosing action...');
 
-        const step3 = await callLlm([
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: candidates.join('\n') },
-          { role: 'user', content: STEP3_PROMPT.replace('{candidates}', candidates.join('\n')) },
-        ]);
+        const step3 = await callLlm(
+          [
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: STEP3_PROMPT.replace('{candidates}', candidates.join('\n')) },
+          ],
+          { tools: STEP3_TOOLS },
+        );
 
         console.log('--- Step 3: LLM Answer ---');
         if (step3.reasoning) {
@@ -233,31 +279,37 @@ export async function runFindAddress() {
           console.log(step3.reasoning);
           console.log('\nResponse:');
         }
-        console.log(step3.content);
+        if (step3.content) console.log(step3.content);
 
-        // Execute the action
-        const action = parseAction(step3.content);
-        if (!action) {
-          console.log('Could not parse action from LLM response.');
+        // Extract the tool call
+        const toolCall = step3.tool_calls?.[0];
+        if (!toolCall) {
+          console.log('No tool call returned by LLM. Stopping.');
           break;
         }
 
-        console.log(`\n--- Executing: ${action.type} ${action.value} ---`);
+        const fn = toolCall.function;
+        console.log(`\n--- Tool call: ${fn.name}(${fn.arguments}) ---`);
+
         let actionResult;
-        if (action.type === 'navigate') {
-          actionResult = await callTool(client, 'navigate', { url: action.value });
-        } else {
-          actionResult = await callTool(client, 'click_selector', { selector: action.value });
+        let actionLabel;
+        if (fn.name === 'navigate') {
+          const args = JSON.parse(fn.arguments);
+          actionResult = await callTool(client, 'navigate', { url: args.url });
+          actionLabel = `NAVIGATE ${args.url}`;
+        } else if (fn.name === 'click') {
+          const args = JSON.parse(fn.arguments);
+          actionResult = await callTool(client, 'click_selector', { selector: args.selector });
           await callTool(client, 'wait_for_load', { timeoutMs: 10000 });
+          actionLabel = `CLICK ${args.selector}`;
+        } else {
+          console.log(`Unknown tool: ${fn.name}`);
+          break;
         }
         console.log(JSON.stringify(actionResult, null, 2));
 
         // Find which candidate was chosen for memory
-        const chosenCandidate = candidates.find((c) =>
-          action.type === 'navigate'
-            ? c.includes(action.value)
-            : true,
-        ) || candidates[0] || step3.content.trim();
+        const chosenCandidate = candidates[0] || fn.name;
 
         // Fetch resulting page info
         const resultUrl = await callTool(client, 'exec_js', { code: 'location.href' });
@@ -267,7 +319,7 @@ export async function runFindAddress() {
         // Append to memory and dump state
         memory.push({
           candidate: chosenCandidate,
-          action: `${action.type.toUpperCase()} ${action.value}`,
+          action: actionLabel,
           result: resultStr,
         });
         dumpMemory(memory);
@@ -286,13 +338,4 @@ export async function runFindAddress() {
   } finally {
     await stopScrapeServer(client);
   }
-}
-
-function parseAction(content) {
-  const text = String(content).trim();
-  const navMatch = text.match(/NAVIGATE\s+(https?:\/\/\S+)/i);
-  if (navMatch) return { type: 'navigate', value: navMatch[1] };
-  const clickMatch = text.match(/CLICK\s+(.+)$/im);
-  if (clickMatch) return { type: 'click', value: clickMatch[1].trim() };
-  return null;
 }

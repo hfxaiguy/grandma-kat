@@ -8,7 +8,7 @@
     "local": {
       "baseURL": "http://localhost:8080/v1",
       "apiKey": "no-key",
-      "model": "LFM2.5-1.2B-Thinking-Q4_K_M"
+      "model": "models/LFM2.5-1.2B-Thinking-Q4_K_M.gguf"
     }
   },
   "default": "huggingface"
