@@ -10,21 +10,20 @@ Your task: Does this page contain a business address? A business address has a s
 If YES: Write the full address on one line.
 If NO: Respond with exactly one word: no`;
 
-const STEP2_PROMPT = `Below is a numbered list of clickable elements found on the web page. Each line shows the HTML tag, the visible text, and either a URL in parentheses or event types in brackets.
+const STEP2_PROMPT = `Below is a list of clickable elements found on the web page. Each line shows the HTML tag, the visible text, and either a URL in parentheses or event types in brackets.
 
 Your task: Which elements are most likely to lead to a page containing a business address?
 
 Rules:
 - Links with URLs in parentheses can be opened.
-- Elements in brackets have click handlers and can be clicked.
 - Prefer elements like "Contact", "About", "Visit Us", directions, or footer links.
 
 List the most promising candidates, one per line, in this exact format:
-N - <tag> "text" (href) [events]
+<tag> "text" (href)
 
 Examples:
-3 - <a> "Contact" (https://example.com/contact)
-5 - <div> "Visit Us" [click,mousedown]
+<a> "Contact" (https://example.com/contact)
+<a> "About Us" (https://example.com/about)
 
 If none would lead to an address: Respond with exactly: no`;
 
@@ -37,7 +36,7 @@ These elements have already been tried in previous iterations:
 {memory}
 
 Your task: Remove any candidates that have already been tried (matching by text, href, or tag). List ONLY the remaining candidates, one per line, in the same format:
-N - <tag> "text" (href) [events]
+<tag> "text" (href)
 
 If no candidates remain: Respond with exactly: no`;
 
@@ -84,8 +83,8 @@ function parseCandidateList(content) {
     .split('\n')
     .map((l) => l.trim())
     .filter(Boolean);
-  // Keep lines that look like candidate entries: "N - <tag> ..."
-  return lines.filter((l) => /^\d+\s*-\s*<\w+>/.test(l));
+  // Keep lines that look like candidate entries: "<tag> ..."
+  return lines.filter((l) => /^<\w+>/.test(l));
 }
 
 function formatMemory(memory) {
