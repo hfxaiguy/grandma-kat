@@ -1,0 +1,22 @@
+{
+  "name": "browser-mcp",
+  "version": "0.1.0",
+  "description": "CDP-backed browser MCP server for OpenCode",
+  "type": "module",
+  "bin": {
+    "browser-mcp": "./server.mjs"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "launch-chrome": "node launch-chrome.mjs",
+    "scrape-server": "node scrape-server.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "chrome-launcher": "^1.1.2",
+    "chrome-remote-interface": "^0.33.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

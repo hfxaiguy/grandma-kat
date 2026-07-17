@@ -1,0 +1,8 @@
+{
+  "provider": {
+    "name": "huggingface",
+    "baseURL": "https://router.huggingface.co/v1",
+    "apiKey": "{env:HF_TOKEN}"
+  },
+  "model": "Qwen/Qwen3-4B-Thinking-2507:nscale"
+}

@@ -1,0 +1,20 @@
+# Environment / secrets
+.env
+
+# Dependencies
+node_modules/
+
+# Logging databases
+*.sqlite
+*.sqlite3
+*.db
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Scratch
+todos.txt

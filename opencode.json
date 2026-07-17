@@ -1,0 +1,36 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "cdp-scrape": {
+      "type": "local",
+      "command": ["node", "./browser-mcp/scrape-server.mjs"],
+      "enabled": true,
+      "environment": {
+        "CDP_PORT": "9222"
+      }
+    }
+  },
+  "provider": {
+    "huggingface": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "HuggingFace Router",
+      "options": {
+        "baseURL": "https://router.huggingface.co/v1"
+      },
+      "models": {
+        "google/gemma-3-4b-it:deepinfra": {
+          "id": "google/gemma-3-4b-it:deepinfra",
+          "name": "Gemma 3 4B",
+          "tool_call": true,
+          "reasoning": true
+        },
+        "Qwen/Qwen3-4B-Thinking-2507:nscale": {
+          "id": "Qwen/Qwen3-4B-Thinking-2507:nscale",
+          "name": "Qwen3 4B Thinking",
+          "tool_call": true,
+          "reasoning": true
+        }
+      }
+    }
+  },
+  "model": "Qwen/Qwen3-4B-Thinking-2507:nscale"
