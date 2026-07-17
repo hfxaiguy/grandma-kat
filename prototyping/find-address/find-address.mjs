@@ -10,30 +10,16 @@ Your task: Does this page contain a business address? A business address has a s
 If YES: Write the full address on one line.
 If NO: Respond with exactly one word: no`;
 
-const STEP2_PROMPT = `Below is a list of clickable elements found on the web page. Each line is formatted as:
-<html_tag> "text" (url)
+const RATING_PROMPT = `This clickable element was found on a web page:
+{element}
 
-Your task: Which elements are most likely to lead to a page containing a business address?
+The page is about: {pageTitle}
 
-Think about which pages on a website typically contain a business address. A business address has a street number, street name, city, and country or postal code.
+Rate from 1 to 10: how likely is clicking this element to lead to a page or popup that contains a business address?
 
-List the most promising candidates, one per line. For each candidate, copy the ENTIRE line from the list above, exactly as it appears, including the HTML tag, the text, and the URL.
+Respond with only a single number.`;
 
-If none would lead to an address: Respond with exactly: no`;
-
-const FILTER_PROMPT = `Below is a list of candidate clickable elements that might lead to a business address.
-
-{candidates}
-
-These elements have already been tried in previous iterations:
-
-{memory}
-
-Your task: Remove any candidates that have already been tried (matching by text, href, or tag). List ONLY the remaining candidates, one per line. Copy each candidate exactly as it appears above.
-
-If no candidates remain: Respond with exactly: no`;
-
-const STEP3_PROMPT = `Below are filtered candidate clickable elements that should be tried next:
+const STEP3_PROMPT = `Below are candidate clickable elements that might lead to a business address:
 
 {candidates}
 
@@ -75,6 +61,8 @@ const STEP3_TOOLS = [
 ];
 
 const MAX_ITERATIONS = 3;
+const SCORE_THRESHOLD = 5;
+const MAX_CANDIDATES = 5;
 
 function isNo(content) {
   return String(content).trim().toLowerCase() === 'no';
@@ -89,13 +77,10 @@ function formatClickable(el) {
   return `${tag} ${text}${suffix}`.trim();
 }
 
-function parseCandidateList(content) {
-  const lines = String(content)
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean);
-  // Accept lines starting with <tag> (proper format only)
-  return lines.filter((l) => /^<\w+>/.test(l));
+function parseScore(content) {
+  const match = String(content).match(/\d+/);
+  if (!match) return 0;
+  return parseInt(match[0], 10);
 }
 
 function formatMemory(memory) {
@@ -120,6 +105,10 @@ function dumpMemory(memory) {
     }
   }
   console.log('--- End Memory ---\n');
+}
+
+function isAlreadyTried(line, memory) {
+  return memory.some((m) => m.candidate === line);
 }
 
 export async function runFindAddress() {
@@ -165,67 +154,42 @@ export async function runFindAddress() {
       console.log(answer.content);
 
       if (isNo(answer.content)) {
-        // Step 2: Scan clickable elements and ask which might lead to an address
-        console.log('\nStep 2: Scanning clickable elements...');
+        // Step 2: Scan clickable elements and rate each one
+        console.log('\nStep 2: Scanning and rating clickable elements...');
         const clickables = await callTool(client, 'scan_clickables', {});
         const lines = clickables.map(formatClickable);
 
-        console.log('\n--- Clickable Elements ---');
-        console.log(lines.join('\n'));
-        console.log('--- End Clickable Elements ---\n');
+        console.log(`\nFound ${lines.length} clickable elements. Rating each...\n`);
 
-        const step2 = await callLlm([
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: lines.join('\n') },
-          { role: 'user', content: STEP2_PROMPT },
-        ]);
+        const ratingPromises = lines.map((line) =>
+          callLlm([
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: RATING_PROMPT.replace('{element}', line).replace('{pageTitle}', currentTitle) },
+          ]).then((resp) => ({ line, score: parseScore(resp.content) })),
+        );
 
-        console.log('--- Step 2: LLM Answer ---');
-        if (step2.reasoning) {
-          console.log('Thinking:');
-          console.log(step2.reasoning);
-          console.log('\nResponse:');
+        const ratings = await Promise.all(ratingPromises);
+
+        for (const r of ratings) {
+          console.log(`  [${r.score}/10] ${r.line}`);
         }
-        console.log(step2.content);
 
-        let candidates = parseCandidateList(step2.content);
-        if (!candidates.length) {
-          console.log('\nNo candidates found. Stopping.');
+        // Filter: score > threshold, not already tried, max N candidates
+        const ranked = ratings
+          .filter((r) => r.score > SCORE_THRESHOLD)
+          .filter((r) => !isAlreadyTried(r.line, memory))
+          .sort((a, b) => b.score - a.score)
+          .slice(0, MAX_CANDIDATES);
+
+        if (!ranked.length) {
+          console.log(`\nNo elements scored above ${SCORE_THRESHOLD} (or all already tried). Stopping.`);
           break;
         }
 
-        console.log(`\n${candidates.length} candidate(s):`);
-        candidates.forEach((c) => console.log(`  ${c}`));
-
-        // Substep 2.5: Filter out already-tried elements using memory
-        if (memory.length) {
-          console.log('\nStep 2.5: Filtering already-tried elements...');
-          const filterResp = await callLlm([
-            { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: FILTER_PROMPT.replace('{candidates}', candidates.join('\n')).replace('{memory}', formatMemory(memory)) },
-          ]);
-
-          console.log('--- Step 2.5: LLM Answer ---');
-          if (filterResp.reasoning) {
-            console.log('Thinking:');
-            console.log(filterResp.reasoning);
-            console.log('\nResponse:');
-          }
-          console.log(filterResp.content);
-
-          if (isNo(filterResp.content)) {
-            console.log('\nAll candidates have been tried. Stopping.');
-            break;
-          }
-
-          const filtered = parseCandidateList(filterResp.content);
-          if (!filtered.length) {
-            console.log('\nNo untried candidates remain. Stopping.');
-            break;
-          }
-          candidates = filtered;
-          console.log(`\n${candidates.length} candidate(s) after filtering:`);
-          candidates.forEach((c) => console.log(`  ${c}`));
+        const candidates = ranked.map((r) => r.line);
+        console.log(`\n${candidates.length} candidate(s) (scored > ${SCORE_THRESHOLD}, not yet tried):`);
+        for (const r of ranked) {
+          console.log(`  [${r.score}/10] ${r.line}`);
         }
 
         // Step 3: Ask the LLM to choose an action (navigate or click)
@@ -275,7 +239,11 @@ export async function runFindAddress() {
         console.log(JSON.stringify(actionResult, null, 2));
 
         // Find which candidate was chosen for memory
-        const chosenCandidate = candidates[0] || fn.name;
+        const chosenCandidate = candidates.find((c) =>
+          fn.name === 'navigate'
+            ? c.includes(JSON.parse(fn.arguments).url)
+            : true,
+        ) || candidates[0] || fn.name;
 
         // Fetch resulting page info
         const resultUrl = await callTool(client, 'exec_js', { code: 'location.href' });
