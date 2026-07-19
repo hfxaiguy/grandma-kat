@@ -111,11 +111,17 @@ function isAlreadyTried(line, memory) {
   return memory.some((m) => m.candidate === line);
 }
 
-export async function runFindAddress() {
+export async function runFindAddress(options = {}) {
   console.log('Starting scrape MCP server...');
   const client = await startScrapeServer();
   const memory = [];
   try {
+    // Navigate to target URL if provided
+    if (options.url) {
+      console.log(`Navigating to ${options.url}...`);
+      await callTool(client, 'navigate', { url: options.url });
+    }
+
     for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       console.log(`\n${'='.repeat(60)}`);
       console.log(`Iteration ${iteration} of ${MAX_ITERATIONS}`);
@@ -192,71 +198,91 @@ export async function runFindAddress() {
           console.log(`  [${r.score}/10] ${r.line}`);
         }
 
-        // Step 3: Ask the LLM to choose an action (navigate or click)
+        // Step 3: Ask the LLM to choose an action (navigate or click), with retries
         console.log('\nStep 3: Choosing action...');
 
-        const step3 = await callLlm(
-          [
-            { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: STEP3_PROMPT.replace('{candidates}', candidates.join('\n')) },
-          ],
-          { tools: STEP3_TOOLS },
-        );
+        const MAX_STEP3_RETRIES = 3;
+        let actionExecuted = false;
 
-        console.log('--- Step 3: LLM Answer ---');
-        if (step3.reasoning) {
-          console.log('Thinking:');
-          console.log(step3.reasoning);
-          console.log('\nResponse:');
-        }
-        if (step3.content) console.log(step3.content);
+        for (let attempt = 1; attempt <= MAX_STEP3_RETRIES; attempt++) {
+          if (attempt > 1) console.log(`\nStep 3 retry ${attempt} of ${MAX_STEP3_RETRIES}...`);
 
-        // Extract the tool call
-        const toolCall = step3.tool_calls?.[0];
-        if (!toolCall) {
-          console.log('No tool call returned by LLM. Stopping.');
+          const step3 = await callLlm(
+            [
+              { role: 'system', content: SYSTEM_PROMPT },
+              { role: 'user', content: STEP3_PROMPT.replace('{candidates}', candidates.join('\n')) },
+            ],
+            { tools: STEP3_TOOLS },
+          );
+
+          console.log('--- Step 3: LLM Answer ---');
+          if (step3.reasoning) {
+            console.log('Thinking:');
+            console.log(step3.reasoning);
+            console.log('\nResponse:');
+          }
+          if (step3.content) console.log(step3.content);
+
+          const toolCall = step3.tool_calls?.[0];
+          if (!toolCall) {
+            console.log('No tool call returned by LLM.');
+            continue;
+          }
+
+          const fn = toolCall.function;
+          console.log(`\n--- Tool call: ${fn.name}(${fn.arguments}) ---`);
+
+          let args;
+          try {
+            args = JSON.parse(fn.arguments);
+          } catch {
+            console.log('Invalid tool call arguments. Retrying.');
+            continue;
+          }
+
+          let actionResult;
+          let actionLabel;
+          let chosenCandidate;
+
+          if (fn.name === 'navigate') {
+            if (!args.url) { console.log('Missing url in navigate call.'); continue; }
+            actionResult = await callTool(client, 'navigate', { url: args.url });
+            actionLabel = `NAVIGATE ${args.url}`;
+            chosenCandidate = candidates.find((c) => c.includes(args.url)) || candidates[0];
+          } else if (fn.name === 'click') {
+            if (!args.selector) { console.log('Missing selector in click call.'); continue; }
+            actionResult = await callTool(client, 'click_selector', { selector: args.selector });
+            await callTool(client, 'wait_for_load', { timeoutMs: 10000 });
+            actionLabel = `CLICK ${args.selector}`;
+            chosenCandidate = candidates[0];
+          } else {
+            console.log(`Unknown tool: ${fn.name}. Retrying.`);
+            continue;
+          }
+
+          console.log(JSON.stringify(actionResult, null, 2));
+
+          // Fetch resulting page info
+          const resultUrl = await callTool(client, 'exec_js', { code: 'location.href' });
+          const resultTitle = await callTool(client, 'exec_js', { code: 'document.title' });
+          const resultStr = `${resultTitle} - ${resultUrl}`;
+
+          // Append to memory and dump state
+          memory.push({
+            candidate: chosenCandidate,
+            action: actionLabel,
+            result: resultStr,
+          });
+          dumpMemory(memory);
+
+          actionExecuted = true;
           break;
         }
 
-        const fn = toolCall.function;
-        console.log(`\n--- Tool call: ${fn.name}(${fn.arguments}) ---`);
-
-        let actionResult;
-        let actionLabel;
-        if (fn.name === 'navigate') {
-          const args = JSON.parse(fn.arguments);
-          actionResult = await callTool(client, 'navigate', { url: args.url });
-          actionLabel = `NAVIGATE ${args.url}`;
-        } else if (fn.name === 'click') {
-          const args = JSON.parse(fn.arguments);
-          actionResult = await callTool(client, 'click_selector', { selector: args.selector });
-          await callTool(client, 'wait_for_load', { timeoutMs: 10000 });
-          actionLabel = `CLICK ${args.selector}`;
-        } else {
-          console.log(`Unknown tool: ${fn.name}`);
+        if (!actionExecuted) {
+          console.log('\nStep 3 failed after all retries. Stopping.');
           break;
         }
-        console.log(JSON.stringify(actionResult, null, 2));
-
-        // Find which candidate was chosen for memory
-        const chosenCandidate = candidates.find((c) =>
-          fn.name === 'navigate'
-            ? c.includes(JSON.parse(fn.arguments).url)
-            : true,
-        ) || candidates[0] || fn.name;
-
-        // Fetch resulting page info
-        const resultUrl = await callTool(client, 'exec_js', { code: 'location.href' });
-        const resultTitle = await callTool(client, 'exec_js', { code: 'document.title' });
-        const resultStr = `${resultTitle} - ${resultUrl}`;
-
-        // Append to memory and dump state
-        memory.push({
-          candidate: chosenCandidate,
-          action: actionLabel,
-          result: resultStr,
-        });
-        dumpMemory(memory);
 
         // Loop back to step 1 with the new page
         console.log('Looping back to step 1...\n');

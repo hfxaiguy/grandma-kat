@@ -3,6 +3,8 @@ import { runFindAddress } from './prototyping/find-address/find-address.mjs';
 import { listProviders } from './prototyping/lib/config.mjs';
 import { setProvider } from './prototyping/lib/llm.mjs';
 
+const url = process.argv[2];
+
 const providers = listProviders();
 
 if (providers.length > 1) {
@@ -32,7 +34,9 @@ if (providers.length > 1) {
   }
 }
 
-runFindAddress().catch((err) => {
+if (url) console.log(`Target URL: ${url}\n`);
+
+runFindAddress({ url }).catch((err) => {
   console.error('Find Address prototype failed:', err.message);
   process.exit(1);
 });

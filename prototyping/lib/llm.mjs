@@ -63,8 +63,15 @@ export async function callLlm(messages, options = {}) {
   // Qwen thinking models via HF router: thinking is inline in `content`,
   // delimited by a closing tag like `</output>`. The opening tag is stripped
   // by the router. Split into reasoning + final answer.
-  if (!reasoning) {
-    const match = content.match(/^(.*?)<\/(?:output|think)>\s*(.*)$/s);
+  if (reasoning) {
+    // llama.cpp puts reasoning in a separate field, but content may still
+    // contain leaked </think> tags with thinking text. Extract only what's after </think>.
+    const thinkClose = content.indexOf('</think>');
+    if (thinkClose !== -1) {
+      content = content.slice(thinkClose + 8).trim();
+    }
+  } else {
+    const match = content.match(/^(.*)<\/(?:output|think)>\s*(.*)$/s);
     if (match) {
       reasoning = match[1].trim();
       content = match[2].trim();
