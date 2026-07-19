@@ -25,6 +25,9 @@ export async function startScrapeServer() {
 export async function callTool(client, name, args = {}) {
   const result = await client.callTool({ name, arguments: args });
   const text = result.content?.map((c) => c.text || '').join('\n').trim();
+  if (result.isError) {
+    throw new Error(text);
+  }
   try {
     return JSON.parse(text);
   } catch {

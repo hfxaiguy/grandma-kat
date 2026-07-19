@@ -260,3 +260,170 @@ export async function scanClickables(pageClient) {
 
   return out;
 }
+
+/**
+ * Execute JavaScript within a scoped element or iframe.
+ *
+ * For regular elements: binds `element` to document.querySelector(scope) and evaluates code.
+ * For iframes: tries contentDocument first (same-origin), falls back to CDP frame context.
+ *
+ * @param {CDP.Client} pageClient
+ * @param {string} scope - CSS selector for the scope element or iframe
+ * @param {string} code - JavaScript to evaluate. For regular elements, `element` is bound.
+ * @returns {Promise<any>}
+ */
+export async function execJsInScope(pageClient, scope, code) {
+  // First, check if the scope is an iframe
+  const isIframe = await evaluate(pageClient, `
+    (() => {
+      const el = document.querySelector(${JSON.stringify(scope)});
+      if (!el) return 'not_found';
+      return el.tagName === 'IFRAME' ? 'iframe' : 'element';
+    })()
+  `);
+
+  if (isIframe === 'not_found') {
+    throw new Error(`Scope element not found: ${scope}`);
+  }
+
+  if (isIframe === 'iframe') {
+    // Try same-origin iframe access first
+    const sameOrigin = await evaluate(pageClient, `
+      (() => {
+        try {
+          const iframe = document.querySelector(${JSON.stringify(scope)});
+          const doc = iframe.contentDocument;
+          return doc !== null;
+        } catch {
+          return false;
+        }
+      })()
+    `);
+
+    if (sameOrigin) {
+      // Same-origin: wrap code to use iframe's document, bind element to body
+      return evaluate(pageClient, `
+        (() => {
+          const iframe = document.querySelector(${JSON.stringify(scope)});
+          const document = iframe.contentDocument;
+          const window = iframe.contentWindow;
+          const element = document.body;
+          return (${code});
+        })()
+      `);
+    }
+
+    // Cross-origin: the iframe is a separate CDP target.
+    // Try multiple approaches to find and execute in the iframe.
+    const iframeSrc = await evaluate(pageClient, `
+      document.querySelector(${JSON.stringify(scope)}).src || ''
+    `);
+
+    const host = pageClient.host || DEFAULT_HOST;
+    const port = pageClient.port || DEFAULT_PORT;
+
+    // Approach 1: Try to find iframe as a CDP target
+    const targets = await CDP.List({ host, port });
+    const iframeTarget = targets.find((t) =>
+      t.url === iframeSrc || t.url.startsWith(iframeSrc)
+    );
+
+    if (iframeTarget) {
+      const iframeClient = await CDP({ host, port, target: iframeTarget.id });
+      await iframeClient.Runtime.enable();
+      try {
+        // Wrap code to bind element to document.body for iframes
+        const wrappedCode = `(() => { const element = document.body; return (${code}); })()`;
+        const result = await iframeClient.Runtime.evaluate({
+          expression: wrappedCode,
+          returnByValue: true,
+          awaitPromise: true,
+        });
+        if (result.exceptionDetails) {
+          throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
+        }
+        return result.result.value;
+      } finally {
+        await safeClose(iframeClient);
+      }
+    }
+
+    // Approach 2: Try to find iframe via frame tree (some browsers include it)
+    const { frameTree } = await pageClient.Page.getFrameTree();
+    const frameId = findFrameByUrl(frameTree, iframeSrc);
+    if (frameId) {
+      const { executionContextId } = await pageClient.Page.createIsolatedWorld({
+        frameId,
+        worldName: 'threads-scope',
+      });
+      // Wrap code to bind element to document.body for iframes
+      const wrappedCode = `(() => { const element = document.body; return (${code}); })()`;
+      const result = await pageClient.Runtime.evaluate({
+        expression: wrappedCode,
+        contextId: executionContextId,
+        returnByValue: true,
+        awaitPromise: true,
+      });
+      if (result.exceptionDetails) {
+        throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
+      }
+      return result.result.value;
+    }
+
+    // Approach 3: Try to use DOM.describeNode to get the iframe's frameId
+    const { root } = await pageClient.DOM.getDocument({ depth: 0 });
+    const { node } = await pageClient.DOM.describeNode({
+      objectId: await evaluate(pageClient, `document.querySelector(${JSON.stringify(scope)})`)?.objectId,
+      depth: 0,
+    });
+    if (node && node.frameId) {
+      const { executionContextId } = await pageClient.Page.createIsolatedWorld({
+        frameId: node.frameId,
+        worldName: 'threads-scope',
+      });
+      // Wrap code to bind element to document.body for iframes
+      const wrappedCode = `(() => { const element = document.body; return (${code}); })()`;
+      const result = await pageClient.Runtime.evaluate({
+        expression: wrappedCode,
+        contextId: executionContextId,
+        returnByValue: true,
+        awaitPromise: true,
+      });
+      if (result.exceptionDetails) {
+        throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
+      }
+      return result.result.value;
+    }
+
+    throw new Error(`Could not find CDP target for iframe: ${scope} (src: ${iframeSrc})`);
+  }
+
+  // Regular element: bind `element` variable and evaluate
+  return evaluate(pageClient, `
+    (() => {
+      const element = document.querySelector(${JSON.stringify(scope)});
+      if (!element) throw new Error('Scope element not found: ${scope}');
+      return (${code});
+    })()
+  `);
+}
+
+/**
+ * Recursively search the frame tree for a frame matching a URL.
+ * @param {Object} frameTree
+ * @param {string} url
+ * @returns {string|null} frameId
+ */
+function findFrameByUrl(frameTree, url) {
+  const frame = frameTree.frame;
+  if (!frame) return null;
+  
+  if (frame.url === url || frame.url.startsWith(url)) {
+    return frame.id;
+  }
+  for (const child of frameTree.childFrames || []) {
+    const found = findFrameByUrl(child, url);
+    if (found) return found;
+  }
+  return null;
+}

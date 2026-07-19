@@ -22,6 +22,7 @@ import {
   safeClose,
   scanClickables,
   waitForLoad,
+  execJsInScope,
 } from './cdp-browser.mjs';
 import { startCollect, collect, endCollect } from './json-collect.mjs';
 
@@ -79,6 +80,18 @@ server.setRequestHandler(ListToolsRequestSchema, () => ({
         type: 'object',
         properties: { code: { type: 'string' } },
         required: ['code'],
+      },
+    },
+    {
+      name: 'exec_js_in_scope',
+      description: 'Run JavaScript within a scoped element or iframe. For regular elements, `element` is bound to the matched DOM node. For iframes, executes inside the iframe context (same-origin via contentDocument, cross-origin via CDP frame isolation).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          scope: { type: 'string', description: 'CSS selector for the scope element or iframe' },
+          code: { type: 'string', description: 'JavaScript to evaluate. For regular elements, `element` is bound.' },
+        },
+        required: ['scope', 'code'],
       },
     },
     {
@@ -253,6 +266,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'exec_js': {
         const pageClient = await ensurePage();
         result = await evaluate(pageClient, args.code);
+        break;
+      }
+
+      case 'exec_js_in_scope': {
+        const pageClient = await ensurePage();
+        result = await execJsInScope(pageClient, args.scope, args.code);
         break;
       }
 
