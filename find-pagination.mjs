@@ -1,0 +1,39 @@
+#!/usr/bin/env node
+import { startScrapeServer, callTool, stopScrapeServer } from './prototyping/lib/mcp.mjs';
+import { setProvider } from './prototyping/lib/llm.mjs';
+import { createLogger } from './prototyping/lib/logger.mjs';
+import { createPaginationThread } from './prototyping/find-pagination/thread.mjs';
+
+const url = process.argv[2];
+const scope = process.argv[3] || 'body';
+const provider = process.argv[4] || 'local';
+
+setProvider(provider);
+
+const log = createLogger('find-pagination');
+console.log(`Run ID: ${log.runId}`);
+console.log(`Logs: ${log.logDir}`);
+if (url) console.log(`Target URL: ${url}`);
+console.log(`Scope: ${scope}`);
+
+console.log('\nStarting scrape MCP server...');
+const client = await startScrapeServer();
+
+try {
+  // Navigate to target URL if provided
+  if (url) {
+    console.log(`Navigating to ${url}...`);
+    await callTool(client, 'navigate', { url });
+  }
+
+  const thread = createPaginationThread({ scope, client, log });
+  const result = await thread.run();
+
+  console.log('\n=== Final Result ===');
+  console.log(JSON.stringify(result, null, 2));
+} catch (err) {
+  console.error('Find Pagination failed:', err.message);
+  process.exit(1);
+} finally {
+  await stopScrapeServer(client);
+}
