@@ -24,6 +24,10 @@ export function createLogger(scriptName) {
         result: {
           content: result.content,
           reasoning: result.reasoning || null,
+          tool_calls: result.tool_calls?.map(tc => ({
+            name: tc.function.name,
+            arguments: JSON.parse(tc.function.arguments),
+          })) || null,
         },
       };
       fs.writeFileSync(filePath, JSON.stringify(entry, null, 2));
