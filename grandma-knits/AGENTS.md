@@ -256,10 +256,61 @@ by an outer loop. Exhaustion **fails loudly** — the `errFn` only controls
   feedback, `m.prev` the current path — genuinely diagnostic messages.
 - Omitted entirely → documented framework default cap (the "no unbounded
   loops" rule), overridable per-edge.
-- Deferred extension: `errFn` returning a *flow marker* instead of a
-  string — `max(3, m => goback(4))` — escalation to a bigger rewind.
-  String = fail with message; flow = escalate. Design when a real case
-  needs it.
+
+### Escalation: `errFn` returning a flow marker (deferred)
+
+`errFn` may return a *flow marker* instead of a string: string = fail with
+message; flow = escalate to a bigger rewind. Example — a research flow
+where a bad summary is usually the *search*'s fault, not the summary
+prompt's:
+
+```js
+Step.name('research')
+  .tools('search', 'fetch')
+  .prompt(m => `Plan search queries for: ${m.task}. ${m.error ?? ''}`)     // child 1: plan
+  .prompt(m => `Search using: ${m.prev[0]}. ${m.error ?? ''}`)             // child 2: search
+  .prompt(m => `Summarize: ${m.prev[0]}. ${m.error ?? ''}`)                // child 3: summarize
+  .check(
+    m => isGoodEnough(m.prev[0]) || 'Summary too thin — needs more specific facts.',
+    goback(1, max(2, m => goback(3, max(2))))
+  )
+```
+
+Reading: *retry the summary twice; if it still fails, the problem is
+upstream — rewind all three children and redo the research, twice at most.*
+
+Trace:
+
+1. plan → search → summarize → check fails: `m.error` set, `goback(1)`
+   re-runs the summarize prompt (it sees the feedback).
+2. Summarize v2 → check fails again: `goback(1)`'s `max(2)` budget
+   exhausted → errFn returns a flow marker → runner executes `goback(3)`:
+   rewind past summarize, search, and plan.
+3. Second full pass: `m.error` still holds the check feedback, so the plan
+   prompt renders "Plan search queries for X. Summary too thin — ..." and
+   plans *different* queries. The inner check edge's counter resets for the
+   new pass.
+4. Repeat → the escalation edge's own `max(2)` exhausts → framework
+   default failure.
+
+Mechanics:
+
+- **String vs marker distinguishes outcomes** — one signature, two
+  behaviors; the builder rejects anything else at build time.
+- **`m.error` bridges the escalation** — the check already set it on the
+  final failure, so re-run children learn *why* via the same
+  `${m.error ?? ''}` channel. No special escalation plumbing.
+- **Nested bounds stay bounded** — local retry has its budget, the
+  escalation its own; unbounded loops are unconstructible.
+- **Counter resets** — per-edge counters reset when children re-run, so
+  the check's local budget is fresh on each escalated pass.
+- **Data-driven escalation** — errFn receives memory:
+  `max(2, m => m.error.includes('thin') ? goback(3) : goback(2))`, or
+  choose fail-vs-escalate:
+  `m => m.attempts > 2 ? \`Giving up: ${m.error}\` : goback(3)`.
+
+Status: deferred — adds "errFn return type is a union" to the mental model;
+promote when a real case demands it.
 
 **`.until(cond, max(...))` is sugar** for an implicit check at the end of
 the container with `goback(<all children>, max(...))` — same primitive, two
