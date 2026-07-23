@@ -1,8 +1,6 @@
 import { callTool } from '../lib/mcp.mjs';
-import { callLlm, setProvider } from '../lib/llm.mjs';
+import { callLlm } from '../lib/llm.mjs';
 import { createLogger } from '../lib/logger.mjs';
-
-const MAX_RETRIES = 3;
 
 /**
  * Create a pagination detection thread.
@@ -25,18 +23,18 @@ export function createPaginationThread(options = {}) {
 async function runPaginationDetection({ scope, client, log }) {
   console.log(`\n=== Detecting pagination in scope: "${scope}" ===`);
 
-  // Get cleaned HTML for LLM - strip styles, scripts, and filters
+  // Get cleaned HTML
   const scopeHtml = await callTool(client, 'exec_js_in_scope', {
     scope,
     code: `(() => {
       const clone = element.cloneNode(true);
-      clone.querySelectorAll('style, script, .filterBar, .AdvancedFilter, .SearchBar').forEach(el => el.remove());
+      clone.querySelectorAll('style, script').forEach(el => el.remove());
       return clone.innerHTML.substring(0, 8000);
     })()`,
   });
 
-  // Step 1: Is there pagination? What elements?
-  console.log('\n--- Step 1: Is there pagination? ---');
+  // Step 1: Describe what could be pagination
+  console.log('\n--- Step 1: Describing pagination elements ---');
 
   const step1Prompt = `Below is HTML from a webpage.
 
@@ -55,164 +53,170 @@ ${String(scopeHtml).substring(0, 8000)}`;
   const step1Result = await callLlm([
     { role: 'user', content: step1Prompt }
   ]);
-  log.logLlmCall('step1_has_pagination', [{ role: 'user', content: step1Prompt }], step1Result);
+  log.logLlmCall('step1_describe', [{ role: 'user', content: step1Prompt }], step1Result);
 
-  const step1Response = step1Result.content;
-  console.log(`Step 1 response:\n${step1Response}`);
+  console.log(`Step 1 response:\n${step1Result.content}`);
 
-  if (step1Response.trim().toLowerCase() === 'no') {
-    console.log('No pagination detected. Stopping.');
-    return { success: false, reason: 'No pagination detected' };
-  }
+  // Capture before state
+  const beforeState = await callTool(client, 'exec_js_in_scope', {
+    scope,
+    code: `({
+      url: location.href,
+      childCount: element.children.length,
+      textLength: element.innerText.length,
+    })`,
+  });
+  console.log('\nBefore state:', JSON.stringify(beforeState));
 
-  // Step 2: What type of pagination?
-  console.log('\n--- Step 2: Identifying pagination type ---');
+  // Step 2: Ask LLM to navigate to a different page
+  console.log('\n--- Step 2: Navigate to a different page ---');
 
-  const step2Prompt = `Look at this pagination description:
+  const step2Prompt = `Below is HTML from a webpage.
 
-${step1Response}
+What the LLM saw:
+${step1Result.content}
 
-What type of pagination is this? Choose ONE:
-- "traditional" - page numbers and/or next/prev buttons that navigate to new pages
-- "load_more" - "Load more" or "Show more" button that adds content to the same page
-- "infinite_scroll" - automatically loads more content when scrolling down
-- "carousel" - left/right arrows to navigate between items
-- "alphabetical" - letter-based navigation (A, B, C, etc.)
+Click one of the letter links to go to a different page. Use element.querySelector() with the correct selector, then call .click() on it.
 
-Respond with ONLY the type name, nothing else.`;
+Rules:
+- "element" is the scoped DOM node. Use element.querySelector() to find children.
+- Just click the link. Do NOT wait for anything.
+- Return ONLY the JavaScript code, no explanation.
+
+HTML:
+${String(scopeHtml).substring(0, 8000)}`;
 
   const step2Result = await callLlm([
     { role: 'user', content: step2Prompt }
   ]);
-  log.logLlmCall('step2_pagination_type', [{ role: 'user', content: step2Prompt }], step2Result);
+  log.logLlmCall('step2_navigate', [{ role: 'user', content: step2Prompt }], step2Result);
 
-  const paginationTypeRaw = step2Result.content.toLowerCase().trim();
-  const paginationType = paginationTypeRaw.match(/traditional|load_more|infinite_scroll|carousel|alphabetical/)?.[0] || 'unknown';
-  console.log(`Pagination type: ${paginationType}`);
+  // Extract code
+  let code = step2Result.content.match(/```(?:javascript|js)?\n([\s\S]*?)```/)?.[1]?.trim() ||
+             step2Result.content.match(/`([^`]+)`/)?.[1]?.trim() ||
+             step2Result.content.trim();
 
-  // Step 3 & 4: Generate, execute, and verify pagination code in a retry loop
-  console.log('\n--- Step 3 & 4: Generate and verify pagination code ---');
+  console.log(`Generated code:\n${code}`);
 
-  let codeTemplate = '';
-  let executionResult = null;
-  let stateChanged = false;
-  let beforeState = null;
-  let afterState = null;
-  let failureContext = '';
-
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    if (attempt > 1) console.log(`\nRetry ${attempt} of ${MAX_RETRIES}...`);
-
-    // Capture before state
-    beforeState = await callTool(client, 'exec_js_in_scope', {
+  // Execute
+  console.log('\nExecuting...');
+  try {
+    const result = await callTool(client, 'exec_js_in_scope', {
       scope,
-      code: `({
-        url: location.href,
-        childCount: element.children.length,
-        scrollHeight: element.scrollHeight,
-        textLength: element.innerText.length,
-      })`,
+      code: `(async () => { ${code} })()`,
     });
-    console.log('Before state:', JSON.stringify(beforeState));
+    console.log('Result:', JSON.stringify(result));
+  } catch (err) {
+    console.log(`Error: ${err.message}`);
+  }
 
-    // Ask LLM to generate code
-    // "element" is the scoped DOM node. Use element.querySelector() to find children.
-    const step3Prompt = `Pagination type: ${paginationType}
+  // Wait for navigation
+  await new Promise(resolve => setTimeout(resolve, 2000));
 
-Pagination elements found:
-${step1Response}
+  // Step 3: Verify DOM changed
+  console.log('\n--- Step 3: Verify DOM changed ---');
 
-Generate JavaScript code to interact with this pagination.
+  const afterState = await callTool(client, 'exec_js_in_scope', {
+    scope,
+    code: `({
+      url: location.href,
+      childCount: element.children.length,
+      textLength: element.innerText.length,
+    })`,
+  });
+  console.log('After state:', JSON.stringify(afterState));
+
+  const changed =
+    beforeState.url !== afterState.url ||
+    beforeState.childCount !== afterState.childCount ||
+    beforeState.textLength !== afterState.textLength;
+
+  if (changed) {
+    console.log('Pagination verified - DOM changed');
+  } else {
+    console.log('No change detected');
+  }
+
+  // Step 3: Ask LLM to write a reusable function
+  console.log('\n--- Step 3: Write a function to navigate to next page ---');
+
+  const step3Prompt = `The following code was used to click a letter pagination link and it worked:
+
+${code}
+
+Write a reusable function called navigateToNextPage that:
+1. Finds the currently active letter
+2. Clicks the next letter in the sequence
+3. Returns which letter it navigated to
 
 Rules:
 - "element" is the scoped DOM node. Use element.querySelector() to find children.
-- Return an object: { action: "click"|"navigate", selector: "css selector" } or { action: "navigate", url: "https://..." }
-- Do NOT wait for page load. Just perform the click or navigation.
-- Do NOT define functions. Just write the body code.
-- Return ONLY the code, no explanation.
-${failureContext}`;
+- The active link has class "active"
+- Return ONLY the function code, no explanation.
 
-    const step3Result = await callLlm([
-      { role: 'user', content: step3Prompt }
-    ]);
-    log.logLlmCall(`step3_generate_code_${attempt}`, [{ role: 'user', content: step3Prompt }], step3Result);
+HTML:
+${String(scopeHtml).substring(0, 8000)}`;
 
-    // Extract code from response
-    codeTemplate = step3Result.content.match(/```(?:javascript|js)?\n([\s\S]*?)```/)?.[1]?.trim() ||
-                   step3Result.content.match(/`([^`]+)`/)?.[1]?.trim() ||
-                   step3Result.content.trim();
+  const step3Result = await callLlm([
+    { role: 'user', content: step3Prompt }
+  ]);
+  log.logLlmCall('step3_write_function', [{ role: 'user', content: step3Prompt }], step3Result);
 
-    console.log(`\nGenerated code (attempt ${attempt}):`);
-    console.log(codeTemplate);
+  let functionCode = step3Result.content.match(/```(?:javascript|js)?\n([\s\S]*?)```/)?.[1]?.trim() ||
+                     step3Result.content.match(/`([^`]+)`/)?.[1]?.trim() ||
+                     step3Result.content.trim();
 
-    // Execute the code
-    console.log('\nExecuting...');
-    try {
-      executionResult = await callTool(client, 'exec_js_in_scope', {
-        scope,
-        code: `(async () => { ${codeTemplate} })()`,
-      });
-      console.log('Execution result:', JSON.stringify(executionResult));
-    } catch (err) {
-      console.log(`Execution error: ${err.message}`);
-      executionResult = { error: err.message };
-    }
+  console.log(`Generated function:\n${functionCode}`);
 
-    // Wait briefly for navigation/click to take effect
-    await new Promise(resolve => setTimeout(resolve, 2000));
+  // Capture before state
+  const beforeState2 = await callTool(client, 'exec_js_in_scope', {
+    scope,
+    code: `({
+      url: location.href,
+      textLength: element.innerText.length,
+    })`,
+  });
+  console.log('\nBefore state:', JSON.stringify(beforeState2));
 
-    // Capture after state
-    afterState = await callTool(client, 'exec_js_in_scope', {
+  // Execute the function
+  console.log('\nExecuting...');
+  try {
+    const result = await callTool(client, 'exec_js_in_scope', {
       scope,
-      code: `({
-        url: location.href,
-        childCount: element.children.length,
-        scrollHeight: element.scrollHeight,
-        textLength: element.innerText.length,
-      })`,
+      code: `(async () => { ${functionCode} return navigateToNextPage(); })()`,
     });
-    console.log('After state:', JSON.stringify(afterState));
+    console.log('Result:', JSON.stringify(result));
+  } catch (err) {
+    console.log(`Error: ${err.message}`);
+  }
 
-    // Check if state changed
-    stateChanged =
-      beforeState.url !== afterState.url ||
-      beforeState.childCount !== afterState.childCount ||
-      beforeState.scrollHeight !== afterState.scrollHeight ||
-      beforeState.textLength !== afterState.textLength;
+  // Wait for navigation
+  await new Promise(resolve => setTimeout(resolve, 2000));
 
-    if (stateChanged) {
-      console.log('Pagination verified - content changed');
-      break;
-    }
+  // Verify
+  const afterState2 = await callTool(client, 'exec_js_in_scope', {
+    scope,
+    code: `({
+      url: location.href,
+      textLength: element.innerText.length,
+    })`,
+  });
+  console.log('After state:', JSON.stringify(afterState2));
 
-    // Build failure context for retry
-    const hasError = executionResult?.error || executionResult?.success === false;
+  const changed2 = beforeState2.url !== afterState2.url || beforeState2.textLength !== afterState2.textLength;
 
-    if (hasError) {
-      console.log(`Execution failed. Feeding error back to LLM...`);
-      failureContext = `\nPREVIOUS ATTEMPT FAILED:
-Code: ${codeTemplate}
-Error: ${JSON.stringify(executionResult)}
-Fix the code and try again.`;
-    } else {
-      console.log(`No state change detected. The code ran but didn't trigger pagination.`);
-      failureContext = `\nPREVIOUS ATTEMPT DID NOT WORK:
-Code: ${codeTemplate}
-Result: ${JSON.stringify(executionResult)}
-Before: ${JSON.stringify(beforeState)}
-After: ${JSON.stringify(afterState)}
-The page did not change. Try a different selector or approach.`;
-    }
+  if (changed2) {
+    console.log('Navigation verified - DOM changed');
+  } else {
+    console.log('No change detected');
   }
 
   return {
-    success: stateChanged,
-    paginationType,
-    code: codeTemplate,
-    verified: stateChanged,
-    attempts: MAX_RETRIES,
+    success: changed,
+    description: step1Result.content,
+    clickCode: code,
+    functionCode,
     beforeState,
     afterState,
-    executionResult,
   };
 }
