@@ -73,7 +73,7 @@ executes it with an injected runtime:
 const tree = Step.name('draft-and-verify')
   .step(Step.name('draft').prompt(m => `Write about ${m.task}`))
   .step(Step.name('verify').needs('draft').prompt(m => `Check: ${m.step.draft}`))
-  .until(m => m.step.verify === 'pass', { max: 3 });
+  .until(m => m.step.verify === 'pass', max(3));
 
 // tree is just data — an AST of rule lists and children
 
@@ -225,9 +225,9 @@ Step.name('agent')
       if (m.prev[0].length > 5) return 'Too long. One word only.';
       return true;
     },
-    goback(1, { max: 3 })
+    goback(1, max(3, m => `Judge never answered validly: ${m.error}`))
   )
-  .until(m => m.prev[0].trim().toLowerCase() === 'yes', { max: 3 })
+  .until(m => m.prev[0].trim().toLowerCase() === 'yes', max(3))
 ```
 
 **`.check(fn, flow)`** — an anonymous child (accumulative, auto-named like
@@ -238,16 +238,33 @@ prompts). `fn` receives full memory and returns:
 - a string → fail; the string is the feedback, placed in **`m.error`**.
 - `false` → fail with generic feedback.
 
-**`goback(n, { max })`** — rewind to `n` children before the check (the
+**`goback(n, max(...))`** — rewind to `n` children before the check (the
 check itself is not counted). `goback(1)` retries the immediately preceding
-child; `goback(2)` re-runs the two previous children. `max` bounds the
-backward edge — exhaustion fails loudly. `goback()` is an exported marker
-factory like `when()`.
+child; `goback(2)` re-runs the two previous children. Both `goback()` and
+`max()` are exported marker factories like `when()`.
 
-**`.until(cond, { max })` is sugar** for an implicit check at the end of
-the container with `goback(<all children>)` — same primitive, two scopes.
-This resolves the loop-construct question: relative bounded jumps cover the
-realistic cases; arbitrary named `goto()` remains deferred.
+**`max(count, errFn?)`** — bounds a backward edge (an exported marker, not
+an options bag). `count` = max backward jumps (so `max(3)` = 1 initial run
++ 3 retries); counters are per-edge and reset when the container is re-run
+by an outer loop. Exhaustion **fails loudly** — the `errFn` only controls
+*what the parent sees*, not whether it fails:
+
+- `max(3)` bare → framework default failure message (names the check, the
+  count, the last feedback).
+- `max(3, m => \`...: ${m.error}\`)` → authored message. `m` is the
+  container's memory at exhaustion: `m.error` holds the last check
+  feedback, `m.prev` the current path — genuinely diagnostic messages.
+- Omitted entirely → documented framework default cap (the "no unbounded
+  loops" rule), overridable per-edge.
+- Deferred extension: `errFn` returning a *flow marker* instead of a
+  string — `max(3, m => goback(4))` — escalation to a bigger rewind.
+  String = fail with message; flow = escalate. Design when a real case
+  needs it.
+
+**`.until(cond, max(...))` is sugar** for an implicit check at the end of
+the container with `goback(<all children>, max(...))` — same primitive, two
+scopes. This resolves the loop-construct question: relative bounded jumps
+cover the realistic cases; arbitrary named `goto()` remains deferred.
 
 ### Rewind semantics
 
@@ -418,8 +435,8 @@ slots (`m.step.X`) persist until overwritten; full history lives in
 `m.raw.calls` and logs.
 
 Original discussion: retry-with-verification = *a parent re-running its
-substeps*; loops get a mandatory `max` (or low default cap) — LLM-authored
-loops without bounds burn tokens forever.
+substeps*; loops get a `max()` bound (or the framework default cap) —
+LLM-authored loops without bounds burn tokens forever.
 
 ### Per-step model
 
