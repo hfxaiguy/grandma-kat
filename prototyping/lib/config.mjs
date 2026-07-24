@@ -1,7 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 
-export function loadConfig(providerName, configPath = path.resolve('threads.config.json')) {
+export function loadConfig(providerName, configPath = path.resolve('grandma-kat.config.json')) {
   loadDotenv(path.resolve('.env'));
 
   const raw = readFileSync(configPath, 'utf8');
@@ -35,7 +35,7 @@ export function loadConfig(providerName, configPath = path.resolve('threads.conf
   };
 }
 
-export function listProviders(configPath = path.resolve('threads.config.json')) {
+export function listProviders(configPath = path.resolve('grandma-kat.config.json')) {
   loadDotenv(path.resolve('.env'));
   const raw = readFileSync(configPath, 'utf8');
   const config = JSON.parse(raw);

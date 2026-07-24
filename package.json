@@ -1,9 +1,16 @@
 {
-  "name": "threads",
-  "version": "0.0.1",
+  "name": "grandma-kat",
+  "version": "0.1.0",
+  "description": "Grandma Knits Agent Trees — factory-builder library for composing LLM execution trees",
   "type": "module",
-  "private": true,
+  "main": "src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs"
+  },
   "scripts": {
-    "find-address": "node find-address.mjs"
+    "test": "node --test 'tests/**/*.test.mjs'"
+  },
+  "engines": {
+    "node": ">=22.5"
   }
 }

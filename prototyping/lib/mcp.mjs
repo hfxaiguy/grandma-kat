@@ -1,8 +1,8 @@
 import path from 'node:path';
-import { Client } from '../../browser-mcp/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js';
-import { StdioClientTransport } from '../../browser-mcp/node_modules/@modelcontextprotocol/sdk/dist/esm/client/stdio.js';
+import { Client } from '../browser-mcp/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js';
+import { StdioClientTransport } from '../browser-mcp/node_modules/@modelcontextprotocol/sdk/dist/esm/client/stdio.js';
 
-const SERVER_PATH = path.resolve('browser-mcp/scrape-server.mjs');
+const SERVER_PATH = path.resolve('prototyping/browser-mcp/scrape-server.mjs');
 
 export async function startScrapeServer() {
   const transport = new StdioClientTransport({

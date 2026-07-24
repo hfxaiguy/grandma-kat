@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { startScrapeServer, callTool, stopScrapeServer } from './prototyping/lib/mcp.mjs';
-import { setProvider } from './prototyping/lib/llm.mjs';
-import { createLogger } from './prototyping/lib/logger.mjs';
-import { createPaginationThread } from './prototyping/find-pagination/thread.mjs';
+import { startScrapeServer, callTool, stopScrapeServer } from '../lib/mcp.mjs';
+import { setProvider } from '../lib/llm.mjs';
+import { createLogger } from '../lib/logger.mjs';
+import { createPaginationThread } from './thread.mjs';
 
 const url = process.argv[2];
 const scope = process.argv[3] || 'body';

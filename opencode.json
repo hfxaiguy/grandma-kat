@@ -3,7 +3,7 @@
   "mcp": {
     "cdp-scrape": {
       "type": "local",
-      "command": ["node", "./browser-mcp/scrape-server.mjs"],
+      "command": ["node", "./prototyping/browser-mcp/scrape-server.mjs"],
       "enabled": true,
       "environment": {
         "CDP_PORT": "9222"

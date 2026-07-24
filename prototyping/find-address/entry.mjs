@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { runFindAddress } from './prototyping/find-address/find-address.mjs';
-import { listProviders } from './prototyping/lib/config.mjs';
-import { setProvider } from './prototyping/lib/llm.mjs';
+import { runFindAddress } from './find-address.mjs';
+import { listProviders } from '../lib/config.mjs';
+import { setProvider } from '../lib/llm.mjs';
 
 const url = process.argv[2];
 
