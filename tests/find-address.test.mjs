@@ -15,9 +15,6 @@ function makeBrowserTools(page) {
     if (code.includes('document.body ? document.body.innerText')) {
       return { text: page.text, url: page.url, title: page.title };
     }
-    if (code === 'JSON.stringify(Array.isArray(window.__tried) ? window.__tried : [])') {
-      return page.tried;
-    }
     if (code.startsWith('(() => {')) {
       // format_clickables: code embeds `const els = <JSON>;`
       const m = code.match(/const els = (.+?);\n/);
@@ -34,13 +31,6 @@ function makeBrowserTools(page) {
           }
           return `<${tag}> "${text}"${suffix}`.trim();
         }).filter((l) => l.length > 4).join('\n');
-      }
-      // record_tried: code embeds `const tc = <JSON>;`
-      const tm = code.match(/const tc = (.+?);\n/);
-      if (tm) {
-        const tc = JSON.parse(tm[1]);
-        if (tc?.arguments) page.tried.push(tc.arguments);
-        return page.tried;
       }
     }
     return null;
@@ -68,7 +58,6 @@ function freshPage() {
     text: '',
     clickables: [],
     clicked: [],
-    tried: [],
   };
 }
 
@@ -168,7 +157,6 @@ test('find-address: loops, picks a clickable, then finds the address', async () 
   });
 
   assert.equal(result, '500 Elm St, Portland, OR 97201');
-  assert.deepEqual(page.tried, ['{"url":"https://example.com/locations"}']);
 });
 
 test('find-address: passes tried list into the next pick_action prompt', async () => {
@@ -219,11 +207,11 @@ test('find-address: passes tried list into the next pick_action prompt', async (
   assert.ok(iter2Pick, 'iter 2 pick_action prompt must include the tried list');
   assert.ok(iter2Pick.content.includes('https://example.com/locations'));
 
-  // Final tried list contains the URLs from each pass that ran pick_action.
-  assert.equal(page.tried.length, 3);
-  assert.ok(page.tried[0].includes('locations'));
-  assert.ok(page.tried[1].includes('about'));
-  assert.ok(page.tried[2].includes('third'));
+  // pick_action on iter 3 (call index 7) saw the tried list from iters 1+2.
+  const iter3Pick = calls[7].find((m) => m.content.includes('Already tried'));
+  assert.ok(iter3Pick, 'iter 3 pick_action prompt must include the tried list');
+  assert.ok(iter3Pick.content.includes('https://example.com/locations'));
+  assert.ok(iter3Pick.content.includes('https://example.com/about'));
 });
 
 test('find-address: retries pick_action when the LLM emits no tool call', async () => {

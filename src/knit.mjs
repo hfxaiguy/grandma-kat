@@ -116,6 +116,10 @@ async function execTree(exec, tree, scope, parentScope) {
           };
         } else if (child.kind === 'prompt') {
           outcome = await execPrompt(exec, child, scope);
+        } else if (child.kind === 'memory') {
+          await execMemory(exec, child, scope);
+          i++;
+          continue;
         } else {
           outcome = await execCall(exec, child, scope);
         }
@@ -230,6 +234,15 @@ async function execCall(exec, child, scope) {
   return { value: result, record: { content: result, tool: child.tool, args, toolResults: [result] } };
 }
 
+// Side-effect only: writes to a named memory slot, produces no m.prev output.
+async function execMemory(exec, child, scope) {
+  const view = makeView(scope);
+  const current = scope.slots[child.name]; // read before write (may be undefined)
+  const value = await callFn(child.fn, view, `memory fn of '${child.name}'`, current);
+  scope.slots[child.name] = value;
+  logEvent(exec, 'memory', { child: child.name, value });
+}
+
 // --- memory helpers ---
 
 function record(scope, childIndex, name, outcome) {
@@ -282,9 +295,9 @@ function runtimeDefaultModel(exec) {
   throw new KnitError('no model resolved (no .model() anywhere and no runtime default)');
 }
 
-async function callFn(fn, view, label) {
+async function callFn(fn, view, label, ...extra) {
   try {
-    return await fn(view);
+    return await fn(view, ...extra);
   } catch (err) {
     throw new KnitError(`${label} threw: ${err.message}`, { cause: err });
   }

@@ -13,21 +13,19 @@
 //   4. try_find                  (gated on check_address saying "no")
 //        ├── scan_clickables
 //        ├── format_clickables
-//        ├── get_tried
 //        ├── pick_action
 //        │     ├── prompt with tools (navigate/click)
 //        │     ├── .check — retries on missing/invalid tool calls
-//        │     └── record_tried — appends the executed tool call's args to tried
+//        │     └── .memory('tried') — appends the tool call args to the tried list
 //        └── wait_for_load       (gated on pick_action emitting a tool call)
 //
 //   .until(address found, max(3)) — the outer loop. max(3) is one initial
 //        pass plus three retries; the runner reports a loud KnitError on
 //        exhaustion.
 //
-// "Tried" elements are tracked in the browser page's `window.__tried` (a
-// JSON array of last-tried tool-arguments). get_tried reads it;
-// record_tried appends to it. The first call to get_tried initializes the
-// array.
+// "Tried" elements are tracked in memory as `tried` — a JSON string array
+// of previous tool-call arguments. pick_action's prompt reads it via
+// m.branch.tried; .memory('tried') appends after a successful tool call.
 //
 // The check inside pick_action accepts an explicit "no candidates"-style
 // plain-text response as a pass (no tool call) — that's the prototype's
@@ -84,18 +82,6 @@ const FORMAT_CLICKABLES_CODE = `(() => {
   }).filter((l) => l.length > 4).join('\\n');
 })()`;
 
-const GET_TRIED_CODE = `JSON.stringify(Array.isArray(window.__tried) ? window.__tried : [])`;
-
-// __TOOL_CALL__ is substituted with the JSON-encoded pick_action prompt's
-// first tool call (or null) at argsFn time. Pushes the tool arguments to
-// window.__tried and returns the updated list.
-const RECORD_TRIED_CODE = `(() => {
-  window.__tried = Array.isArray(window.__tried) ? window.__tried : [];
-  const tc = __TOOL_CALL__;
-  if (tc && tc.arguments) window.__tried.push(tc.arguments);
-  return JSON.stringify(window.__tried);
-})()`;
-
 export function createFindAddressPattern({ model = 'default' } = {}) {
   const needsMore = (m) => isNo(m.branch.check_address);
 
@@ -122,14 +108,13 @@ export function createFindAddressPattern({ model = 'default' } = {}) {
             JSON.stringify(m.branch.scan_clickables ?? [])
           ),
         }))
-        .call('get_tried', 'exec_js', () => ({ code: GET_TRIED_CODE }))
         .branch(Tree.name('pick_action')
           .tools('navigate', 'click')
           .prompt(m => [
             { role: 'system', content: SYSTEM_PROMPT },
             { role: 'user', content: STEP3_PROMPT
               .replace('{candidates}', m.branch.format_clickables || '(none)')
-              .replace('{tried}', m.branch.get_tried || '[]')
+              .replace('{tried}', JSON.stringify(m.branch.tried ?? []))
               .replace('{feedback}', m.error ? `\nPrevious attempt: ${m.error}\n` : '') },
           ])
           .check(
@@ -145,22 +130,22 @@ export function createFindAddressPattern({ model = 'default' } = {}) {
               catch { return 'Invalid JSON in tool call arguments.'; }
             },
             goback(1, max(3, m => `pick_action gave up: ${m.error}`))
-          )
-          .call(when(m => {
-              const tc = m.raw.prev[0]?.toolCalls?.[0];
-              return Boolean(tc && tc.name);
-            }),
-            'exec_js',
-            m => ({
-              code: RECORD_TRIED_CODE.replace(
-                '__TOOL_CALL__',
-                JSON.stringify(m.raw.prev[0]?.toolCalls?.[0] ?? null)
-              ),
-            })))
+          ))
+        // Append the tool call args to the tried list in memory. Runs at
+        // try_find level so the slot persists across loop iterations.
+        .memory(when(m => {
+            const tc = m.raw.branch.pick_action?.toolCalls?.[0];
+            return Boolean(tc && tc.name);
+          }),
+          'tried',
+          (m, cur) => {
+            const tc = m.raw.branch.pick_action?.toolCalls?.[0];
+            return [...(cur ?? []), tc.arguments];
+          })
         // wait_for_load only fires when pick_action actually called a tool.
-        // record_tried only runs when a tool was called, so checking for
+        // .memory('tried') only runs when a tool was called, so checking for
         // its existence is the signal.
-        .call(when(m => m.branch.record_tried != null),
+        .call(when(m => m.branch.tried != null),
           'wait_for_load', 'wait_for_load', () => ({ timeoutMs: 10000 })))
     .until(
       m => !isNo(m.branch.check_address),

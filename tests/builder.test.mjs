@@ -112,3 +112,26 @@ test('.call() supports optional name', () => {
   assert.equal(gc.tool, 'exec_js');
   assert.equal(typeof gc.gate, 'function');
 });
+
+test('.memory() parses name and fn', () => {
+  const t = Tree.name('a').prompt(m => 'x').memory('tried', (m, cur) => [...cur ?? [], m.prev[0]]);
+  const mem = t.def.children[1];
+  assert.equal(mem.kind, 'memory');
+  assert.equal(mem.name, 'tried');
+  assert.equal(typeof mem.fn, 'function');
+  assert.equal(mem.gate, null);
+});
+
+test('.memory() supports when() gate', () => {
+  const t = Tree.name('a').prompt(m => 'x').memory(when(m => true), 'tried', (m, cur) => cur ?? []);
+  const mem = t.def.children[1];
+  assert.equal(mem.kind, 'memory');
+  assert.equal(mem.name, 'tried');
+  assert.equal(typeof mem.gate, 'function');
+});
+
+test('.memory() validates arguments', () => {
+  assert.throws(() => Tree.name('a').memory(), /slot name/);
+  assert.throws(() => Tree.name('a').memory('x'), /function/);
+  assert.throws(() => Tree.name('a').memory('has#hash', m => m), /reserved/);
+});

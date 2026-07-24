@@ -139,7 +139,9 @@ anonymous child**. A named tree is a pure container with config (`.name`,
 `.model`, `.tools`, `.needs`, `.until`, gates); all *doing* lives in
 children. Leaves are anonymous invocation nodes: prompt-leaves (from
 `.prompt()`), tool-leaves (from `.call()`), check-leaves (from `.check()`,
-which produce no output on pass). Internal nodes are named containers.
+which produce no output on pass), memory-leaves (from `.memory()`, which
+write to a named slot but produce no `m.prev` output). Internal nodes are
+named containers.
 
 ```js
 Tree.name('draft').prompt(m => `Write about ${m.task}`)
@@ -160,8 +162,8 @@ only children exist. A named tree with zero children is a build error.
 
 **Chained prompts are sequences.** `.prompt(a).prompt(b)` runs both, in
 declared order (accumulative, like `.branch()`) — NOT last-match-wins. Rule
-of thumb: *doing* methods (`.branch`, `.prompt`, `.call`, `.check`)
-accumulate; *config* methods (`.model`, `.until`) select. Prompt variants
+of thumb: *doing* methods (`.branch`, `.prompt`, `.call`, `.check`,
+`.memory`) accumulate; *config* methods (`.model`, `.until`) select. Prompt variants
 are expressed as gated children:
 
 ```js
@@ -347,6 +349,48 @@ stay stable across retries, which the concise chaining style depends on.
   incorporate feedback via `${m.error ?? '...'}`.
 - Dropped/dead outputs remain available in logs and in the record view
   (`m.raw`).
+
+### `.memory()`: imperative memory writes (chosen)
+
+`.memory(name, fn)` is a leaf child that writes a value to a named memory
+slot. It is **side-effect only** — it produces no `m.prev` output (like a
+passing `.check()`). You read the value by name (`m.branch.X`), not
+positionally.
+
+```js
+.memory('tried', (m, cur) => [...(cur ?? []), m.prev[0]])
+```
+
+**Signature:** `.memory(name, fn)` or `.memory(when(cond), name, fn)`.
+`fn(memory, currentValue)` receives the full memory view and the slot's
+current value (or `undefined` on first write). The return value is stored
+under `name` in the parent's memory.
+
+**Why it exists:** some state is derived, not produced by an LLM or tool.
+Tracking a list of tried elements across loop iterations, incrementing a
+counter, caching a computed value — these are pure memory operations that
+don't need a prompt or tool call. `.memory()` replaces the hack of using
+`.call('exec_js', ...)` to manipulate a side-channel.
+
+**Scoping:** `.memory()` writes to the scope of the tree it belongs to. If
+you need a value to survive a branch boundary (persist across loop
+iterations), place `.memory()` at the level where it needs to live — not
+inside the branch that produces the data you're reading. Read from
+`m.raw.branch.X` to access a child branch's record view.
+
+```js
+Tree.name('loop')
+  .prompt(m => 'do something')
+  .check(m => ..., goback(1, max(3)))
+  .memory('history', (m, cur) => [...(cur ?? []), m.prev[0]])
+  // 'history' accumulates across .until() iterations
+  .until(m => done, max(5))
+```
+
+**`m.prev` behavior:** `.memory()` never appears in `m.prev`. The sibling
+after it sees `m.prev[0]` as whatever ran before the memory op. This is
+correct — memory writes are invisible plumbing, not data flowing through the
+pipeline.
 
 ## Memory Model: Scope Chain (chosen)
 
@@ -690,7 +734,8 @@ may import either convention by habit.
 - *Selective (config)* — one value is chosen: `.model()`, `.until()`. Last
   matching rule wins.
 - *Accumulative (doing)* — every matching rule applies, in declared order:
-  `.branch(when(cond), child)`, `.prompt(...)`, `.call(...)`, `.check(...)`.
+  `.branch(when(cond), child)`, `.prompt(...)`, `.call(...)`, `.check(...)`,
+  `.memory(...)`.
   No overriding; authors must not expect switch-like behavior. (See Trees
   Are Containers.)
 

@@ -257,3 +257,47 @@ test('memory out feeds the next run (sessions)', async () => {
   assert.equal(second.result, 'v2');
   assert.ok(second.memory['s#1'] === 'v2');
 });
+
+test('.memory() writes to a named slot, no m.prev output', async () => {
+  const seen = [];
+  const handler = scripted(['hello', 'result']);
+  const pattern = Tree.name('m')
+    .prompt(m => 'hello')
+    .memory('greeting', (m, cur) => m.prev[0])
+    .prompt(m => { seen.push({ greeting: m.branch.greeting, prevLen: m.prev.length }); return 'result'; });
+
+  const { result, memory } = await grandma.knit(pattern, mockRuntime(handler));
+  // memory slot was written
+  assert.equal(memory.greeting, 'hello');
+  // .memory() does not appear in m.prev — the second prompt sees only the first prompt
+  assert.equal(seen[0].greeting, 'hello');
+  assert.equal(seen[0].prevLen, 1);
+});
+
+test('.memory() with gate skips when gate is false', async () => {
+  const handler = scripted(['val']);
+  const pattern = Tree.name('m')
+    .prompt(m => 'val')
+    .memory(when(m => false), 'skipped', (m, cur) => 'should not run')
+    .prompt(m => m.branch.skipped ?? 'empty');
+
+  const { memory } = await grandma.knit(pattern, mockRuntime(handler));
+  assert.equal(memory.skipped, undefined);
+});
+
+test('.memory() accumulates across loop iterations', async () => {
+  let i = 0;
+  const handler = async () => {
+    const n = i++;
+    if (n < 3) return { content: `item-${n}` };
+    return { content: 'done' };
+  };
+  const pattern = Tree.name('loop')
+    .prompt(m => `iter`)
+    .memory('items', (m, cur) => [...(cur ?? []), m.prev[0]])
+    .until(m => m.prev[0] === 'done', max(5));
+
+  const { memory } = await grandma.knit(pattern, mockRuntime(handler));
+  // items accumulated across all iterations including the final 'done' pass
+  assert.deepEqual(memory.items, ['item-0', 'item-1', 'item-2', 'done']);
+});

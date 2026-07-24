@@ -126,6 +126,25 @@ function makeBuilder(def) {
       return next(def, (d) => { d.children.push(child); });
     },
 
+    // Accumulative: append a memory-write leaf (side-effect only, no m.prev output).
+    //   .memory(name, fn)               — fn(m) or fn(m, currentValue) → stored value
+    //   .memory(when(cond), name, fn)
+    memory(...rawArgs) {
+      const { gate, args } = takeGate(rawArgs, '.memory()');
+      const name = args.shift();
+      if (typeof name !== 'string' || name.length === 0) {
+        throw new TypeError(".memory(): first argument must be the slot name (string), e.g. .memory('tried', (m, cur) => [...cur ?? [], m.prev[0]])");
+      }
+      assertValidName(name, '.memory()');
+      const fn = args.shift();
+      if (typeof fn !== 'function') {
+        throw new TypeError('.memory(): second argument must be a function');
+      }
+      if (args.length !== 0) throw new TypeError('.memory(): too many arguments');
+      const child = { kind: 'memory', name, fn, gate };
+      return next(def, (d) => { d.children.push(child); });
+    },
+
     // Selective: model rules, last match wins.
     model(...rawArgs) {
       const { gate, args } = takeGate(rawArgs, '.model()');
