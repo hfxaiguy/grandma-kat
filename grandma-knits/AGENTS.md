@@ -399,6 +399,64 @@ check passes. Re-run prompts incorporate it — `${m.error ?? '...'}` — so
 retry feedback flows without polluting `m.prev` positional addressing.
 Control-flow artifacts never appear in `prev`.
 
+## Persistence: Logging and Sessions (chosen)
+
+Two separate concerns with different stores: the **call log** (looking
+backward — observability) and **session memory** (going forward —
+continuity across runs).
+
+### Call log: SQLite
+
+Every event worth debugging is a row — including flow-control events, which
+are first-class:
+
+| Column | Contents |
+|---|---|
+| `run_id` | Timestamp-based run identifier |
+| `definition_id` | Root step name + tree hash (which *version* ran) |
+| `seq` | Auto-increment, global execution order |
+| `step_path` | Path from root: `agent/draft#1`, `agent/judge#3` |
+| `iteration` | Loop pass number (0 for non-looped) |
+| `kind` | `llm_call` · `tool_call` · `tool_result` · `check` · `gate` · `flow` · `skip` |
+| `content` | JSON — messages, response, tool args/result, check feedback, goback target, ... |
+
+The `kind` column is the upgrade over the root spec: checks failing, gates
+evaluating false, gobacks rewinding are exactly what you debug, so they're
+queryable rows — the promised "rule 'retry case' matched" observability.
+Since `prev` rewinds drop outputs from memory, **the log is where dead
+outputs live.**
+
+Pluggable via `grandma.run(tree, { logger })` — default SQLite logger at a
+standard path; JSONL or console logger for tests.
+
+### Session memory: memory-in, memory-out
+
+Memory is a plain-data scope chain, so runs are memory-in, memory-out:
+
+```js
+const { result, memory } = await grandma.run(tree, {
+  models: config.models,
+  tools: registry,
+  memory: previousRootMemory,   // optional initial root scope
+});
+// save `memory`; feed it into the next run
+```
+
+A "session" is just **the root scope threaded through runs** — no session
+manager, no session IDs. Serialization is trivial (memory values are plain
+JSON); where it lives between runs (file, DB, Redis) is the application's
+choice.
+
+**Invariant:** memory values must stay JSON-serializable, forever.
+
+### Resume: deferred
+
+Mid-run resume (checkpoint memory + execution position + edge counters,
+restart after a crash) is **not** in v1. Runs are atomic; the log tells you
+how far a dead run got. Resume is hard to get right (in-flight edge
+counters, in-progress tool loops, gate state) — design it when a real case
+demands it.
+
 ## YAML vs JS: JS chosen (for now)
 
 Target authors: **LLMs write, humans edit.**
