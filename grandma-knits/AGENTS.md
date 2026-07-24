@@ -563,9 +563,16 @@ invisible, contract explicit.
 **Naming (chosen):** the direct tool-call step is `.call(name, argsFn)`,
 not `.tool()` — one letter from `.tools()`, too confusable.
 
-**Validation timing (open):** `.needs()` validates at build time, but tools
-come from the runtime registry, so tool names can only be checked at run
-start. Should fail loudly before the first LLM call.
+**Validation timing (chosen): up-front at `run()` start.** The runner walks
+the whole tree, collects every `.tools()` reference, and diffs against the
+injected registry *before anything executes* — unknown names throw
+immediately, listing every miss with its step path (`agent#2 references
+unknown tool 'navigte' — did you mean 'navigate'?`). No partial validation,
+no failing when the step is reached: a tree referencing missing tools is
+rejected wholesale, one error with all the typos. `grandma.compile()` runs
+the same check at compile time. Loud on missing, lenient on ugly: a
+registered tool with a sparse schema (no description, minimal params)
+warns but proceeds — schema quality is the registry's own business.
 
 ### Conditional rules everywhere (proposed)
 
@@ -650,11 +657,14 @@ keeps behavior predictable for LLM writers and the engine simple.
 
 ## Open Questions
 
-*No numbered questions remain.* Minor open items live inline: tool
-validation timing (Per-step tools), plus deferred items (tool-call pause
-mode, escalation promotion, YAML authoring layer).
+*No questions remain.* Only deferred items: tool-call pause mode,
+escalation promotion, YAML authoring layer.
 
 Resolved:
+
+- ~~Tool validation timing~~ → up-front at `run()` start: whole-tree diff
+  against the registry before the first call; loud on missing, lenient on
+  ugly (see Per-step tools).
 
 - ~~Attachment-site vs step-owned conditions~~ → attachment-site only;
   intrinsic gating via a `.check()` child (see Conditional rules, gotcha
