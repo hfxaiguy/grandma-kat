@@ -10,14 +10,15 @@
 //   1. navigate_initial          (gated on m.url) — open the target page
 //   2. get_page                  — dump body text, url, title via exec_js
 //   3. check_address             — prompt: "does this page have an address?"
-//   4. scan_clickables           (gated on check_address saying "no")
-//   5. format_clickables         (gated on "no")
-//   6. get_tried                 (gated on "no")
-//   7. pick_action               (gated on "no")
-//        ┌── prompt with tools (navigate/click)
-//        ├── .check — retries on missing/invalid tool calls
-//        └── record_tried — appends the executed tool call's args to tried
-//   8. wait_for_load             (gated on pick_action emitting a tool call)
+//   4. try_find                  (gated on check_address saying "no")
+//        ├── scan_clickables
+//        ├── format_clickables
+//        ├── get_tried
+//        ├── pick_action
+//        │     ├── prompt with tools (navigate/click)
+//        │     ├── .check — retries on missing/invalid tool calls
+//        │     └── record_tried — appends the executed tool call's args to tried
+//        └── wait_for_load       (gated on pick_action emitting a tool call)
 //
 //   .until(address found, max(3)) — the outer loop. max(3) is one initial
 //        pass plus three retries; the runner reports a loud KnitError on
@@ -97,13 +98,6 @@ const RECORD_TRIED_CODE = `(() => {
 
 export function createFindAddressPattern({ model = 'default' } = {}) {
   const needsMore = (m) => isNo(m.branch.check_address);
-  // pick_action emits a tool call when it has work to do. We surface that
-  // by reading the prompt's record — the agentic loop's toolCalls land on
-  // the prompt's raw record.
-  const pickEmittedTool = (m) => {
-    const tc = m.raw.prev[0]?.toolCalls?.[0];
-    return Boolean(tc && tc.name);
-  };
 
   return Tree.name('find-address')
     .model(model)
@@ -117,64 +111,57 @@ export function createFindAddressPattern({ model = 'default' } = {}) {
         { role: 'user', content: `Page text:\n\n${m.branch.get_page?.text ?? ''}` },
         { role: 'user', content: STEP1_PROMPT },
       ]))
-    .call(when(needsMore), 'scan_clickables', 'scan_clickables', () => ({}))
-    .call(when(needsMore), 'format_clickables', 'exec_js', m => ({
-      code: FORMAT_CLICKABLES_CODE.replace(
-        '__CLICKABLES__',
-        JSON.stringify(m.branch.scan_clickables ?? [])
-      ),
-    }))
-    .call(when(needsMore), 'get_tried', 'exec_js', () => ({ code: GET_TRIED_CODE }))
+    // Everything below is gated on check_address returning "no" — one gate
+    // for the whole "try to find the address" sub-tree.
     .branch(when(needsMore),
-      Tree.name('pick_action')
-        .tools('navigate', 'click')
-        .prompt(m => [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: STEP3_PROMPT
-            .replace('{candidates}', m.branch.format_clickables || '(none)')
-            .replace('{tried}', m.branch.get_tried || '[]')
-            .replace('{feedback}', m.error ? `\nPrevious attempt: ${m.error}\n` : '') },
-        ])
-        .check(
-          m => {
-            // Validate tool calls when the LLM makes one. Plain-text
-            // responses are accepted as a pass when they look like an
-            // explicit "I'm done" signal — "no", "no candidates",
-            // "nothing useful", etc. The check is loose because the
-            // STEP3 prompt instructs the LLM to say "no candidates" when
-            // nothing looks promising; we don't want to retry-loop on
-            // that. A long-form or off-topic response is rejected so the
-            // LLM is nudged to either commit to a tool call or explicitly
-            // say no.
-            const tc = m.raw.prev[0]?.toolCalls?.[0];
-            if (!tc) {
-              const text = String(m.prev[0] ?? '').trim().toLowerCase();
-              if (!text) return 'Empty response. Call navigate/click or say "no candidates".';
-              if (text.length < 80 && /\bno\b/.test(text)) return true;
-              return 'Did not call a tool. Call navigate/click, or respond with "no candidates".';
-            }
-            try { JSON.parse(tc.arguments); return true; }
-            catch { return 'Invalid JSON in tool call arguments.'; }
-          },
-          goback(1, max(3, m => `pick_action gave up: ${m.error}`))
-        )
-        // record_tried is a sibling of the prompt inside pick_action so it
-        // can read the prompt's record via m.raw.prev[0] (no scope-chain
-        // gymnastics). It's gated on the check having passed *and* a tool
-        // having actually been called.
-        .call(when(m => {
-            const tc = m.raw.prev[0]?.toolCalls?.[0];
-            return Boolean(tc && tc.name);
-          }),
-          'exec_js',
-          m => ({
-            code: RECORD_TRIED_CODE.replace(
-              '__TOOL_CALL__',
-              JSON.stringify(m.raw.prev[0]?.toolCalls?.[0] ?? null)
-            ),
-          })))
-    .call(when(m => needsMore(m) && pickEmittedTool(m)),
-      'wait_for_load', 'wait_for_load', () => ({ timeoutMs: 10000 }))
+      Tree.name('try_find')
+        .call('scan_clickables', 'scan_clickables', () => ({}))
+        .call('format_clickables', 'exec_js', m => ({
+          code: FORMAT_CLICKABLES_CODE.replace(
+            '__CLICKABLES__',
+            JSON.stringify(m.branch.scan_clickables ?? [])
+          ),
+        }))
+        .call('get_tried', 'exec_js', () => ({ code: GET_TRIED_CODE }))
+        .branch(Tree.name('pick_action')
+          .tools('navigate', 'click')
+          .prompt(m => [
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: STEP3_PROMPT
+              .replace('{candidates}', m.branch.format_clickables || '(none)')
+              .replace('{tried}', m.branch.get_tried || '[]')
+              .replace('{feedback}', m.error ? `\nPrevious attempt: ${m.error}\n` : '') },
+          ])
+          .check(
+            m => {
+              const tc = m.raw.prev[0]?.toolCalls?.[0];
+              if (!tc) {
+                const text = String(m.prev[0] ?? '').trim().toLowerCase();
+                if (!text) return 'Empty response. Call navigate/click or say "no candidates".';
+                if (text.length < 80 && /\bno\b/.test(text)) return true;
+                return 'Did not call a tool. Call navigate/click, or respond with "no candidates".';
+              }
+              try { JSON.parse(tc.arguments); return true; }
+              catch { return 'Invalid JSON in tool call arguments.'; }
+            },
+            goback(1, max(3, m => `pick_action gave up: ${m.error}`))
+          )
+          .call(when(m => {
+              const tc = m.raw.prev[0]?.toolCalls?.[0];
+              return Boolean(tc && tc.name);
+            }),
+            'exec_js',
+            m => ({
+              code: RECORD_TRIED_CODE.replace(
+                '__TOOL_CALL__',
+                JSON.stringify(m.raw.prev[0]?.toolCalls?.[0] ?? null)
+              ),
+            })))
+        // wait_for_load only fires when pick_action actually called a tool.
+        // record_tried only runs when a tool was called, so checking for
+        // its existence is the signal.
+        .call(when(m => m.branch.record_tried != null),
+          'wait_for_load', 'wait_for_load', () => ({ timeoutMs: 10000 })))
     .until(
       m => !isNo(m.branch.check_address),
       max(3, m => `find-address: gave up after 3 iterations: ${m.error ?? 'address not found'}`)
