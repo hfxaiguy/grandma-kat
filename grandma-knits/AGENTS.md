@@ -502,25 +502,41 @@ Original discussion: retry-with-verification = *a parent re-running its
 substeps*; loops get a `max()` bound (or the framework default cap) —
 LLM-authored loops without bounds burn tokens forever.
 
-### Per-step model
+### Per-step model (resolved)
 
-Each step can run with a different model: `.model(...)` on any step, with
+Each step can run with a different model: `.model(name)` on any step, with
 inheritance down the tree — step → parent step → root → runtime default.
 Build-time validation: every step must resolve to a model before execution
 (matches the root spec's model-inheritance rule).
+
+**The argument is a named model from config (chosen).** The config's job is
+to define *named models*, not providers-with-one-model-each — each entry
+carries the full connection (`baseURL` + `apiKey` + model ID):
+
+```json
+"models": {
+  "cheap":  { "baseURL": "http://localhost:8080/v1", "apiKey": "no-key", "model": "LFM2.5-1.2B" },
+  "strong": { "baseURL": "http://localhost:8080/v1", "apiKey": "no-key", "model": "Qwen3-32B" }
+}
+```
+
+```js
+.model('cheap')    // classification steps
+.model('strong')   // synthesis steps
+```
+
+One concept covers both "different endpoint" and "same endpoint, different
+model" — the name is the unit. Broken provider/model combos are
+unrepresentable; there's no `.provider()` / raw-ID escape hatch to get
+wrong. For LLM authors, one obvious way wins.
 
 Use case: cheap/small model for simple classification steps (the "yes/no"
 checks in `find-listings`), stronger model for synthesis — cost/latency
 optimization per step.
 
-Open: what does the argument reference?
-
-- **Provider name** (`'local'`, `'huggingface'`) — pulls baseURL + API key +
-  model from `threads.config.json`. One source of truth.
-- **Raw model ID** — overrides the model on the current provider. More
-  flexible, but allows broken provider/model combos.
-- Could be split into `.provider()` / `.model()` — but for LLM authors, one
-  obvious way is better.
+Config note: this reshapes `threads.config.json` from a `providers` map to
+a `models` map for grandma-kat (existing prototyping scripts keep their
+format).
 
 ### Per-step tools
 
@@ -635,13 +651,16 @@ keeps behavior predictable for LLM writers and the engine simple.
 
 ## Open Questions
 
-*No numbered questions remain.* Minor open items live inline: model
-reference semantics (Per-step model), attachment-site vs step-owned
-conditions (Conditional rules, gotcha #3), tool validation timing
-(Per-step tools), plus deferred items (tool-call pause mode, escalation
-promotion, YAML authoring layer).
+*No numbered questions remain.* Minor open items live inline:
+attachment-site vs step-owned conditions (Conditional rules, gotcha #3),
+tool validation timing (Per-step tools), plus deferred items (tool-call
+pause mode, escalation promotion, YAML authoring layer).
 
 Resolved:
+
+- ~~Model reference~~ → `.model(name)` references a named model in config;
+  config defines a `models` map, each entry carrying full connection
+  details (see Per-step model).
 
 - ~~Skip semantics~~ → a skip is a non-write; `.needs(X)` errors on lookup
   miss via the scope chain (which ancestors may satisfy); permissive =
