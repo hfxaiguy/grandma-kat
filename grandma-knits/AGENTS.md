@@ -2,7 +2,7 @@
 
 **Grandma Knits Agent Trees** ("Grandma KAT" for short) — LLM/Threads
 tooling: a factory-builder library for composing LLM execution units
-("Steps") with nesting, memory, and reuse.
+("Trees") with nesting, memory, and reuse.
 
 **Status: design phase.** This document captures design decisions and
 considerations. Nothing is implemented yet.
@@ -13,53 +13,61 @@ considerations. Nothing is implemented yet.
   `node_modules/` — same pattern as `browser-mcp/`.
 - Package name: `grandma-kat` (full name: "Grandma Knits Agent Trees").
 
-## Core Design: Step Factory
+## Core Design: Tree Factory
 
-- The basic unit is a `Step`. Steps chain together; steps can have substeps.
-- `Step` is a **factory**: chained builder methods define the step; the
-  output is a **definition** (plain data), executed by a runner (see
-  "Factory output" below).
+- The basic unit is a `Tree`. Trees chain together; trees have branches
+  (subtrees).
+- `Tree` is a **factory**: chained builder methods define the tree; the
+  output is a **definition** (plain data), executed by the runner
+  `grandma.knit()` (see "Factory output" below).
+
+**Vocabulary (naming).** Structure/authoring: **Tree** (the factory),
+**branch** (a named subtree via `.branch()`), **leaf** (anonymous child —
+prompt/tool/check). Execution/memory: **step** (`m.step.X`, `step_path`).
+Name definition variables **`pattern`** — `const pattern =
+Tree.name('x')...; grandma.knit(pattern)` reads as a sentence and keeps LLM
+authors consistent.
 
 ```js
-Step
-  .name('step_id')                                  // register into a global registry for reuse
-  .step(Step.name('navigate').prompt(...))          // attach a substep
+Tree
+  .name('tree_id')                                  // register into a global registry for reuse
+  .branch(Tree.name('navigate').prompt(...))        // attach a sub-branch
   .prompt(memory => `current memory: ${memory.step.navigate}`)
 ```
 
-- `.name(id)` — names the step into a global registry so it can be reused
-- `.step(child)` — attaches a substep (composition/nesting)
+- `.name(id)` — names the tree into a global registry so it can be reused
+- `.branch(child)` — attaches a sub-branch (composition/nesting)
 - `.prompt(fn)` — defines the LLM prompt; `fn` receives memory and returns
   the prompt string
-- Memory is keyed by step name (`memory.step.navigate`) — a parent step
-  reads what its substeps produced (see Memory Model below)
+- Memory is keyed by step name (`memory.step.navigate`) — a parent tree
+  reads what its branches produced (see Memory Model below)
 
-### API style: substeps as arguments (chosen)
+### API style: branches as arguments (chosen)
 
 ```js
-Step.name('a').step(Step.name('b').prompt(...))
+Tree.name('a').branch(Tree.name('b').prompt(...))
 ```
 
-Rejected alternative — substeps as chained blocks:
+Rejected alternative — branches as chained blocks:
 
 ```js
-Step.name('a').step.runif(cond).prompt().step ...
+Tree.name('a').branch.runif(cond).prompt().branch ...
 ```
 
 Reasons:
 
 - Nesting is unambiguous — parentheses make the hierarchy explicit.
-- Reuse is natural — assign a step to a variable, drop it into multiple
+- Reuse is natural — assign a tree to a variable, drop it into multiple
   parents.
-- The chained-block style can't distinguish sibling vs nested substeps
+- The chained-block style can't distinguish sibling vs nested branches
   without an `.end()` / `.back()` mechanism, which gets ugly.
 
 ### Conditions (superseded)
 
-An early sketch put `.runif(cond)` on the step itself so the condition
+An early sketch put `.runif(cond)` on the tree itself so the condition
 would travel with reuse. Superseded: gates live at the attachment site only
-(`.step(when(cond), child)`); step-owned/intrinsic gating is expressed with
-a `.check()` child inside the step (see Conditional rules, gotcha #3).
+(`.branch(when(cond), child)`); tree-owned/intrinsic gating is expressed
+with a `.check()` child inside the tree (see Conditional rules, gotcha #3).
 
 ### Factory output: a definition, executed by a runner (chosen)
 
@@ -68,14 +76,14 @@ The builder does **not** produce an executable function. It accumulates a
 executes it with an injected runtime:
 
 ```js
-const tree = Step.name('draft-and-verify')
-  .step(Step.name('draft').prompt(m => `Write about ${m.task}`))
-  .step(Step.name('verify').needs('draft').prompt(m => `Check: ${m.step.draft}`))
+const pattern = Tree.name('draft-and-verify')
+  .branch(Tree.name('draft').prompt(m => `Write about ${m.task}`))
+  .branch(Tree.name('verify').needs('draft').prompt(m => `Check: ${m.step.draft}`))
   .until(m => m.step.verify === 'pass', max(3));
 
-// tree is just data — an AST of rule lists and children
+// pattern is just data — an AST of rule lists and children
 
-const result = await grandma.run(tree, {
+const result = await grandma.knit(pattern, {
   provider: 'local',
   tools: toolRegistry,
 });
@@ -84,7 +92,7 @@ const result = await grandma.run(tree, {
 Why not the alternatives:
 
 - **Callable builder** (the chain result is itself the executable function):
-  aliasing traps if methods mutate-and-return-`this` (attach a step to two
+  aliasing traps if methods mutate-and-return-`this` (attach a tree to two
   parents, add a rule via one reference, both silently change); magic if
   methods return new function-objects each time. Validation gets smeared
   across the chain instead of one checkpoint.
@@ -94,7 +102,7 @@ Why not the alternatives:
 
 Why the runner wins:
 
-- **One loud validation checkpoint** — `run()` sees the whole tree before
+- **One loud validation checkpoint** — `knit()` sees the whole tree before
   the first LLM call: unresolved models, `.needs()` with no producer,
   shadowed rules, unknown tool names.
 - **Explicit runtime injection** — same tree runs against different
@@ -107,25 +115,25 @@ Why the runner wins:
   model override applied."
 
 Implementation note: builder methods return **new definitions** rather than
-mutating (cheap spread-copy), so sharing a step across parents is
+mutating (cheap spread-copy), so sharing a tree across parents is
 bulletproof.
 
 Escape hatch: `grandma.compile(tree, runtime)` → plain async function, for
 handing a compiled subtree to an external system as a tool.
 
-## Steps Are Containers: a prompt is always a child (chosen)
+## Trees Are Containers: a prompt is always a child (chosen)
 
-`.prompt()` never makes a step *be* a prompt — it always **appends an
-anonymous child**. A named step is a pure container with config (`.name`,
+`.prompt()` never makes a tree *be* a prompt — it always **appends an
+anonymous child**. A named tree is a pure container with config (`.name`,
 `.model`, `.tools`, `.needs`, `.until`, gates); all *doing* lives in
 children. Leaves are anonymous invocation nodes: prompt-leaves (from
 `.prompt()`), tool-leaves (from `.call()`), check-leaves (from `.check()`,
 which produce no output on pass). Internal nodes are named containers.
 
 ```js
-Step.name('draft').prompt(m => `Write about ${m.task}`)
+Tree.name('draft').prompt(m => `Write about ${m.task}`)
 
-// draft        ← container (named step)
+// draft        ← container (named tree)
 //  └─ draft#1  ← anonymous prompt child (leaf)
 ```
 
@@ -134,17 +142,16 @@ Step.name('draft').prompt(m => `Write about ${m.task}`)
 container — the extra tree level is invisible from outside.
 
 **Execution order** (resolves that open question): children run
-sequentially in declared order, `.step()` and `.prompt()` mixed freely.
+sequentially in declared order, `.branch()` and `.prompt()` mixed freely.
 Gates re-evaluate lazily whenever the child is reached (including each loop
 iteration). There is no "parent's own prompt" to order against children —
-only children exist. A named step with zero children is a build error.
+only children exist. A named tree with zero children is a build error.
 
 **Chained prompts are sequences.** `.prompt(a).prompt(b)` runs both, in
-declared order (accumulative, like `.step()`) — NOT last-match-wins. Rule
-of thumb: *doing* methods (`.step`, `.prompt`, `.call`, `.check`)
+declared order (accumulative, like `.branch()`) — NOT last-match-wins. Rule
+of thumb: *doing* methods (`.branch`, `.prompt`, `.call`, `.check`)
 accumulate; *config* methods (`.model`, `.until`) select. Prompt variants
-are expressed as gated
-children:
+are expressed as gated children:
 
 ```js
 .prompt('draft',  when(m => !m.step.verify), m => `Write the thing`)
@@ -154,7 +161,7 @@ children:
 Each variant gets its own memory slot (`m.step.draft` AND `m.step.revise`
 both exist) — richer for verification and logging.
 
-Rejected alternative — *leaf special case* ("one prompt = the step itself;
+Rejected alternative — *leaf special case* ("one prompt = the tree itself;
 multiple prompts = children"): the node's structure silently changes when
 you add a second prompt — a local edit with nonlocal effects (auto-names
 shift, memory layout shifts, logs shift). Bad for LLM authors.
@@ -182,7 +189,7 @@ Anonymous prompt children receive build-time names: `${parentName}#${k}`
 the one before that, etc.
 
 ```js
-Step.name('pipeline')
+Tree.name('pipeline')
   .prompt(m => `Outline: ${m.task}`)                    // m.prev = []
   .prompt(m => `Draft from: ${m.prev[0]}`)              // prev[0] = outline
   .prompt(m => `Compare ${m.prev[0]} to ${m.prev[1]}`)  // prev[0] = draft, prev[1] = outline
@@ -206,7 +213,7 @@ option. Flow control is a **relative, bounded** jump within the current
 container's children, not an arbitrary goto.
 
 ```js
-Step.name('agent')
+Tree.name('agent')
   .tools('navigate', 'click')
   .prompt(m => `Define success conditions for: ${m.task}`)
   .prompt(m => `Attempt: ${m.prev[0]}`)
@@ -263,7 +270,7 @@ where a bad summary is usually the *search*'s fault, not the summary
 prompt's:
 
 ```js
-Step.name('research')
+Tree.name('research')
   .tools('search', 'fetch')
   .prompt(m => `Plan search queries for: ${m.task}. ${m.error ?? ''}`)     // child 1: plan
   .prompt(m => `Search using: ${m.prev[0]}. ${m.error ?? ''}`)             // child 2: search
@@ -426,7 +433,7 @@ queryable rows — the promised "rule 'retry case' matched" observability.
 Since `prev` rewinds drop outputs from memory, **the log is where dead
 outputs live.**
 
-Pluggable via `grandma.run(tree, { logger })` — default SQLite logger at a
+Pluggable via `grandma.knit(pattern, { logger })` — default SQLite logger at a
 standard path; JSONL or console logger for tests.
 
 ### Session memory: memory-in, memory-out
@@ -434,7 +441,7 @@ standard path; JSONL or console logger for tests.
 Memory is a plain-data scope chain, so runs are memory-in, memory-out:
 
 ```js
-const { result, memory } = await grandma.run(tree, {
+const { result, memory } = await grandma.knit(pattern, {
   models: config.models,
   tools: registry,
   memory: previousRootMemory,   // optional initial root scope
@@ -499,7 +506,7 @@ special skip semantics exist; the ordinary memory rules decide:
   producer was skipped.
 - Want permissive? Don't declare the need — read defensively
   (`m.step.X ?? ...`). No declaration, no error.
-- Want cascade-skipping? Write a gate: `.step(when(m => m.step.X), child)`.
+- Want cascade-skipping? Write a gate: `.branch(when(m => m.step.X), child)`.
   Visible in the tree and logs, never a hidden rule.
 
 Consequence: declare needs only for inputs present at **first execution**.
@@ -532,10 +539,10 @@ function are just mechanisms for producing the value.
 
 ### Defined inputs
 
-Steps declare what they expect in memory: `.needs('draft', 'navigate')`.
+Trees declare what they expect in memory: `.needs('draft', 'navigate')`.
 Motivation: this is the **validation story for LLM authors**.
 
-- Build-time check: every declared input has a producing step somewhere in
+- Build-time check: every declared input has a producing tree somewhere in
   the thread (fail loudly on hallucinated names).
 - Scoped memory: the prompt fn receives only declared inputs, not the whole
   soup — smaller context, fewer bad references.
@@ -555,7 +562,7 @@ slots (`m.step.X`) persist until overwritten; full history lives in
 `m.raw.calls` and logs.
 
 Original discussion: retry-with-verification = *a parent re-running its
-substeps*; loops get a `max()` bound (or the framework default cap) —
+branches*; loops get a `max()` bound (or the framework default cap) —
 LLM-authored loops without bounds burn tokens forever.
 
 ### Per-step model (resolved)
@@ -604,7 +611,7 @@ registry, sent as function-calling schemas. Default: no tools.
 for per-leaf config — so `.tools()` on a container applies to all its
 prompt children (resolution up the scope chain, like `.model()`). Opt out
 per prompt via options bag: `.prompt(fn, { tools: [] })`. Per-prompt tool
-sets → use named substeps.
+sets → use named branches.
 
 **Round-trips: internal agentic loop (chosen).** When the LLM responds with
 tool calls, the prompt-leaf executes them via the runtime registry, appends
@@ -618,10 +625,10 @@ against a concrete approval use case. The protocol details (matching
 fumble — hiding them in the leaf mirrors the autoname contract: machinery
 invisible, contract explicit.
 
-**Naming (chosen):** the direct tool-call step is `.call(name, argsFn)`,
+**Naming (chosen):** the direct tool-call leaf is `.call(name, argsFn)`,
 not `.tool()` — one letter from `.tools()`, too confusable.
 
-**Validation timing (chosen): up-front at `run()` start.** The runner walks
+**Validation timing (chosen): up-front at `knit()` start.** The runner walks
 the whole tree, collects every `.tools()` reference, and diffs against the
 injected registry *before anything executes* — unknown names throw
 immediately, listing every miss with its step path (`agent#2 references
@@ -637,7 +644,7 @@ warns but proceeds — schema quality is the registry's own business.
 Every builder method takes an optional condition as its first argument,
 wrapped in `when()` (syntax chosen — see gotcha #1):
 `.model(when(run_if), model)`, `.prompt(when(run_if), prompt_fn)`,
-`.step(when(run_if), child)`, `.until(when(run_if), check)`. Each call
+`.branch(when(run_if), child)`, `.until(when(run_if), check)`. Each call
 appends a `(condition, value)` rule to a per-method rule list; rules are
 evaluated lazily at the point of use, against memory.
 
@@ -658,7 +665,7 @@ a gate. The override pattern puts defaults first:
 .until(when(m => m.step.plan.mode === 'interactive'), m => m.step.confirm === 'yes')  // gated loop check
 ```
 
-(Note: `.prompt()` is accumulative, not selective — see Steps Are
+(Note: `.prompt()` is accumulative, not selective — see Trees Are
 Containers. Prompt "variants" are gated children, not overrides.)
 
 Ordering convention: **general first, specific later** — the reverse of
@@ -672,14 +679,14 @@ may import either convention by habit.
 - *Selective (config)* — one value is chosen: `.model()`, `.until()`. Last
   matching rule wins.
 - *Accumulative (doing)* — every matching rule applies, in declared order:
-  `.step(when(cond), child)`, `.prompt(...)`, `.call(...)`, `.check(...)`.
-  No overriding; authors must not expect switch-like behavior. (See Steps
+  `.branch(when(cond), child)`, `.prompt(...)`, `.call(...)`, `.check(...)`.
+  No overriding; authors must not expect switch-like behavior. (See Trees
   Are Containers.)
 
-Defaults when no rule matches: `.model()` → inherit from parent; `.step()` /
+Defaults when no rule matches: `.model()` → inherit from parent; `.branch()` /
 `.prompt()` / `.call()` → child not attached (this largely subsumes
 `.skipif` / `.runif` as separate concepts); `.until()` → no loop. A named
-step with zero attached children is a build error (see Steps Are
+tree with zero attached children is a build error (see Trees Are
 Containers).
 
 **Gotchas / validation:**
@@ -697,19 +704,19 @@ Containers).
 2. *Shadowed rules* — a conditional rule followed by an unconditional rule
    is dead code (the unconditional one always overwrites it). Build-time
    warning.
-3. *Attachment-site vs step-owned conditions (resolved)* — gates live at
-   the attachment site **only**: `.step(when(cond), child)`. Step-owned /
-   intrinsic gating is expressed with a `.check()` child inside the step
-   itself — the check IS the step's own gate, visible in its tree. One gate
+3. *Attachment-site vs tree-owned conditions (resolved)* — gates live at
+   the attachment site **only**: `.branch(when(cond), child)`. Tree-owned /
+   intrinsic gating is expressed with a `.check()` child inside the tree
+   itself — the check IS the tree's own gate, visible in its tree. One gate
    location to learn; no AND-ed two-gate semantics.
 4. *Dynamic trees* — conditional attachment means `.needs()` can only check
-   "a producer exists among potentially attached steps"; runtime
+   "a producer exists among potentially attached branches"; runtime
    missing-input handling follows skip semantics (see Open Questions).
 
 ### Unified lifecycle (proposed)
 
-Every step gets the same lifecycle: **gate-check → collect declared inputs →
-produce value (prompt / call / substeps) → store in memory under its name →
+Every tree gets the same lifecycle: **gate-check → collect declared inputs →
+produce value (prompt / call / branches) → store in memory under its name →
 flow control (`.check()` / `goback()` / `.until()`)**. One uniform shape
 keeps behavior predictable for LLM writers and the engine simple.
 
@@ -720,11 +727,11 @@ escalation promotion, YAML authoring layer.
 
 Resolved:
 
-- ~~Tool validation timing~~ → up-front at `run()` start: whole-tree diff
+- ~~Tool validation timing~~ → up-front at `knit()` start: whole-tree diff
   against the registry before the first call; loud on missing, lenient on
   ugly (see Per-step tools).
 
-- ~~Attachment-site vs step-owned conditions~~ → attachment-site only;
+- ~~Attachment-site vs tree-owned conditions~~ → attachment-site only;
   intrinsic gating via a `.check()` child (see Conditional rules, gotcha
   #3).
 
@@ -742,7 +749,7 @@ Resolved:
   executes it with injected runtime (see Factory output).
 - ~~Execution order~~ → prompts are always children (Model B: container);
   children run sequentially in declared order; container value = last
-  executed child's result (see Steps Are Containers).
+  executed child's result (see Trees Are Containers).
 - ~~Loop construct~~ → `.until()` is sugar for end-of-container `.check()` +
   `goback(all)`; relative bounded jumps, arbitrary goto deferred (see
   Validation and Flow Control).
