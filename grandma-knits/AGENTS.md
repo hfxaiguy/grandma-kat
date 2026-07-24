@@ -430,18 +430,31 @@ later, if non-code tooling ever needs to read thread structure.
 The following points are under active discussion — proposals and tradeoffs,
 not settled decisions.
 
-### Skippable steps
+### Skippable steps (resolved)
 
-A step should be skippable (`.skipif(cond)` / `.runif(cond)`). Open: what do
-downstream steps see when a producer was skipped?
+A gated-out child simply doesn't run — **a skip is just a non-write**. No
+special skip semantics exist; the ordinary memory rules decide:
 
-1. Error (fail loudly)
-2. Dependent step is skipped too (cascade, GitHub Actions style)
-3. Dependent runs with `memory.step.A === undefined` (permissive)
+- `.needs(X)` → X must resolve via the scope chain when the step runs, else
+  a loud error. That's the entire rule — the error fires on *lookup miss*,
+  not on "producer was skipped." Because memory is a scope chain, X may
+  resolve from an ancestor anyway (root inputs, a same-named step in
+  another branch, a grandparent's slot) even when the intended sibling
+  producer was skipped.
+- Want permissive? Don't declare the need — read defensively
+  (`m.step.X ?? ...`). No declaration, no error.
+- Want cascade-skipping? Write a gate: `.step(when(m => m.step.X), child)`.
+  Visible in the tree and logs, never a hidden rule.
 
-Leaning: required inputs by default + explicit "optional" marker; missing
-required input due to a skip either errors or cascades. Interacts with
-loops (below).
+Consequence: declare needs only for inputs present at **first execution**.
+Loop-carried reads (draft reading `m.step.verify` on iteration 1) must stay
+undeclared — hence the defensive-read style in all examples
+(`${m.step.verify ?? ''}`).
+
+Build-time validation: hard error for needs that appear nowhere in the tree
+(hallucinated producer); soft warning for needs whose only producers are
+gated or later-in-loop (may still be satisfied by root memory at runtime —
+unknowable at build time).
 
 ### Prompt shapes
 
@@ -622,10 +635,17 @@ keeps behavior predictable for LLM writers and the engine simple.
 
 ## Open Questions
 
-1. **Skip semantics** — error vs cascade vs permissive when a declared
-   input's producer was skipped?
+*No numbered questions remain.* Minor open items live inline: model
+reference semantics (Per-step model), attachment-site vs step-owned
+conditions (Conditional rules, gotcha #3), tool validation timing
+(Per-step tools), plus deferred items (tool-call pause mode, escalation
+promotion, YAML authoring layer).
 
 Resolved:
+
+- ~~Skip semantics~~ → a skip is a non-write; `.needs(X)` errors on lookup
+  miss via the scope chain (which ancestors may satisfy); permissive =
+  don't declare; cascade = write a gate (see Skippable steps).
 
 - ~~Memory scope~~ → tree-scoped with upward resolution (see Memory Model).
 - ~~Condition syntax~~ → `when()` wrapper (see Conditional rules, gotcha #1).
