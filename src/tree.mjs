@@ -73,11 +73,23 @@ function makeBuilder(def) {
     },
 
     // Accumulative: append a direct tool-call leaf.
+    //   .call('toolName', argsFn, options?)
+    //   .call('name', 'toolName', argsFn, options?)
     call(...rawArgs) {
       const { gate, args } = takeGate(rawArgs, '.call()');
+
+      // Detect 3-arg form: name, tool, argsFn (all positional args are strings/...).
+      // takeGate already consumed the when(), so args are the bare positional
+      // args. If args[0] and args[1] are both strings we have the named form.
+      let name = null;
+      if (args.length >= 3 && typeof args[0] === 'string' && typeof args[1] === 'string') {
+        name = args.shift();
+        assertValidName(name, '.call()');
+      }
+
       const tool = args.shift();
       if (typeof tool !== 'string' || tool.length === 0) {
-        throw new TypeError(".call(): first argument must be the tool name (string), e.g. .call('navigate', m => ({ url }))");
+        throw new TypeError(".call(): tool name must be a non-empty string, e.g. .call('navigate', m => ({ url }))");
       }
       const argsFn = args.shift();
       if (argsFn === undefined) {
@@ -85,7 +97,7 @@ function makeBuilder(def) {
       }
       const options = takeOptions(args, '.call()');
       if (args.length !== 0) throw new TypeError('.call(): too many arguments');
-      const child = { kind: 'call', name: null, tool, argsFn, gate, options };
+      const child = { kind: 'call', name, tool, argsFn, gate, options };
       return next(def, (d) => { d.children.push(child); });
     },
 

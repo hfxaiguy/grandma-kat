@@ -1,5 +1,39 @@
-import { startScrapeServer, stopScrapeServer, callTool } from '../lib/mcp.mjs';
-import { callLlm } from '../lib/llm.mjs';
+// find-address — converted from prototyping/find-address/find-address.mjs.
+//
+// Wires the prototype's three-step loop (page → check for address → scan +
+// rate clickables → pick + act) as a grandma-kat tree. The tree runs via
+// `grandma.knit(pattern, runtime)`; the runtime supplies the LLM model and
+// the browser-mcp tool registry.
+//
+// Tree layout (children of the root `find-address`):
+//
+//   1. navigate_initial          (gated on m.url) — open the target page
+//   2. get_page                  — dump body text, url, title via exec_js
+//   3. check_address             — prompt: "does this page have an address?"
+//   4. scan_clickables           (gated on check_address saying "no")
+//   5. format_clickables         (gated on "no")
+//   6. get_tried                 (gated on "no")
+//   7. pick_action               (gated on "no")
+//        ┌── prompt with tools (navigate/click)
+//        ├── .check — retries on missing/invalid tool calls
+//        └── record_tried — appends the executed tool call's args to tried
+//   8. wait_for_load             (gated on pick_action emitting a tool call)
+//
+//   .until(address found, max(3)) — the outer loop. max(3) is one initial
+//        pass plus three retries; the runner reports a loud KnitError on
+//        exhaustion.
+//
+// "Tried" elements are tracked in the browser page's `window.__tried` (a
+// JSON array of last-tried tool-arguments). get_tried reads it;
+// record_tried appends to it. The first call to get_tried initializes the
+// array.
+//
+// The check inside pick_action accepts an explicit "no candidates"-style
+// plain-text response as a pass (no tool call) — that's the prototype's
+// "stop this iteration" signal in miniature. When pick_action passes that
+// way, wait_for_load is gated off (no tool was actually called).
+
+import { Tree, when, goback, max } from '../../src/index.mjs';
 
 const SYSTEM_PROMPT = 'You are a web navigation assistant. You help find information on web pages by reading page content and deciding what to click or navigate to.';
 
@@ -10,292 +44,139 @@ Your task: Does this page contain a business address? A business address has a s
 If YES: Write the full address on one line.
 If NO: Respond with exactly one word: no`;
 
-const RATING_PROMPT = `This clickable element was found on a web page:
-{element}
-
-The page is about: {pageTitle}
-
-Rate from 1 to 10: how likely is clicking this element to lead to a page or popup that contains a business address?
-
-Respond with only a single number.`;
-
 const STEP3_PROMPT = `Below are candidate clickable elements that might lead to a business address:
 
 {candidates}
 
-Choose ONE element to interact with. Call the appropriate tool:
-- Call "navigate" with the URL when the element has a URL in parentheses.
+Already tried (do NOT pick any of these): {tried}
+
+{feedback}
+
+Pick the element most likely to lead to a page containing a business address and call exactly one tool:
+- Call "navigate" with the URL when the element has a URL.
 - Call "click" with a CSS selector when the element has no URL.
 
-Pick the element most likely to contain a business address.`;
+If the candidates list is empty or nothing looks promising, call neither tool and just say "no candidates" in plain text.`;
 
-const STEP3_TOOLS = [
-  {
-    type: 'function',
-    function: {
-      name: 'navigate',
-      description: 'Open a URL in the browser tab.',
-      parameters: {
-        type: 'object',
-        properties: {
-          url: { type: 'string', description: 'The URL to navigate to.' },
-        },
-        required: ['url'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'click',
-      description: 'Click an element on the page by CSS selector.',
-      parameters: {
-        type: 'object',
-        properties: {
-          selector: { type: 'string', description: 'A CSS selector targeting the element to click.' },
-        },
-        required: ['selector'],
-      },
-    },
-  },
-];
+const isNo = (v) => typeof v === 'string' && v.trim().toLowerCase() === 'no';
 
-const MAX_ITERATIONS = 3;
-const SCORE_THRESHOLD = 5;
-const MAX_CANDIDATES = 5;
+const GET_PAGE_CODE = `JSON.stringify({
+  text: document.body ? document.body.innerText : '',
+  url: location.href,
+  title: document.title
+})`;
 
-function isNo(content) {
-  return String(content).trim().toLowerCase() === 'no';
-}
-
-function formatClickable(el) {
-  const tag = `<${el.tag}>`;
-  const text = el.text ? `"${el.text.replace(/\n/g, ' ')}"` : '';
-  let suffix = '';
-  if (el.href) suffix += ` (${el.href})`;
-  if (el.listeners?.length) suffix += ` [${el.listeners.map((l) => l.type).join(',')}]`;
-  return `${tag} ${text}${suffix}`.trim();
-}
-
-function parseScore(content) {
-  const match = String(content).match(/\d+/);
-  if (!match) return 0;
-  return parseInt(match[0], 10);
-}
-
-function formatMemory(memory) {
-  if (!memory.length) return '(none yet)';
-  return memory
-    .map(
-      (m, i) =>
-        `${i + 1}. Tried: ${m.candidate}\n   Action: ${m.action}\n   Result: ${m.result}`,
-    )
-    .join('\n');
-}
-
-function dumpMemory(memory) {
-  console.log('\n--- Memory (tried elements) ---');
-  if (!memory.length) {
-    console.log('(empty)');
-  } else {
-    for (const m of memory) {
-      console.log(`- ${m.candidate}`);
-      console.log(`    action: ${m.action}`);
-      console.log(`    result: ${m.result}`);
+// __CLICKABLES__ is substituted with the JSON-encoded scan_clickables result
+// at argsFn time. Returns a newline-joined list of formatted lines.
+const FORMAT_CLICKABLES_CODE = `(() => {
+  const els = __CLICKABLES__;
+  if (!Array.isArray(els) || !els.length) return '';
+  return els.map((el) => {
+    const tag = String(el.tag || el.tagName || '?').toLowerCase();
+    const text = String(el.text || el.innerText || '').replace(/\\n/g, ' ').trim();
+    let suffix = '';
+    if (el.href) suffix += ' (' + el.href + ')';
+    if (Array.isArray(el.listeners) && el.listeners.length) {
+      suffix += ' [' + el.listeners.map((l) => l.type).join(',') + ']';
     }
-  }
-  console.log('--- End Memory ---\n');
-}
+    return (tag + ' "' + text + '"' + suffix).trim();
+  }).filter((l) => l.length > 4).join('\\n');
+})()`;
 
-function isAlreadyTried(line, memory) {
-  return memory.some((m) => m.candidate === line);
-}
+const GET_TRIED_CODE = `JSON.stringify(Array.isArray(window.__tried) ? window.__tried : [])`;
 
-export async function runFindAddress(options = {}) {
-  console.log('Starting scrape MCP server...');
-  const client = await startScrapeServer();
-  const memory = [];
-  try {
-    // Navigate to target URL if provided
-    if (options.url) {
-      console.log(`Navigating to ${options.url}...`);
-      await callTool(client, 'navigate', { url: options.url });
-    }
+// __TOOL_CALL__ is substituted with the JSON-encoded pick_action prompt's
+// first tool call (or null) at argsFn time. Pushes the tool arguments to
+// window.__tried and returns the updated list.
+const RECORD_TRIED_CODE = `(() => {
+  window.__tried = Array.isArray(window.__tried) ? window.__tried : [];
+  const tc = __TOOL_CALL__;
+  if (tc && tc.arguments) window.__tried.push(tc.arguments);
+  return JSON.stringify(window.__tried);
+})()`;
 
-    for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
-      console.log(`\n${'='.repeat(60)}`);
-      console.log(`Iteration ${iteration} of ${MAX_ITERATIONS}`);
-      console.log(`${'='.repeat(60)}\n`);
+export function createFindAddressPattern({ model = 'default' } = {}) {
+  const needsMore = (m) => isNo(m.branch.check_address);
+  // pick_action emits a tool call when it has work to do. We surface that
+  // by reading the prompt's record — the agentic loop's toolCalls land on
+  // the prompt's raw record.
+  const pickEmittedTool = (m) => {
+    const tc = m.raw.prev[0]?.toolCalls?.[0];
+    return Boolean(tc && tc.name);
+  };
 
-      // Step 1: Dump page text and ask if it contains a business address
-      console.log('Step 1: Dumping page text...');
-      const pageText = await callTool(client, 'exec_js', {
-        code: 'document.body ? document.body.innerText : ""',
-      });
-
-      if (!pageText) {
-        throw new Error('No page text found. Is a page loaded in the CDP browser?');
-      }
-
-      const currentUrl = await callTool(client, 'exec_js', { code: 'location.href' });
-      const currentTitle = await callTool(client, 'exec_js', { code: 'document.title' });
-      console.log(`Page: ${currentTitle} - ${currentUrl}`);
-      console.log(`Dumped ${String(pageText).length} chars.\n`);
-      console.log('--- Page Dump ---');
-      console.log(pageText);
-      console.log('--- End Page Dump ---\n');
-
-      const answer = await callLlm([
+  return Tree.name('find-address')
+    .model(model)
+    .call(when(m => typeof m.url === 'string' && m.url.length > 0),
+      'navigate',
+      m => ({ url: m.url }))
+    .call('get_page', 'exec_js', () => ({ code: GET_PAGE_CODE }))
+    .branch(Tree.name('check_address')
+      .prompt(m => [
         { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: pageText },
+        { role: 'user', content: `Page text:\n\n${m.branch.get_page?.text ?? ''}` },
         { role: 'user', content: STEP1_PROMPT },
-      ]);
-
-      console.log('--- Step 1: LLM Answer ---');
-      if (answer.reasoning) {
-        console.log('Thinking:');
-        console.log(answer.reasoning);
-        console.log('\nResponse:');
-      }
-      console.log(answer.content);
-
-      if (isNo(answer.content)) {
-        // Step 2: Scan clickable elements and rate each one
-        console.log('\nStep 2: Scanning and rating clickable elements...');
-        const clickables = await callTool(client, 'scan_clickables', {});
-        const lines = clickables.map(formatClickable);
-
-        console.log(`\nFound ${lines.length} clickable elements. Rating each...\n`);
-
-        const ratingPromises = lines.map((line) =>
-          callLlm([
-            { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: RATING_PROMPT.replace('{element}', line).replace('{pageTitle}', currentTitle) },
-          ]).then((resp) => ({ line, score: parseScore(resp.content) })),
-        );
-
-        const ratings = await Promise.all(ratingPromises);
-
-        for (const r of ratings) {
-          console.log(`  [${r.score}/10] ${r.line}`);
-        }
-
-        // Filter: score > threshold, not already tried, max N candidates
-        const ranked = ratings
-          .filter((r) => r.score > SCORE_THRESHOLD)
-          .filter((r) => !isAlreadyTried(r.line, memory))
-          .sort((a, b) => b.score - a.score)
-          .slice(0, MAX_CANDIDATES);
-
-        if (!ranked.length) {
-          console.log(`\nNo elements scored above ${SCORE_THRESHOLD} (or all already tried). Stopping.`);
-          break;
-        }
-
-        const candidates = ranked.map((r) => r.line);
-        console.log(`\n${candidates.length} candidate(s) (scored > ${SCORE_THRESHOLD}, not yet tried):`);
-        for (const r of ranked) {
-          console.log(`  [${r.score}/10] ${r.line}`);
-        }
-
-        // Step 3: Ask the LLM to choose an action (navigate or click), with retries
-        console.log('\nStep 3: Choosing action...');
-
-        const MAX_STEP3_RETRIES = 3;
-        let actionExecuted = false;
-
-        for (let attempt = 1; attempt <= MAX_STEP3_RETRIES; attempt++) {
-          if (attempt > 1) console.log(`\nStep 3 retry ${attempt} of ${MAX_STEP3_RETRIES}...`);
-
-          const step3 = await callLlm(
-            [
-              { role: 'system', content: SYSTEM_PROMPT },
-              { role: 'user', content: STEP3_PROMPT.replace('{candidates}', candidates.join('\n')) },
-            ],
-            { tools: STEP3_TOOLS },
-          );
-
-          console.log('--- Step 3: LLM Answer ---');
-          if (step3.reasoning) {
-            console.log('Thinking:');
-            console.log(step3.reasoning);
-            console.log('\nResponse:');
-          }
-          if (step3.content) console.log(step3.content);
-
-          const toolCall = step3.tool_calls?.[0];
-          if (!toolCall) {
-            console.log('No tool call returned by LLM.');
-            continue;
-          }
-
-          const fn = toolCall.function;
-          console.log(`\n--- Tool call: ${fn.name}(${fn.arguments}) ---`);
-
-          let args;
-          try {
-            args = JSON.parse(fn.arguments);
-          } catch {
-            console.log('Invalid tool call arguments. Retrying.');
-            continue;
-          }
-
-          let actionResult;
-          let actionLabel;
-          let chosenCandidate;
-
-          if (fn.name === 'navigate') {
-            if (!args.url) { console.log('Missing url in navigate call.'); continue; }
-            actionResult = await callTool(client, 'navigate', { url: args.url });
-            actionLabel = `NAVIGATE ${args.url}`;
-            chosenCandidate = candidates.find((c) => c.includes(args.url)) || candidates[0];
-          } else if (fn.name === 'click') {
-            if (!args.selector) { console.log('Missing selector in click call.'); continue; }
-            actionResult = await callTool(client, 'click_selector', { selector: args.selector });
-            await callTool(client, 'wait_for_load', { timeoutMs: 10000 });
-            actionLabel = `CLICK ${args.selector}`;
-            chosenCandidate = candidates[0];
-          } else {
-            console.log(`Unknown tool: ${fn.name}. Retrying.`);
-            continue;
-          }
-
-          console.log(JSON.stringify(actionResult, null, 2));
-
-          // Fetch resulting page info
-          const resultUrl = await callTool(client, 'exec_js', { code: 'location.href' });
-          const resultTitle = await callTool(client, 'exec_js', { code: 'document.title' });
-          const resultStr = `${resultTitle} - ${resultUrl}`;
-
-          // Append to memory and dump state
-          memory.push({
-            candidate: chosenCandidate,
-            action: actionLabel,
-            result: resultStr,
-          });
-          dumpMemory(memory);
-
-          actionExecuted = true;
-          break;
-        }
-
-        if (!actionExecuted) {
-          console.log('\nStep 3 failed after all retries. Stopping.');
-          break;
-        }
-
-        // Loop back to step 1 with the new page
-        console.log('Looping back to step 1...\n');
-      } else {
-        console.log('\n--- ADDRESS FOUND ---');
-        console.log(answer.content);
-        break;
-      }
-    }
-
-    if (memory.length) dumpMemory(memory);
-    return;
-  } finally {
-    await stopScrapeServer(client);
-  }
+      ]))
+    .call(when(needsMore), 'scan_clickables', 'scan_clickables', () => ({}))
+    .call(when(needsMore), 'format_clickables', 'exec_js', m => ({
+      code: FORMAT_CLICKABLES_CODE.replace(
+        '__CLICKABLES__',
+        JSON.stringify(m.branch.scan_clickables ?? [])
+      ),
+    }))
+    .call(when(needsMore), 'get_tried', 'exec_js', () => ({ code: GET_TRIED_CODE }))
+    .branch(when(needsMore),
+      Tree.name('pick_action')
+        .tools('navigate', 'click')
+        .prompt(m => [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: STEP3_PROMPT
+            .replace('{candidates}', m.branch.format_clickables || '(none)')
+            .replace('{tried}', m.branch.get_tried || '[]')
+            .replace('{feedback}', m.error ? `\nPrevious attempt: ${m.error}\n` : '') },
+        ])
+        .check(
+          m => {
+            // Validate tool calls when the LLM makes one. Plain-text
+            // responses are accepted as a pass when they look like an
+            // explicit "I'm done" signal — "no", "no candidates",
+            // "nothing useful", etc. The check is loose because the
+            // STEP3 prompt instructs the LLM to say "no candidates" when
+            // nothing looks promising; we don't want to retry-loop on
+            // that. A long-form or off-topic response is rejected so the
+            // LLM is nudged to either commit to a tool call or explicitly
+            // say no.
+            const tc = m.raw.prev[0]?.toolCalls?.[0];
+            if (!tc) {
+              const text = String(m.prev[0] ?? '').trim().toLowerCase();
+              if (!text) return 'Empty response. Call navigate/click or say "no candidates".';
+              if (text.length < 80 && /\bno\b/.test(text)) return true;
+              return 'Did not call a tool. Call navigate/click, or respond with "no candidates".';
+            }
+            try { JSON.parse(tc.arguments); return true; }
+            catch { return 'Invalid JSON in tool call arguments.'; }
+          },
+          goback(1, max(3, m => `pick_action gave up: ${m.error}`))
+        )
+        // record_tried is a sibling of the prompt inside pick_action so it
+        // can read the prompt's record via m.raw.prev[0] (no scope-chain
+        // gymnastics). It's gated on the check having passed *and* a tool
+        // having actually been called.
+        .call(when(m => {
+            const tc = m.raw.prev[0]?.toolCalls?.[0];
+            return Boolean(tc && tc.name);
+          }),
+          'exec_js',
+          m => ({
+            code: RECORD_TRIED_CODE.replace(
+              '__TOOL_CALL__',
+              JSON.stringify(m.raw.prev[0]?.toolCalls?.[0] ?? null)
+            ),
+          })))
+    .call(when(m => needsMore(m) && pickEmittedTool(m)),
+      'wait_for_load', 'wait_for_load', () => ({ timeoutMs: 10000 }))
+    .until(
+      m => !isNo(m.branch.check_address),
+      max(3, m => `find-address: gave up after 3 iterations: ${m.error ?? 'address not found'}`)
+    );
 }

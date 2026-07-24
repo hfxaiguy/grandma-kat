@@ -95,5 +95,20 @@ test('.call() parses tool name and args', () => {
   const call = t.def.children[0];
   assert.equal(call.kind, 'call');
   assert.equal(call.tool, 'navigate');
+  assert.equal(call.name, null);
   assert.throws(() => Tree.name('a').call(), /tool name/);
+});
+
+test('.call() supports optional name', () => {
+  const t = Tree.name('a').call('get_page', 'exec_js', () => ({ code: '1' }));
+  const c = t.def.children[0];
+  assert.equal(c.kind, 'call');
+  assert.equal(c.name, 'get_page');
+  assert.equal(c.tool, 'exec_js');
+
+  const g = Tree.name('b').call(when(m => true), 'get_page', 'exec_js', () => ({ code: '2' }));
+  const gc = g.def.children[0];
+  assert.equal(gc.name, 'get_page');
+  assert.equal(gc.tool, 'exec_js');
+  assert.equal(typeof gc.gate, 'function');
 });

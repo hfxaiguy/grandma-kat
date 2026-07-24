@@ -1,42 +1,93 @@
 #!/usr/bin/env node
-import { runFindAddress } from './find-address.mjs';
-import { listProviders } from '../lib/config.mjs';
-import { setProvider } from '../lib/llm.mjs';
+// Entry point for the find-address pattern. Starts the browser-mcp scrape
+// server, wires grandma-kat to the prototype's tools, and runs the pattern
+// against the optional URL passed on the command line.
+
+import { startScrapeServer, callTool, stopScrapeServer } from '../lib/mcp.mjs';
+import { loadConfig } from '../lib/config.mjs';
+import grandma, { KnitError } from '../../src/index.mjs';
+import { createFindAddressPattern } from './find-address.mjs';
 
 const url = process.argv[2];
-
-const providers = listProviders();
-
-if (providers.length > 1) {
-  console.log('Available providers:');
-  providers.forEach((p, i) => console.log(`  ${i + 1}. ${p}`));
-
-  const answer = await new Promise((resolve) => {
-    process.stdout.write('\nSelect provider (number): ');
-    let data = '';
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (chunk) => {
-      data += chunk;
-      if (data.includes('\n')) {
-        process.stdin.pause();
-        resolve(data.trim());
-      }
-    });
-  });
-
-  const idx = parseInt(answer, 10) - 1;
-  if (idx >= 0 && idx < providers.length) {
-    setProvider(providers[idx]);
-    console.log(`Using provider: ${providers[idx]}\n`);
-  } else {
-    console.error(`Invalid selection: ${answer}`);
-    process.exit(1);
-  }
-}
+const modelName = process.argv[3];
 
 if (url) console.log(`Target URL: ${url}\n`);
 
-runFindAddress({ url }).catch((err) => {
-  console.error('Find Address prototype failed:', err.message);
+const config = loadConfig();
+console.log('Starting scrape MCP server...');
+const client = await startScrapeServer();
+
+try {
+  const { result, memory, runId } = await grandma.knit(
+    createFindAddressPattern({ model: modelName ?? 'default' }),
+    {
+      models: {
+        default: {
+          baseURL: config.provider.baseURL,
+          apiKey: config.provider.apiKey,
+          model: config.model,
+        },
+      },
+      tools: makeToolRegistry(client),
+      memory: url ? { url } : {},
+    }
+  );
+
+  console.log(`\nRun: ${runId}`);
+  console.log('Address:', result);
+  if (memory.check_address) console.log('check_address slot:', memory.check_address);
+} catch (err) {
+  if (err instanceof KnitError) {
+    console.error(`find-address failed: ${err.message}`);
+  } else {
+    console.error('find-address failed:', err);
+  }
   process.exit(1);
-});
+} finally {
+  await stopScrapeServer(client);
+}
+
+function makeToolRegistry(client) {
+  return {
+    navigate: {
+      description: 'Open a URL in the browser tab.',
+      parameters: {
+        type: 'object',
+        properties: { url: { type: 'string', description: 'The URL to navigate to.' } },
+        required: ['url'],
+      },
+      execute: async (args) => callTool(client, 'navigate', args),
+    },
+    click: {
+      description: 'Click an element on the page by CSS selector.',
+      parameters: {
+        type: 'object',
+        properties: { selector: { type: 'string', description: 'CSS selector for the element.' } },
+        required: ['selector'],
+      },
+      execute: async (args) => callTool(client, 'click_selector', args),
+    },
+    exec_js: {
+      description: 'Run JavaScript in the page and return the JSON-stringified result.',
+      parameters: {
+        type: 'object',
+        properties: { code: { type: 'string', description: 'JavaScript source to evaluate.' } },
+        required: ['code'],
+      },
+      execute: async (args) => callTool(client, 'exec_js', args),
+    },
+    scan_clickables: {
+      description: 'Scan the page for clickable elements and return them as an array of { tag, text, href, listeners }.',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => callTool(client, 'scan_clickables', {}),
+    },
+    wait_for_load: {
+      description: 'Wait until the page has finished loading.',
+      parameters: {
+        type: 'object',
+        properties: { timeoutMs: { type: 'number', description: 'How long to wait in ms.' } },
+      },
+      execute: async (args) => callTool(client, 'wait_for_load', args),
+    },
+  };
+}
