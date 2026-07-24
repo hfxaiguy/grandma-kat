@@ -54,14 +54,12 @@ Reasons:
 - The chained-block style can't distinguish sibling vs nested substeps
   without an `.end()` / `.back()` mechanism, which gets ugly.
 
-### Conditions (proposed, unconfirmed)
+### Conditions (superseded)
 
-`.runif(cond)` lives on the step itself, so the condition travels with the
-step when it is reused:
-
-```js
-.step(Step.name('x').runif(cond).prompt(...))
-```
+An early sketch put `.runif(cond)` on the step itself so the condition
+would travel with reuse. Superseded: gates live at the attachment site only
+(`.step(when(cond), child)`); step-owned/intrinsic gating is expressed with
+a `.check()` child inside the step (see Conditional rules, gotcha #3).
 
 ### Factory output: a definition, executed by a runner (chosen)
 
@@ -634,10 +632,11 @@ Containers).
 2. *Shadowed rules* — a conditional rule followed by an unconditional rule
    is dead code (the unconditional one always overwrites it). Build-time
    warning.
-3. *Attachment-site vs step-owned conditions* — `.step(when(cond), child)`
-   puts the condition at the attachment site, which doesn't travel with
-   reuse. Could coexist with step-owned gates (AND-ed together), at the cost
-   of one more rule to explain. (Open.)
+3. *Attachment-site vs step-owned conditions (resolved)* — gates live at
+   the attachment site **only**: `.step(when(cond), child)`. Step-owned /
+   intrinsic gating is expressed with a `.check()` child inside the step
+   itself — the check IS the step's own gate, visible in its tree. One gate
+   location to learn; no AND-ed two-gate semantics.
 4. *Dynamic trees* — conditional attachment means `.needs()` can only check
    "a producer exists among potentially attached steps"; runtime
    missing-input handling follows skip semantics (see Open Questions).
@@ -651,12 +650,15 @@ keeps behavior predictable for LLM writers and the engine simple.
 
 ## Open Questions
 
-*No numbered questions remain.* Minor open items live inline:
-attachment-site vs step-owned conditions (Conditional rules, gotcha #3),
-tool validation timing (Per-step tools), plus deferred items (tool-call
-pause mode, escalation promotion, YAML authoring layer).
+*No numbered questions remain.* Minor open items live inline: tool
+validation timing (Per-step tools), plus deferred items (tool-call pause
+mode, escalation promotion, YAML authoring layer).
 
 Resolved:
+
+- ~~Attachment-site vs step-owned conditions~~ → attachment-site only;
+  intrinsic gating via a `.check()` child (see Conditional rules, gotcha
+  #3).
 
 - ~~Model reference~~ → `.model(name)` references a named model in config;
   config defines a `models` map, each entry carrying full connection
