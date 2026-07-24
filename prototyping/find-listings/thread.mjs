@@ -124,7 +124,7 @@ Answer ONLY "yes" or "no".`;
   const step1Response = step1Result.content;
   console.log(`Step 1 response: ${step1Response}`);
 
-  const isListing = step1Response.toLowerCase().trim() === 'yes';
+  const isListing = step1Response.toLowerCase().includes('yes');
 
   if (!isListing) {
     console.log('Not a listing. Stopping.');
@@ -440,6 +440,71 @@ Call the appropriate tool with the target.`;
         console.log(`  Tool: ${toolCall.function.name}(${toolCall.function.arguments})`);
       }
 
+      // Execute the tool call
+      let toolResult = null;
+      let beforeState = null;
+      let afterState = null;
+      if (toolCall) {
+        const args = JSON.parse(toolCall.function.arguments);
+        console.log('  Executing tool call...');
+        
+        // Capture before state
+        const beforeState = await callTool(client, 'exec_js_in_scope', {
+          scope,
+          code: `({
+            url: location.href,
+            childCount: element.children.length,
+            textLength: element.innerText.length,
+          })`,
+        });
+
+        try {
+          if (toolCall.function.name === 'navigate' && args.url) {
+            toolResult = await callTool(client, 'navigate', { url: args.url });
+          } else if (toolCall.function.name === 'click' && args.selector) {
+            // Use exec_js_in_scope to click within the iframe/element
+            toolResult = await callTool(client, 'exec_js_in_scope', {
+              scope,
+              code: `(() => {
+                const el = element.querySelector('${args.selector.replace(/'/g, "\\'")}');
+                if (el) {
+                  el.click();
+                  return { clicked: true, text: el.innerText?.trim()?.substring(0, 50) };
+                }
+                return { clicked: false, error: 'Element not found' };
+              })()`,
+            });
+            await callTool(client, 'wait_for_load', { timeoutMs: 5000 });
+          }
+          console.log(`  Tool result: ${JSON.stringify(toolResult)}`);
+        } catch (err) {
+          console.log(`  Tool error: ${err.message}`);
+        }
+
+        // Wait for navigation
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        // Capture after state
+        const afterState = await callTool(client, 'exec_js_in_scope', {
+          scope,
+          code: `({
+            url: location.href,
+            childCount: element.children.length,
+            textLength: element.innerText.length,
+          })`,
+        });
+
+        const changed = beforeState.url !== afterState.url ||
+                        beforeState.childCount !== afterState.childCount ||
+                        beforeState.textLength !== afterState.textLength;
+
+        console.log(`  DOM changed: ${changed}`);
+        if (changed) {
+          console.log(`  Before: ${JSON.stringify(beforeState)}`);
+          console.log(`  After: ${JSON.stringify(afterState)}`);
+        }
+      }
+
       results.push({
         element_index: el.index,
         text: el.text,
@@ -450,6 +515,12 @@ Call the appropriate tool with the target.`;
           name: toolCall.function.name,
           arguments: JSON.parse(toolCall.function.arguments),
         } : null,
+        tool_result: toolResult,
+        dom_changed: toolCall ? (beforeState && afterState && (
+          beforeState.url !== afterState.url ||
+          beforeState.childCount !== afterState.childCount ||
+          beforeState.textLength !== afterState.textLength
+        )) : null,
       });
     } else {
       results.push({
