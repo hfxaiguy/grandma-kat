@@ -4,8 +4,19 @@
 tooling: a factory-builder library for composing LLM execution units
 ("Trees") with nesting, memory, and reuse.
 
-**Status: design phase.** This document captures design decisions and
-considerations. Nothing is implemented yet.
+**Status: alpha implemented** (v0.1.0). Builder, markers, runner, memory,
+agentic tool loop, validation, and SQLite logging are implemented in `src/`
+with mock-model tests in `tests/` (`npm test`). Deferred items remain:
+tool-call pause mode, escalation promotion, YAML authoring layer, resume,
+`grandma.compile()`.
+
+Implementation deviations from this doc:
+
+- **SQLite via `node:sqlite`** (built into Node ≥22.5) instead of
+  `better-sqlite3` — native bindings are blocked in this environment; zero
+  dependencies instead. Requires Node ≥22.5.
+- **Autonaming counts all children** — `k` = 1-based position among all of
+  a parent's children (uniform, collision-free), not just prompt children.
 
 ## Packaging
 
