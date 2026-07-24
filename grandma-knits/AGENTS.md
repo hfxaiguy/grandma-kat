@@ -21,25 +21,25 @@ considerations. Nothing is implemented yet.
   output is a **definition** (plain data), executed by the runner
   `grandma.knit()` (see "Factory output" below).
 
-**Vocabulary (naming).** Structure/authoring: **Tree** (the factory),
-**branch** (a named subtree via `.branch()`), **leaf** (anonymous child —
-prompt/tool/check). Execution/memory: **step** (`m.step.X`, `step_path`).
-Name definition variables **`pattern`** — `const pattern =
-Tree.name('x')...; grandma.knit(pattern)` reads as a sentence and keeps LLM
-authors consistent.
+**Vocabulary (naming).** **Tree** (the factory), **branch** (a named subtree
+via `.branch()` — also the memory key for outputs: `m.branch.X`,
+`branch_path`), **leaf** (anonymous child — prompt/tool/check), **pattern**
+(a built definition variable). Name definitions **`pattern`** — `const
+pattern = Tree.name('x')...; grandma.knit(pattern)` reads as a sentence
+and keeps LLM authors consistent.
 
 ```js
 Tree
   .name('tree_id')                                  // register into a global registry for reuse
   .branch(Tree.name('navigate').prompt(...))        // attach a sub-branch
-  .prompt(memory => `current memory: ${memory.step.navigate}`)
+  .prompt(memory => `current memory: ${memory.branch.navigate}`)
 ```
 
 - `.name(id)` — names the tree into a global registry so it can be reused
 - `.branch(child)` — attaches a sub-branch (composition/nesting)
 - `.prompt(fn)` — defines the LLM prompt; `fn` receives memory and returns
   the prompt string
-- Memory is keyed by step name (`memory.step.navigate`) — a parent tree
+- Memory is keyed by branch name (`m.branch.navigate`) — a parent tree
   reads what its branches produced (see Memory Model below)
 
 ### API style: branches as arguments (chosen)
@@ -78,8 +78,8 @@ executes it with an injected runtime:
 ```js
 const pattern = Tree.name('draft-and-verify')
   .branch(Tree.name('draft').prompt(m => `Write about ${m.task}`))
-  .branch(Tree.name('verify').needs('draft').prompt(m => `Check: ${m.step.draft}`))
-  .until(m => m.step.verify === 'pass', max(3));
+  .branch(Tree.name('verify').needs('draft').prompt(m => `Check: ${m.branch.draft}`))
+  .until(m => m.branch.verify === 'pass', max(3));
 
 // pattern is just data — an AST of rule lists and children
 
@@ -138,7 +138,7 @@ Tree.name('draft').prompt(m => `Write about ${m.task}`)
 ```
 
 **Export rule: a container's value = its last executed child's result.** So
-`m.step.draft` yields the prompt's output even though `draft` is a
+`m.branch.draft` yields the prompt's output even though `draft` is a
 container — the extra tree level is invisible from outside.
 
 **Execution order** (resolves that open question): children run
@@ -154,11 +154,11 @@ accumulate; *config* methods (`.model`, `.until`) select. Prompt variants
 are expressed as gated children:
 
 ```js
-.prompt('draft',  when(m => !m.step.verify), m => `Write the thing`)
-.prompt('revise', when(m => m.step.verify),  m => `Revise: ${m.step.verify}`)
+.prompt('draft',  when(m => !m.branch.verify), m => `Write the thing`)
+.prompt('revise', when(m => m.branch.verify),  m => `Revise: ${m.branch.verify}`)
 ```
 
-Each variant gets its own memory slot (`m.step.draft` AND `m.step.revise`
+Each variant gets its own memory slot (`m.branch.draft` AND `m.branch.revise`
 both exist) — richer for verification and logging.
 
 Rejected alternative — *leaf special case* ("one prompt = the tree itself;
@@ -171,7 +171,7 @@ shift, memory layout shifts, logs shift). Bad for LLM authors.
 Anonymous prompt children receive build-time names: `${parentName}#${k}`
 (`k` = 1-based position among the parent's prompt children).
 
-- `#` is **reserved** — illegal in explicit step names. Auto-names can never
+- `#` is **reserved** — illegal in explicit branch names. Auto-names can never
   collide with or shadow author names, and logs visually mark them.
 - Assigned at **build time**: a gated-out prompt keeps its number; loop
   iterations reuse the same slot (overwrite semantics); reused definitions
@@ -179,7 +179,7 @@ Anonymous prompt children receive build-time names: `${parentName}#${k}`
   tree-scoped).
 - Positional fragility is a feature: inserting a prompt renumbers later
   ones. Contract: **"if you reference it, you name it."**
-  `.needs('parent#2')` (or reading `m.step['parent#2']`) → build-time
+  `.needs('parent#2')` (or reading `m.branch['parent#2']`) → build-time
   warning: give that prompt an explicit name.
 
 ### `m.prev`: positional access to previous outputs (chosen)
@@ -195,11 +195,11 @@ Tree.name('pipeline')
   .prompt(m => `Compare ${m.prev[0]} to ${m.prev[1]}`)  // prev[0] = draft, prev[1] = outline
 ```
 
-- Includes all sibling kinds (prompts, steps, tool calls).
+- Includes all sibling kinds (prompts, branches, tool calls).
 - **Dense and execution-relative**: gated-out siblings occupy no position.
-  Positions are not declaration-relative — if you care *which* step produced
+  Positions are not declaration-relative — if you care *which* branch produced
   something, use a name.
-- Two complementary addressings: `m.prev` positional, `m.step.X` named.
+- Two complementary addressings: `m.prev` positional, `m.branch.X` named.
 
 **Loops: rewind (chosen).** `goback()` / `.until()` rewind `m.prev` to the
 jump point — `prev` is the log of the current execution path, not the full
@@ -329,7 +329,7 @@ produced by the jumped-over children are dropped. **`m.prev` is the log of
 the current execution path, not the full history** — positional indices
 stay stable across retries, which the concise chaining style depends on.
 
-- Named slots (`m.step.X`) are NOT rewound — they persist until a re-run
+- Named slots (`m.branch.X`) are NOT rewound — they persist until a re-run
   overwrites them (natural overwrite semantics).
 - **`m.error`** carries check feedback: set by a failed check, cleared when
   a check passes. Control-flow artifacts never appear in `m.prev`; prompts
@@ -339,32 +339,32 @@ stay stable across retries, which the concise chaining style depends on.
 
 ## Memory Model: Scope Chain (chosen)
 
-**Memory is a scope chain.** Every step owns a memory — a set of name →
-value bindings. Memories form a tree mirroring the step tree: each memory is
-linked to its parent's memory.
+**Memory is a scope chain.** Every branch owns a memory — a set of name →
+value bindings. Memories form a tree mirroring the branch tree: each memory
+is linked to its parent's memory.
 
-**Reads resolve upward.** When a step asks for a name, the engine checks its
-own memory first; if absent, it asks the parent, then the grandparent, up to
-the root. **The nearest binding wins** — same as variable scoping in nested
-functions, JS prototype chains, or React context.
+**Reads resolve upward.** When a branch asks for a name, the engine checks
+its own memory first; if absent, it asks the parent, then the grandparent,
+up to the root. **The nearest binding wins** — same as variable scoping in
+nested functions, JS prototype chains, or React context.
 
-**Writes flow up one level.** When a step completes, its result is stored in
-its *parent's* memory under the step's name. A parent's memory is thus an
-ordered record of what its children have produced so far, visible to all
+**Writes flow up one level.** When a branch completes, its result is stored
+in its *parent's* memory under the branch's name. A parent's memory is thus
+an ordered record of what its children have produced so far, visible to all
 later descendants. The root memory holds the thread's initial inputs.
 
 Consequences:
 
-- **Shadowing is free** — two steps named `draft` in different branches
-  don't collide; each resolves to the nearest one up its own chain. Step
+- **Shadowing is free** — two branches named `draft` in different trees
+  don't collide; each resolves to the nearest one up its own chain. Branch
   names are scoped, not global.
-- **Sibling isolation** — a step can't see another step's internal state,
-  only what completed steps exported to their shared parent.
+- **Sibling isolation** — a branch can't see another branch's internal
+  state, only what completed branches exported to their shared parent.
 - **Deep reads need no wiring** — a grandchild reads the root's values
   without the middle layer passing anything through.
-- **Local vs exported** — a step's own memory holds its internals (tool
+- **Local vs exported** — a branch's own memory holds its internals (tool
   round-trips, per-iteration state); what it exports upward is its final
-  result. Leaf steps start empty and read mostly from ancestors.
+  result. Leaf branches start empty and read mostly from ancestors.
 - **Misses** — lookup reaching the root with no hit yields `undefined`, or a
   loud error if the name was declared in `.needs()`.
 - **Loops** — each `.until()` iteration's children overwrite their slot in
@@ -374,11 +374,11 @@ Consequences:
 
 Interactions:
 
-- `memory.step.navigate` reads "the result of the step named `navigate`",
+- `m.branch.navigate` reads "the result of the branch named `navigate`",
   resolved by the chain walk; nearest scope holding that name wins.
 - `.needs()` validation becomes precise: an input is valid if a producing
-  step exists among the preceding siblings, or the preceding siblings of any
-  ancestor (loops make this "possibly absent" — inputs need an optional
+  branch exists among the preceding siblings, or the preceding siblings of
+  any ancestor (loops make this "possibly absent" — inputs need an optional
   notion).
 
 This resolves the memory-scope question: neither a global registry nor
@@ -386,18 +386,18 @@ strict parent/child — tree-scoped with upward resolution.
 
 ### `m.raw`: the record view (chosen)
 
-`m.step.X` and `m.prev[i]` hold clean exported **values** (strings — safe
+`m.branch.X` and `m.prev[i]` hold clean exported **values** (strings — safe
 for template interpolation). Everything else a leaf produced lives at the
 same address under **`m.raw`**:
 
-- `m.raw.prev[i]` / `m.raw.step.X` →
+- `m.raw.prev[i]` / `m.raw.branch.X` →
   `{ content, reasoning, toolCalls, toolResults, calls }`
 - `calls[]` — the per-round transcript of a prompt-leaf's internal tool
   loop (the root spec's "Calls"), append-only; dead/rewound outputs remain
   available here and in logs.
 
 So: positional and named addressing, each with a value-view (`m`) and a
-record-view (`m.raw`). Nothing a step produces is invisible.
+record-view (`m.raw`). Nothing a branch produces is invisible.
 
 ### `m.error`: the feedback channel (chosen)
 
@@ -420,9 +420,9 @@ are first-class:
 | Column | Contents |
 |---|---|
 | `run_id` | Timestamp-based run identifier |
-| `definition_id` | Root step name + tree hash (which *version* ran) |
+| `definition_id` | Root branch name + tree hash (which *version* ran) |
 | `seq` | Auto-increment, global execution order |
-| `step_path` | Path from root: `agent/draft#1`, `agent/judge#3` |
+| `branch_path` | Path from root: `agent/draft#1`, `agent/judge#3` |
 | `iteration` | Loop pass number (0 for non-looped) |
 | `kind` | `llm_call` · `tool_call` · `tool_result` · `check` · `gate` · `flow` · `skip` |
 | `content` | JSON — messages, response, tool args/result, check feedback, goback target, ... |
@@ -483,7 +483,7 @@ Why JS over YAML:
   less when the authors are LLMs.
 - What LLM authors need most is **validation**: the builder should fail
   loudly at build time on hallucinated methods or references to nonexistent
-  step names.
+  branch names.
 
 Escape hatch: a YAML authoring layer can compile down to the JS builder
 later, if non-code tooling ever needs to read thread structure.
@@ -505,14 +505,14 @@ special skip semantics exist; the ordinary memory rules decide:
   another branch, a grandparent's slot) even when the intended sibling
   producer was skipped.
 - Want permissive? Don't declare the need — read defensively
-  (`m.step.X ?? ...`). No declaration, no error.
-- Want cascade-skipping? Write a gate: `.branch(when(m => m.step.X), child)`.
+  (`m.branch.X ?? ...`). No declaration, no error.
+- Want cascade-skipping? Write a gate: `.branch(when(m => m.branch.X), child)`.
   Visible in the tree and logs, never a hidden rule.
 
 Consequence: declare needs only for inputs present at **first execution**.
-Loop-carried reads (draft reading `m.step.verify` on iteration 1) must stay
+Loop-carried reads (draft reading `m.branch.verify` on iteration 1) must stay
 undeclared — hence the defensive-read style in all examples
-(`${m.step.verify ?? ''}`).
+(`${m.branch.verify ?? ''}`).
 
 Build-time validation: hard error for needs that appear nowhere in the tree
 (hallucinated producer); soft warning for needs whose only producers are
@@ -558,7 +558,7 @@ Resolved — see **Validation and Flow Control**: `.until()` is sugar for an
 implicit end-of-container `.check()` with `goback(<all children>)`.
 `goback(n)` provides relative bounded jumps; arbitrary named `goto()` is
 deferred. `m.prev` rewinds to the jump point (current-path log); named
-slots (`m.step.X`) persist until overwritten; full history lives in
+slots (`m.branch.X`) persist until overwritten; full history lives in
 `m.raw.calls` and logs.
 
 Original discussion: retry-with-verification = *a parent re-running its
@@ -631,9 +631,9 @@ not `.tool()` — one letter from `.tools()`, too confusable.
 **Validation timing (chosen): up-front at `knit()` start.** The runner walks
 the whole tree, collects every `.tools()` reference, and diffs against the
 injected registry *before anything executes* — unknown names throw
-immediately, listing every miss with its step path (`agent#2 references
+immediately, listing every miss with its branch path (`agent#2 references
 unknown tool 'navigte' — did you mean 'navigate'?`). No partial validation,
-no failing when the step is reached: a tree referencing missing tools is
+no failing when the branch is reached: a tree referencing missing tools is
 rejected wholesale, one error with all the typos. `grandma.compile()` runs
 the same check at compile time. Loud on missing, lenient on ugly: a
 registered tool with a sparse schema (no description, minimal params)
@@ -660,9 +660,9 @@ a gate. The override pattern puts defaults first:
 
 ```js
 .model('cheap-model')                                                   // default first
-.model(when(m => m.step.plan.complexity === 'high'), 'strong-model')    // conditional override
+.model(when(m => m.branch.plan.complexity === 'high'), 'strong-model')    // conditional override
 
-.until(when(m => m.step.plan.mode === 'interactive'), m => m.step.confirm === 'yes')  // gated loop check
+.until(when(m => m.branch.plan.mode === 'interactive'), m => m.branch.confirm === 'yes')  // gated loop check
 ```
 
 (Note: `.prompt()` is accumulative, not selective — see Trees Are
@@ -692,7 +692,7 @@ Containers).
 **Gotchas / validation:**
 
 1. *Condition syntax: `when()` wrapper (chosen).* Conditions are wrapped:
-   `.prompt(when(m => m.step.verify), m => ...)`; unconditional calls pass
+   `.prompt(when(m => m.branch.verify), m => ...)`; unconditional calls pass
    the value bare. The marker is a distinct type, so the builder can reject
    a bare function in the condition slot at build time ("did you mean
    `when()`?"). Rejected alternative: enforced 2-arity
