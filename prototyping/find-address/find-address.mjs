@@ -105,19 +105,27 @@ const GET_PAGE_CODE = `JSON.stringify({
 // Formats a list of clickable elements into a human-readable string.
 // Each line shows the element type, its text, where it links to, and
 // whether it has click handlers. The AI uses this list to decide what to
-// click next.
+// click next. Filters out non-interactive tags (body, script, etc.) and
+// truncates long text to keep the list readable.
+const SKIP_TAGS = new Set(['body', 'html', 'head', 'script', 'style', 'meta', 'link', 'noscript']);
+
 function formatClickables(els) {
   if (!Array.isArray(els) || !els.length) return '';
-  return els.map((el) => {
-    const tag = String(el.tag || el.tagName || '?').toLowerCase();
-    const text = String(el.text || el.innerText || '').replace(/\n/g, ' ').trim();
-    let suffix = '';
-    if (el.href) suffix += ` (${el.href})`;
-    if (Array.isArray(el.listeners) && el.listeners.length) {
-      suffix += ` [${el.listeners.map((l) => l.type).join(',')}]`;
-    }
-    return `${tag} "${text}"${suffix}`.trim();
-  }).filter((l) => l.length > 4).join('\n');
+  return els
+    .filter((el) => !SKIP_TAGS.has(String(el.tag || el.tagName || '').toLowerCase()))
+    .map((el) => {
+      const tag = String(el.tag || el.tagName || '?').toLowerCase();
+      const text = String(el.text || el.innerText || '').replace(/\n/g, ' ').trim().slice(0, 80);
+      let suffix = '';
+      if (el.href) suffix += ` (${el.href})`;
+      if (Array.isArray(el.listeners) && el.listeners.length) {
+        suffix += ` [${el.listeners.map((l) => l.type).join(',')}]`;
+      }
+      return `${tag} "${text}"${suffix}`.trim();
+    })
+    .filter((l) => l.length > 4)
+    .slice(0, 30)
+    .join('\n');
 }
 
 // ─── THE TREE ────────────────────────────────────────────────────────────────
