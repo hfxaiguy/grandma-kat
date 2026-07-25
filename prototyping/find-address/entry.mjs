@@ -32,7 +32,7 @@ try {
       },
       tools: makeToolRegistry(client),
       memory: url ? { url } : {},
-      logLevel: 'info',
+      logLevel: 'debug',
     }
   );
 
