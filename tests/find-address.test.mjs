@@ -107,8 +107,8 @@ test('find-address: does not navigate when m.url is absent', async () => {
 test('find-address: loops, picks a clickable, then finds the address', async () => {
   const page = freshPage();
   page.clickables = [
-    { tag: 'a', text: 'Locations', href: 'https://example.com/locations' },
-    { tag: 'a', text: 'About', href: 'https://example.com/about' },
+    { tag: 'a', text: 'Locations', href: 'https://example.com/locations', selector: 'a[href="https://example.com/locations"]' },
+    { tag: 'a', text: 'About', href: 'https://example.com/about', selector: 'a[href="https://example.com/about"]' },
   ];
   const tools = {
     ...makeBrowserTools(page),
@@ -191,7 +191,7 @@ test('find-address: passes tried list into the next pick_action prompt', async (
 
 test('find-address: retries pick_action when the LLM emits no tool call', async () => {
   const page = freshPage();
-  page.clickables = [{ tag: 'a', text: 'Contact', href: 'https://example.com/c' }];
+  page.clickables = [{ tag: 'a', text: 'Contact', href: 'https://example.com/c', selector: 'a[href="https://example.com/c"]' }];
   const tools = {
     ...makeBrowserTools(page),
     navigate: tool(async (args) => { page.url = args.url; page.text = '1 Acme Way, NYC'; return 'n'; }),
@@ -225,7 +225,7 @@ test('find-address: retries pick_action when the LLM emits no tool call', async 
 
 test('find-address: until loop exhausts after max iterations', async () => {
   const page = freshPage();
-  page.clickables = [{ tag: 'a', text: 'X', href: 'https://x' }];
+  page.clickables = [{ tag: 'a', text: 'X', href: 'https://x', selector: 'a[href="https://x"]' }];
   const tools = makeBrowserTools(page);
 
   let i = 0;

@@ -222,7 +222,24 @@ export async function scanClickables(pageClient) {
         const tag = el.tagName.toLowerCase();
         const text = (el.innerText || el.textContent || '').trim().slice(0, 200);
         const href = el.href || null;
-        return { tag, text, href };
+
+        // Build a unique CSS selector for this element.
+        let selector = tag;
+        if (el.id) {
+          selector = '#' + CSS.escape(el.id);
+        } else if (el.href) {
+          selector = tag + '[href=' + JSON.stringify(el.href) + ']';
+        } else {
+          // Use nth-of-type among siblings.
+          const parent = el.parentElement;
+          if (parent) {
+            const siblings = Array.from(parent.children).filter(c => c.tagName === el.tagName);
+            const idx = siblings.indexOf(el);
+            if (idx >= 0) selector = tag + ':nth-of-type(' + (idx + 1) + ')';
+          }
+        }
+
+        return { tag, text, href, selector };
       })()`,
       returnByValue: true,
     });
@@ -254,6 +271,7 @@ export async function scanClickables(pageClient) {
       tag: m.tag,
       text: m.text,
       href: m.href,
+      selector: m.selector,
       listeners,
     });
   }

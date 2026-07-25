@@ -125,7 +125,8 @@ const SKIP_TAGS = new Set(['body', 'html', 'head', 'script', 'style', 'meta', 'l
 
 const RATE_ELEMENT_PROMPT = `Does this element likely lead to a page with a business address?
 
-Element: <{tag}> {text}{href}
+Element: <{tag}> "{text}"{href}
+Selector: {selector}
 
 Answer only: likely, maybe, or unlikely`;
 
@@ -179,9 +180,14 @@ export const pattern = Tree.name('find-address')
             const tag = String(el.tag || '?').toLowerCase();
             const text = String(el.text || '').replace(/\n/g, ' ').trim().slice(0, 80);
             const href = el.href ? ` (${el.href})` : '';
+            const selector = el.selector || tag;
             return [
               { role: 'system', content: SYSTEM_PROMPT },
-              { role: 'user', content: RATE_ELEMENT_PROMPT.replace('{tag}', tag).replace('{text}', text).replace('{href}', href) },
+              { role: 'user', content: RATE_ELEMENT_PROMPT
+                .replace('{tag}', tag)
+                .replace('{text}', text)
+                .replace('{href}', href)
+                .replace('{selector}', selector) },
             ];
           })
           .check(
@@ -212,9 +218,13 @@ export const pattern = Tree.name('find-address')
         .prompt(m => [
           { role: 'system', content: SYSTEM_PROMPT },
             { role: 'user', content: PICK_ACTION_PROMPT
-            .replace('{candidates}', (m.branch.candidates ?? []).map(el =>
-              JSON.stringify(el)
-            ).join('\n') || '(none)')
+            .replace('{candidates}', (m.branch.candidates ?? []).map(el => {
+              const tag = String(el.tag || '?').toLowerCase();
+              const text = String(el.text || '').replace(/\n/g, ' ').trim().slice(0, 80);
+              const href = el.href ? ` (${el.href})` : '';
+              const selector = el.selector || tag;
+              return `<${tag}> "${text}"${href} [selector: ${selector}]`;
+            }).join('\n') || '(none)')
             .replace('{tried}', JSON.stringify(m.branch.tried ?? []))
             .replace('{feedback}', m.error ? `\nPrevious attempt: ${m.error}\n` : '') },
         ])
