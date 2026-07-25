@@ -120,12 +120,12 @@ test('find-address: loops, picks a clickable, then finds the address', async () 
   };
 
   let i = 0;
-  const handler = async () => {
+  const handler = async (messages) => {
     const n = i++;
-    if (n === 0) return { content: 'no' };                                         // check_address
-    if (n === 1) return { tool_calls: [{ id: 'tc1', function: { name: 'navigate', arguments: '{"url":"https://example.com/locations"}' } }] }; // pick_action
-    if (n === 2) return { content: '500 Elm St, Portland, OR 97201' };             // check_address (address found)
-    throw new Error('unexpected call ' + n);
+    const last = messages[messages.length - 1];
+    if (last.content.startsWith('Below is the text content')) return { content: n === 0 ? 'no' : '500 Elm St, Portland, OR 97201' };
+    if (last.content.includes('Answer only: likely or unlikely')) return { content: 'likely' };
+    return { tool_calls: [{ id: 'tc1', function: { name: 'navigate', arguments: '{"url":"https://example.com/locations"}' } }] };
   };
 
   const { result } = await grandma.knit(pattern, {
@@ -147,22 +147,26 @@ test('find-address: passes tried list into the next pick_action prompt', async (
     navigate: tool(async (args) => { page.url = args.url; return 'n'; }),
   };
 
-  const calls = [];
+  const pickCalls = [];
   let i = 0;
-  // max(3) → 4 passes (initial + 3 retries). Each pass does check_address
-  // (1 call) + pick_action (1 call). Total = 2 calls per pass = 8 calls.
+  // max(3) → 4 passes. Each pass = check + 2 ratings + pick = 4 calls.
+  // 4 passes × 4 = 16 calls total.
   const handler = async (messages) => {
-    calls.push(messages.map((m) => ({ ...m })));
     const n = i++;
-    if (n === 0) return { content: 'no' };                                         // pass 1 check
-    if (n === 1) return { tool_calls: [{ id: 'tc1', function: { name: 'navigate', arguments: '{"url":"https://example.com/locations"}' } }] }; // pass 1 pick
-    if (n === 2) return { content: 'no' };                                         // pass 2 check
-    if (n === 3) return { tool_calls: [{ id: 'tc2', function: { name: 'navigate', arguments: '{"url":"https://example.com/about"}' } }] }; // pass 2 pick
-    if (n === 4) return { content: 'no' };                                         // pass 3 check
-    if (n === 5) return { tool_calls: [{ id: 'tc3', function: { name: 'navigate', arguments: '{"url":"https://example.com/third"}' } }] }; // pass 3 pick
-    if (n === 6) return { content: 'no' };                                         // pass 4 check
-    if (n === 7) return { content: 'no' };                                         // pass 4 pick (exhausts)
-    throw new Error('unexpected call ' + n);
+    const last = messages[messages.length - 1];
+    if (last.content.startsWith('Below is the text content')) return { content: 'no' };
+    if (last.content.includes('Answer only: likely or unlikely')) return { content: 'likely' };
+    // pick_action — record the messages for assertion
+    pickCalls.push(messages.map((m) => ({ ...m })));
+    if (pickCalls.length <= 3) {
+      const url = pickCalls.length === 1
+        ? 'https://example.com/locations'
+        : pickCalls.length === 2
+          ? 'https://example.com/about'
+          : 'https://example.com/third';
+      return { tool_calls: [{ id: `tc${pickCalls.length}`, function: { name: 'navigate', arguments: JSON.stringify({ url }) } }] };
+    }
+    return { content: 'no' }; // pass 4 pick (exhausts)
   };
 
   await assert.rejects(
@@ -173,13 +177,13 @@ test('find-address: passes tried list into the next pick_action prompt', async (
     /gave up/i
   );
 
-  // pick_action on iter 2 (call index 3) saw the tried list from iter 1.
-  const iter2Pick = calls[3].find((m) => m.content.includes('Already tried'));
+  // pick_action on pass 2 saw the tried list from pass 1.
+  const iter2Pick = pickCalls[1].find((m) => m.content.includes('Already tried'));
   assert.ok(iter2Pick, 'iter 2 pick_action prompt must include the tried list');
   assert.ok(iter2Pick.content.includes('https://example.com/locations'));
 
-  // pick_action on iter 3 (call index 5) saw the tried list from iters 1+2.
-  const iter3Pick = calls[5].find((m) => m.content.includes('Already tried'));
+  // pick_action on pass 3 saw the tried list from passes 1+2.
+  const iter3Pick = pickCalls[2].find((m) => m.content.includes('Already tried'));
   assert.ok(iter3Pick, 'iter 3 pick_action prompt must include the tried list');
   assert.ok(iter3Pick.content.includes('https://example.com/locations'));
   assert.ok(iter3Pick.content.includes('https://example.com/about'));
@@ -193,17 +197,21 @@ test('find-address: retries pick_action when the LLM emits no tool call', async 
     navigate: tool(async (args) => { page.url = args.url; page.text = '1 Acme Way, NYC'; return 'n'; }),
   };
 
-  const calls = [];
   let i = 0;
   // LLM first responds with a long, off-topic ramble — check rejects it.
   // Then a tool call succeeds. The check accepts tool calls with valid args.
   const handler = async (messages) => {
-    calls.push(messages.map((m) => ({ ...m })));
     const n = i++;
-    if (n === 0) return { content: 'no' };                                         // check_address
-    if (n === 1) return { content: 'I am thinking very hard about the situation and considering all of the various elements on the page that might be relevant. There are several candidates to evaluate and I want to be thorough in my analysis. Let me describe each one carefully and explain my reasoning for why each might or might not lead to a useful page.' }; // pick_action (ramble, no tool call)
-    if (n === 2) return { tool_calls: [{ id: 'tc1', function: { name: 'navigate', arguments: '{"url":"https://example.com/c"}' } }] }; // pick_action retry (tool call)
-    if (n === 3) return { content: '1 Acme Way, NYC' };                           // check_address (address found)
+    const last = messages[messages.length - 1];
+    if (last.content.startsWith('Below is the text content')) return { content: n === 0 ? 'no' : '1 Acme Way, NYC' };
+    if (last.content.includes('Answer only: likely or unlikely')) return { content: 'likely' };
+    // pick_action first time: ramble. Second time: tool call.
+    if (last.content.includes('Clickable elements')) {
+      if (last.content.includes('Previous attempt')) {
+        return { tool_calls: [{ id: 'tc1', function: { name: 'navigate', arguments: '{"url":"https://example.com/c"}' } }] };
+      }
+      return { content: 'I am thinking very hard about the situation and considering all of the various elements on the page that might be relevant. There are several candidates to evaluate and I want to be thorough in my analysis.' };
+    }
     throw new Error('unexpected call ' + n);
   };
 
@@ -213,10 +221,6 @@ test('find-address: retries pick_action when the LLM emits no tool call', async 
   });
 
   assert.equal(result, '1 Acme Way, NYC');
-  // The retry prompt (call index 2) should have included the check feedback
-  // about the missing tool call.
-  const retry = calls[2].find((m) => m.content.includes('Previous attempt'));
-  assert.ok(retry, 'retry prompt should include check feedback');
 });
 
 test('find-address: until loop exhausts after max iterations', async () => {
@@ -225,13 +229,14 @@ test('find-address: until loop exhausts after max iterations', async () => {
   const tools = makeBrowserTools(page);
 
   let i = 0;
-  // max(3) → 4 passes. Each pass = 1 check + 1 pick_action = 2 calls.
-  // We supply 8 responses (covering all 4 passes) so the runner can finish
-  // pass 4 and throw on the .until() exhaustion check.
-  const handler = async () => {
+  // max(3) → 4 passes. Each pass = check + 1 rating + pick = 3 calls.
+  // 4 passes × 3 = 12 calls total.
+  const handler = async (messages) => {
     const n = i++;
-    if (n % 2 === 0) return { content: 'no' };                                     // check_address
-    return { tool_calls: [{ id: `tc${n}`, function: { name: 'navigate', arguments: `{"url":"https://p${Math.floor(n/2)}"}` } }] }; // pick_action
+    const last = messages[messages.length - 1];
+    if (last.content.startsWith('Below is the text content')) return { content: 'no' };
+    if (last.content.includes('Answer only: likely or unlikely')) return { content: 'likely' };
+    return { tool_calls: [{ id: `tc${n}`, function: { name: 'navigate', arguments: `{"url":"https://p${Math.floor(n/3)}"}` } }] };
   };
 
   await assert.rejects(
@@ -245,25 +250,20 @@ test('find-address: until loop exhausts after max iterations', async () => {
     }
   );
 
-  assert.equal(i, 8); // 4 passes × 2 calls
+  assert.equal(i, 12); // 4 passes × 3 calls
 });
 
 test('find-address: pick_action passes through with "no candidates" text', async () => {
-  // The check accepts `m.prev[0] === 'no'` as a pass (no tool call, no
-  // retry) — this is how the prototype signals "nothing useful to do".
   const page = freshPage();
-  page.clickables = []; // empty candidates list — pick_action gets '(none)'
+  page.clickables = []; // empty candidates list
 
   let i = 0;
-  // max(3) → 4 passes. Each pass = 1 check + 1 pick_action "no candidates"
-  // (no agentic round 2 since no tool call) = 2 calls. 4 × 2 = 8 calls.
-  // The handler discriminates by prompt content so check_address always
-  // returns 'no' and pick_action always returns 'no candidates'.
+  // max(3) → 4 passes. No clickables → no rating calls. Each pass = check + pick = 2 calls.
+  // 4 passes × 2 = 8 calls total.
   const handler = async (messages) => {
     const n = i++;
     const last = messages[messages.length - 1];
-    const isCheckAddress = last.content.startsWith('Below is the text content');
-    if (isCheckAddress) return { content: 'no' };
+    if (last.content.startsWith('Below is the text content')) return { content: 'no' };
     return { content: 'no candidates' };
   };
 

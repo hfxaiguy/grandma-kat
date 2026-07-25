@@ -155,3 +155,33 @@ test('.return() validates arguments', () => {
   assert.throws(() => Tree.name('a').return(), /function/);
   assert.throws(() => Tree.name('a').return('not a fn'), /function/);
 });
+
+test('.map() parses name, arrayFn, and tree', () => {
+  const sub = Tree.name('rate').prompt(m => `rate ${m.item}`);
+  const t = Tree.name('a').map('rated', m => m.branch.items, sub);
+  const map = t.def.children[0];
+  assert.equal(map.kind, 'map');
+  assert.equal(map.name, 'rated');
+  assert.equal(typeof map.arrayFn, 'function');
+  assert.equal(map.tree.name, 'rate');
+  assert.equal(map.gate, null);
+});
+
+test('.map() supports when() gate', () => {
+  const sub = Tree.name('rate').prompt(m => `rate ${m.item}`);
+  const t = Tree.name('a').map(when(m => true), 'rated', m => [], sub);
+  const map = t.def.children[0];
+  assert.equal(map.kind, 'map');
+  assert.equal(typeof map.gate, 'function');
+});
+
+test('.map() validates arguments', () => {
+  const sub = Tree.name('rate').prompt(m => 'x');
+  assert.throws(() => Tree.name('a').map(), /collection name/);
+  assert.throws(() => Tree.name('a').map('x'), /array/);
+  assert.throws(() => Tree.name('a').map('x', m => [], null), /expected a Tree/);
+  // unnamed tree
+  const unnamed = { kind: 'tree', name: null, children: [{ kind: 'prompt', name: null, prompt: 'x', gate: null }], models: [], tools: [], untils: [], needs: [] };
+  assert.throws(() => Tree.name('a').map('x', m => [], unnamed), /named/);
+  assert.throws(() => Tree.name('a').map('has#hash', m => [], sub), /reserved/);
+});

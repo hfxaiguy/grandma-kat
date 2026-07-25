@@ -109,29 +109,25 @@ const GET_PAGE_CODE = `JSON.stringify({
 // truncates long text to keep the list readable.
 const SKIP_TAGS = new Set(['body', 'html', 'head', 'script', 'style', 'meta', 'link', 'noscript']);
 
-function formatClickables(els) {
-  if (!Array.isArray(els) || !els.length) return '';
-  return els
-    .filter((el) => !SKIP_TAGS.has(String(el.tag || el.tagName || '').toLowerCase()))
-    .map((el) => {
-      const tag = String(el.tag || el.tagName || '?').toLowerCase();
-      const text = String(el.text || el.innerText || '').replace(/\n/g, ' ').trim().slice(0, 80);
-      let suffix = '';
-      if (el.href) suffix += ` (${el.href})`;
-      if (Array.isArray(el.listeners) && el.listeners.length) {
-        suffix += ` [${el.listeners.map((l) => l.type).join(',')}]`;
-      }
-      return `${tag} "${text}"${suffix}`.trim();
-    })
-    .filter((l) => l.length > 4)
-    .join('\n');
-}
-
 // ─── THE TREE ────────────────────────────────────────────────────────────────
 //
 // The tree definition. Pass it to `grandma.knit(pattern, runtime)`.
 // The runtime provides the AI model and the browser tools (navigate, click,
 // etc.).
+//
+// The approach:
+// 1. Check if the current page has an address
+// 2. If not, scan for clickable elements
+// 3. Rate each element individually (likely/unlikely to lead to an address)
+// 4. Filter to only "likely" candidates
+// 5. Ask the AI to pick from the filtered list and act on it
+// 6. Loop until the address is found or we've tried 3 times
+
+const RATE_ELEMENT_PROMPT = `Does this element likely lead to a page with a business address?
+
+Element: {element}
+
+Answer only: likely or unlikely`;
 
 export const pattern = Tree.name('find-address')
   .model('default')
@@ -160,7 +156,8 @@ export const pattern = Tree.name('find-address')
 
   // STEP 4: If the address wasn't found, try to find it by clicking around.
   // This entire branch only runs when check_address said "no". Inside it,
-  // we scan the page for clickable things, pick one, click it, and loop.
+  // we scan the page for clickable things, rate each one, filter to the
+  // promising candidates, pick one, click it, and loop.
   .branch(when(m => isNo(m.branch.check_address)),
     Tree.name('try_find')
 
@@ -168,26 +165,62 @@ export const pattern = Tree.name('find-address')
       // Returns an array of { tag, text, href, listeners } objects.
       .call('scan_clickables', 'scan_clickables', () => ({}))
 
-      // 4b: Format the clickable elements into a readable list for the AI.
-      // Turns raw element data into lines like: <a> "Contact" (https://example.com/contact)
-      .memory('format_clickables', m =>
-        formatClickables(m.branch.scan_clickables ?? []))
+      // 4b: Filter out non-useful elements (body, script, etc.) and
+      // format into readable lines for the rating step.
+      .memory('formatted', m =>
+        (m.branch.scan_clickables ?? [])
+          .filter(el => !SKIP_TAGS.has(String(el.tag || '').toLowerCase()))
+          .map(el => {
+            const tag = String(el.tag || '?').toLowerCase();
+            const text = String(el.text || '').replace(/\n/g, ' ').trim().slice(0, 80);
+            let s = `${tag} "${text}"`;
+            if (el.href) s += ` (${el.href})`;
+            return s;
+          })
+          .filter(l => l.length > 4))
 
-      // 4c: Ask the AI to pick the best element to click.
-      // The AI sees the formatted list, what we've already tried, and any
-      // feedback from previous failures. It either calls a tool (navigate
-      // or click) or says "no candidates" if nothing looks promising.
+      // 4c: Rate each element individually. One LLM call per element.
+      // The AI sees a single element and answers "likely" or "unlikely".
+      .map('ratings', m => m.branch.formatted ?? [],
+        Tree.name('rate_element')
+          .prompt(m => [
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: RATE_ELEMENT_PROMPT.replace('{element}', m.item) },
+          ])
+          .check(
+            m => {
+              const answer = m.prev[0]?.trim().toLowerCase();
+              if (answer === 'likely' || answer === 'unlikely') return true;
+              return 'Answer only: likely or unlikely';
+            },
+            goback(1, max(2))
+          ))
+
+      // 4d: Build the filtered candidate list. Pair each formatted element
+      // with its rating, keep only "likely" ones.
+      .memory('candidates', m => {
+        const ratings = m.branch.ratings ?? [];
+        const formatted = m.branch.formatted ?? [];
+        return formatted
+          .map((el, i) => ({ element: el, rating: ratings[i] }))
+          .filter(r => r.rating === 'likely')
+          .map(r => r.element);
+      })
+
+      // 4e: Ask the AI to pick the best candidate and act on it.
+      // The AI sees only the "likely" elements, what we've already tried,
+      // and any feedback from previous failures.
       .branch(Tree.name('pick_action')
         .tools('navigate', 'click')
         .prompt(m => [
           { role: 'system', content: SYSTEM_PROMPT },
             { role: 'user', content: PICK_ACTION_PROMPT
-            .replace('{candidates}', m.branch.format_clickables || '(none)')
+            .replace('{candidates}', (m.branch.candidates ?? []).join('\n') || '(none)')
             .replace('{tried}', JSON.stringify(m.branch.tried ?? []))
             .replace('{feedback}', m.error ? `\nPrevious attempt: ${m.error}\n` : '') },
         ])
 
-        // 4d: Validate the AI's choice. The AI must either:
+        // Validate the AI's choice. The AI must either:
         //   - Call a tool (navigate or click) that succeeds, OR
         //   - Say "no candidates" (a short text response containing "no")
         //
@@ -211,7 +244,7 @@ export const pattern = Tree.name('find-address')
           goback(1, max(3, m => `pick_action gave up: ${m.error}`))
         ))
 
-      // 4e: Remember what we just tried. This adds the tool call arguments
+      // 4f: Remember what we just tried. This adds the tool call arguments
       // (e.g., the URL we navigated to, or the selector we clicked) to a
       // running list in memory. Next time through the loop, this list is
       // shown to the AI so it doesn't pick the same thing again.
@@ -228,7 +261,7 @@ export const pattern = Tree.name('find-address')
           return [...(cur ?? []), tc.arguments];
         })
 
-      // 4f: Wait for the page to load after clicking. This only runs if
+      // 4g: Wait for the page to load after clicking. This only runs if
       // pick_action actually called a tool (navigated or clicked). If the
       // AI said "no candidates" instead, there's nothing to wait for.
       .call(when(m => m.branch.tried != null),
@@ -236,8 +269,8 @@ export const pattern = Tree.name('find-address')
 
   // THE LOOP: Keep going until the address is found, or give up after
   // 3 full attempts. Each attempt = check the page, scan for clicks,
-  // pick one, click it, check the new page. If we exhaust all attempts,
-  // the tree throws an error with a descriptive message.
+  // rate each, pick one, click it, check the new page. If we exhaust
+  // all attempts, the tree throws an error with a descriptive message.
   .until(
     m => !isNo(m.branch.check_address),
     max(3, m => `find-address: gave up after 3 iterations: ${m.error ?? 'address not found'}`)

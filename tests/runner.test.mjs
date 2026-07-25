@@ -344,3 +344,67 @@ test('.return() with gate fires when condition is true', async () => {
   assert.equal(result, 'stopped');
   assert.equal(handler.calls.length, 1);
 });
+
+test('.map() runs subtree per element and collects results', async () => {
+  const items = ['a', 'b', 'c'];
+  let callIdx = 0;
+  const calls = [];
+  const handler = async (messages) => {
+    calls.push(messages);
+    return { content: `rated-${items[callIdx++]}` };
+  };
+  const sub = Tree.name('rate').prompt(m => `rate ${m.item}`);
+  const pattern = Tree.name('m')
+    .map('rated', m => items, sub);
+
+  const { result, memory } = await grandma.knit(pattern, mockRuntime(handler));
+  assert.deepEqual(result, ['rated-a', 'rated-b', 'rated-c']);
+  assert.deepEqual(memory.rated, ['rated-a', 'rated-b', 'rated-c']);
+  assert.equal(calls.length, 3);
+});
+
+test('.map() injects m.item for each invocation', async () => {
+  const seen = [];
+  const items = [{ name: 'x' }, { name: 'y' }];
+  let callIdx = 0;
+  const handler = async () => ({ content: `done-${callIdx++}` });
+  const sub = Tree.name('s').prompt(m => { seen.push(m.item); return `done`; });
+  const pattern = Tree.name('m').map('out', m => items, sub);
+
+  await grandma.knit(pattern, mockRuntime(handler));
+  assert.deepEqual(seen, [{ name: 'x' }, { name: 'y' }]);
+});
+
+test('.map() with empty array produces empty result', async () => {
+  const handler = async () => ({ content: 'should not run' });
+  const sub = Tree.name('s').prompt(m => 'x');
+  const pattern = Tree.name('m').map('out', m => [], sub);
+
+  const { result, memory } = await grandma.knit(pattern, mockRuntime(handler));
+  assert.deepEqual(result, []);
+  assert.deepEqual(memory.out, []);
+});
+
+test('.map() with gate skips when false', async () => {
+  const handler = scripted(['val']);
+  const sub = Tree.name('s').prompt(m => 'x');
+  const pattern = Tree.name('m')
+    .prompt(m => 'val')
+    .map(when(m => false), 'out', m => ['a', 'b'], sub);
+
+  const { memory } = await grandma.knit(pattern, mockRuntime(handler));
+  assert.equal(memory.out, undefined);
+});
+
+test('.map() subtree can use .memory() and .return()', async () => {
+  const items = [1, 2, 3];
+  let callIdx = 0;
+  const handler = async () => ({ content: `${items[callIdx++] * 10}` });
+  const sub = Tree.name('transform')
+    .prompt(m => `transform ${m.item}`)
+    .memory('result', m => parseInt(m.prev[0]));
+  const pattern = Tree.name('m').map('out', m => items, sub);
+
+  const { result } = await grandma.knit(pattern, mockRuntime(handler));
+  assert.deepEqual(result, [10, 20, 30]);
+});

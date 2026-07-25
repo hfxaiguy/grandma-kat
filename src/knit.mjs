@@ -128,6 +128,8 @@ async function execTree(exec, tree, scope, parentScope) {
           }
           i++;
           continue;
+        } else if (child.kind === 'map') {
+          outcome = await execMap(exec, child, scope);
         } else {
           outcome = await execCall(exec, child, scope);
         }
@@ -256,6 +258,33 @@ async function execMemory(exec, child, scope) {
   return { value, record: { content: value } };
 }
 
+// Runs a subtree per element of an array. Each invocation gets `m.item`
+// injected. Results are collected into an array in the parent scope.
+async function execMap(exec, child, scope) {
+  const view = makeView(scope);
+  const items = await callFn(child.arrayFn, view, `array fn of '${child.name}'`);
+
+  if (!Array.isArray(items) || items.length === 0) {
+    const empty = [];
+    scope.slots[child.name] = empty;
+    logEvent(exec, 'map', { child: child.name, count: 0 });
+    return { value: empty, record: { content: empty } };
+  }
+
+  const results = [];
+  for (let idx = 0; idx < items.length; idx++) {
+    const itemScope = new Scope(scope);
+    itemScope.slots.item = items[idx];
+    const out = await execTree(exec, child.tree, itemScope, scope);
+    results.push(out.value);
+    logEvent(exec, 'map_item', { child: child.name, index: idx, value: out.value });
+  }
+
+  scope.slots[child.name] = results;
+  logEvent(exec, 'map', { child: child.name, count: results.length });
+  return { value: results, record: { content: results } };
+}
+
 // --- memory helpers ---
 
 function record(scope, childIndex, name, outcome) {
@@ -350,6 +379,7 @@ function autoname(tree) {
   tree.children.forEach((child, idx) => {
     if (child.name == null) child.name = `${tree.name}#${idx + 1}`;
     if (child.kind === 'branch') autoname(child.tree);
+    if (child.kind === 'map') autoname(child.tree);
   });
 }
 
@@ -368,6 +398,7 @@ function validateTree(tree, warnings) {
     }
     seen.add(child.name);
     if (child.kind === 'branch') validateTree(child.tree, warnings);
+    if (child.kind === 'map') validateTree(child.tree, warnings);
   }
 
   for (const kind of ['models', 'tools', 'untils']) {
@@ -412,6 +443,7 @@ function collectNames(tree, set) {
   for (const child of tree.children) {
     set.add(child.name);
     if (child.kind === 'branch') collectNames(child.tree, set);
+    if (child.kind === 'map') collectNames(child.tree, set);
   }
 }
 
@@ -435,6 +467,7 @@ function validateRuntime(def, runtime) {
     for (const c of t.children) {
       if (c.kind === 'call') callRefs.push({ name: c.tool, path });
       if (c.kind === 'branch') collect(c.tree, `${path}/${c.name}`);
+      if (c.kind === 'map') collect(c.tree, `${path}/${c.name}`);
     }
   };
   collect(def, def.name);

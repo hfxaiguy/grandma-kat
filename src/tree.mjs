@@ -162,6 +162,31 @@ function makeBuilder(def) {
       return next(def, (d) => { d.children.push(child); });
     },
 
+    // Accumulative: append a map leaf (runs a subtree per array element).
+    //   .map(name, arrayFn, tree)               — collect results under name
+    //   .map(when(cond), name, arrayFn, tree)
+    // Each element gets `m.item` injected. Results collected into an array
+    // in the parent scope under `name`. Empty array → no invocations.
+    map(...rawArgs) {
+      const { gate, args } = takeGate(rawArgs, '.map()');
+      const name = args.shift();
+      if (typeof name !== 'string' || name.length === 0) {
+        throw new TypeError(".map(): first argument must be the collection name (string), e.g. .map('rated', m => arr, tree)");
+      }
+      assertValidName(name, '.map()');
+      const arrayFn = args.shift();
+      if (typeof arrayFn !== 'function') {
+        throw new TypeError('.map(): second argument must be a function returning an array');
+      }
+      const tree = unwrap(args.shift());
+      if (tree.name == null) {
+        throw new TypeError('.map(): subtree must be named (call .name() first)');
+      }
+      if (args.length !== 0) throw new TypeError('.map(): too many arguments');
+      const child = { kind: 'map', name, arrayFn, tree, gate };
+      return next(def, (d) => { d.children.push(child); });
+    },
+
     // Selective: model rules, last match wins.
     model(...rawArgs) {
       const { gate, args } = takeGate(rawArgs, '.model()');

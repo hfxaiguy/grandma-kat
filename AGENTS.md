@@ -433,6 +433,50 @@ Tree.name('pick_action')
 and the tree's exported value is the return value. When it doesn't fire
 (returns `undefined`), it occupies no position in `m.prev`.
 
+### `.map()`: per-element subtree execution (chosen)
+
+`.map(name, arrayFn, tree)` runs a subtree once per element of an array,
+sequentially. Each invocation gets `m.item` injected (the raw array element).
+Results are collected into an array in the parent scope under `name`.
+
+```js
+.map('ratings', m => m.branch.clickables,
+  Tree.name('rate')
+    .prompt(m => `Rate: ${m.item.text}\nlikely/unlikely`)
+    .check(m => { ... }, goback(1, max(2))))
+// m.branch.ratings = ['likely', 'unlikely', 'likely', ...]
+```
+
+**Signature:** `.map(name, arrayFn, tree)` or `.map(when(cond), name, arrayFn, tree)`.
+
+**Semantics:**
+- `arrayFn(memory)` returns the array to iterate over (read from memory)
+- Each invocation creates a child scope with `m.item` set to the current element
+- The subtree runs fully (all children, checks, etc.) per element
+- Results collected into an array → stored in parent scope under `name`
+- Empty array → no invocations, `m.branch.name = []`
+- Sequential execution (one element at a time)
+- Supports `when()` gates
+
+**Use cases:**
+- Rating/scoring elements individually (one LLM call per element)
+- Filtering candidates by running a check per element
+- Transforming array elements through a subtree pipeline
+
+**Combined with `.memory()` and `.return()`:**
+
+```js
+.map('rated', m => m.branch.items,
+  Tree.name('rate')
+    .prompt(m => `Rate: ${m.item}\nlikely/unlikely`)
+    .check(m => { ... }, goback(1, max(2)))
+    .memory('score', m => ({ element: m.item, rating: m.prev[0] })))
+// m.branch.rated = [{ element: ..., rating: 'likely' }, ...]
+
+.memory('filtered', m =>
+  (m.branch.rated ?? []).filter(r => r.rating === 'likely'))
+```
+
 ## Memory Model: Scope Chain (chosen)
 
 **Memory is a scope chain.** Every branch owns a memory — a set of name →
