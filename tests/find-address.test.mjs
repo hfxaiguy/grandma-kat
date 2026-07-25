@@ -124,7 +124,7 @@ test('find-address: loops, picks a clickable, then finds the address', async () 
     const n = i++;
     const last = messages[messages.length - 1];
     if (last.content.startsWith('Below is the text content')) return { content: n === 0 ? 'no' : '500 Elm St, Portland, OR 97201' };
-    if (last.content.includes('Answer only: likely or unlikely')) return { content: 'likely' };
+    if (last.content.includes('Answer only: likely, maybe, or unlikely')) return { content: 'likely' };
     return { tool_calls: [{ id: 'tc1', function: { name: 'navigate', arguments: '{"url":"https://example.com/locations"}' } }] };
   };
 
@@ -155,7 +155,7 @@ test('find-address: passes tried list into the next pick_action prompt', async (
     const n = i++;
     const last = messages[messages.length - 1];
     if (last.content.startsWith('Below is the text content')) return { content: 'no' };
-    if (last.content.includes('Answer only: likely or unlikely')) return { content: 'likely' };
+    if (last.content.includes('Answer only: likely, maybe, or unlikely')) return { content: 'likely' };
     // pick_action — record the messages for assertion
     pickCalls.push(messages.map((m) => ({ ...m })));
     if (pickCalls.length <= 3) {
@@ -204,7 +204,7 @@ test('find-address: retries pick_action when the LLM emits no tool call', async 
     const n = i++;
     const last = messages[messages.length - 1];
     if (last.content.startsWith('Below is the text content')) return { content: n === 0 ? 'no' : '1 Acme Way, NYC' };
-    if (last.content.includes('Answer only: likely or unlikely')) return { content: 'likely' };
+    if (last.content.includes('Answer only: likely, maybe, or unlikely')) return { content: 'likely' };
     // pick_action first time: ramble. Second time: tool call.
     if (last.content.includes('Clickable elements')) {
       if (last.content.includes('Previous attempt')) {
@@ -235,7 +235,7 @@ test('find-address: until loop exhausts after max iterations', async () => {
     const n = i++;
     const last = messages[messages.length - 1];
     if (last.content.startsWith('Below is the text content')) return { content: 'no' };
-    if (last.content.includes('Answer only: likely or unlikely')) return { content: 'likely' };
+    if (last.content.includes('Answer only: likely, maybe, or unlikely')) return { content: 'likely' };
     return { tool_calls: [{ id: `tc${n}`, function: { name: 'navigate', arguments: `{"url":"https://p${Math.floor(n/3)}"}` } }] };
   };
 

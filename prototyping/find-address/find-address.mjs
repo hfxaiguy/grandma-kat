@@ -125,9 +125,9 @@ const SKIP_TAGS = new Set(['body', 'html', 'head', 'script', 'style', 'meta', 'l
 
 const RATE_ELEMENT_PROMPT = `Does this element likely lead to a page with a business address?
 
-Element: {element}
+Element: <{tag}> {text}{href}
 
-Answer only: likely or unlikely`;
+Answer only: likely, maybe, or unlikely`;
 
 export const pattern = Tree.name('find-address')
   .model('default')
@@ -165,43 +165,40 @@ export const pattern = Tree.name('find-address')
       // Returns an array of { tag, text, href, listeners } objects.
       .call('scan_clickables', 'scan_clickables', () => ({}))
 
-      // 4b: Filter out non-useful elements (body, script, etc.) and
-      // format into readable lines for the rating step.
-      .memory('formatted', m =>
+      // 4b: Filter out non-useful elements (body, script, etc.).
+      .memory('filtered', m =>
         (m.branch.scan_clickables ?? [])
-          .filter(el => !SKIP_TAGS.has(String(el.tag || '').toLowerCase()))
-          .map(el => {
-            const tag = String(el.tag || '?').toLowerCase();
-            const text = String(el.text || '').replace(/\n/g, ' ').trim().slice(0, 80);
-            let s = `${tag} "${text}"`;
-            if (el.href) s += ` (${el.href})`;
-            return s;
-          })
-          .filter(l => l.length > 4))
+          .filter(el => !SKIP_TAGS.has(String(el.tag || '').toLowerCase())))
 
       // 4c: Rate each element individually. One LLM call per element.
-      // The AI sees a single element and answers "likely" or "unlikely".
-      .map('ratings', m => m.branch.formatted ?? [],
+      // The AI sees a single element and answers "likely", "maybe", or "unlikely".
+      .map('ratings', m => m.branch.filtered ?? [],
         Tree.name('rate_element')
-          .prompt(m => [
-            { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: RATE_ELEMENT_PROMPT.replace('{element}', m.item) },
-          ])
+          .prompt(m => {
+            const el = m.item;
+            const tag = String(el.tag || '?').toLowerCase();
+            const text = String(el.text || '').replace(/\n/g, ' ').trim().slice(0, 80);
+            const href = el.href ? ` (${el.href})` : '';
+            return [
+              { role: 'system', content: SYSTEM_PROMPT },
+              { role: 'user', content: RATE_ELEMENT_PROMPT.replace('{tag}', tag).replace('{text}', text).replace('{href}', href) },
+            ];
+          })
           .check(
             m => {
               const answer = m.prev[0]?.trim().toLowerCase();
-              if (answer === 'likely' || answer === 'unlikely') return true;
-              return 'Answer only: likely or unlikely';
+              if (answer === 'likely' || answer === 'maybe' || answer === 'unlikely') return true;
+              return 'Answer only: likely, maybe, or unlikely';
             },
             goback(1, max(2))
           ))
 
-      // 4d: Build the filtered candidate list. Pair each formatted element
+      // 4d: Build the filtered candidate list. Pair each element
       // with its rating, keep only "likely" ones.
       .memory('candidates', m => {
         const ratings = m.branch.ratings ?? [];
-        const formatted = m.branch.formatted ?? [];
-        return formatted
+        const filtered = m.branch.filtered ?? [];
+        return filtered
           .map((el, i) => ({ element: el, rating: ratings[i] }))
           .filter(r => r.rating === 'likely')
           .map(r => r.element);
@@ -215,7 +212,12 @@ export const pattern = Tree.name('find-address')
         .prompt(m => [
           { role: 'system', content: SYSTEM_PROMPT },
             { role: 'user', content: PICK_ACTION_PROMPT
-            .replace('{candidates}', (m.branch.candidates ?? []).join('\n') || '(none)')
+            .replace('{candidates}', (m.branch.candidates ?? []).map(el => {
+              const tag = String(el.tag || '?').toLowerCase();
+              const text = String(el.text || '').replace(/\n/g, ' ').trim().slice(0, 80);
+              const href = el.href ? ` (${el.href})` : '';
+              return `<${tag}> "${text}"${href}`;
+            }).join('\n') || '(none)')
             .replace('{tried}', JSON.stringify(m.branch.tried ?? []))
             .replace('{feedback}', m.error ? `\nPrevious attempt: ${m.error}\n` : '') },
         ])
