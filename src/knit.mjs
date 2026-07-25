@@ -22,7 +22,7 @@ export async function knit(rootInput, runtime = {}) {
   const def = finalize(rootInput, runtime);
   validateRuntime(def, runtime);
 
-  const logger = createLogger(runtime.logger ?? false);
+  const logger = createLogger(runtime.logger ?? false, runtime.logLevel ?? 'none');
   const exec = {
     runtime,
     logger,
