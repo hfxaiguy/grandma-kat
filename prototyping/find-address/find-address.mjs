@@ -124,7 +124,6 @@ function formatClickables(els) {
       return `${tag} "${text}"${suffix}`.trim();
     })
     .filter((l) => l.length > 4)
-    .slice(0, 30)
     .join('\n');
 }
 
