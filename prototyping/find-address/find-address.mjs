@@ -193,7 +193,7 @@ export const pattern = Tree.name('find-address')
           .check(
             m => {
               const answer = m.prev[0]?.trim().toLowerCase();
-              if (answer === 'likely' || answer === 'maybe' || answer === 'unlikely') return true;
+              if (answer.startsWith('likely') || answer.startsWith('maybe') || answer.startsWith('unlikely')) return true;
               return 'Answer only: likely, maybe, or unlikely';
             },
             goback(1, max(2))
@@ -206,7 +206,7 @@ export const pattern = Tree.name('find-address')
         const filtered = m.branch.filtered ?? [];
         return filtered
           .map((el, i) => ({ element: el, rating: ratings[i] }))
-          .filter(r => r.rating === 'likely')
+          .filter(r => r.rating?.trim().toLowerCase().startsWith('likely'))
           .map(r => r.element);
       })
 
