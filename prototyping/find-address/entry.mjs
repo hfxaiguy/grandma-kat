@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// Entry point for the find-address pattern. Starts the browser-mcp scrape
-// server, wires grandma-kat to the prototype's tools, and runs the pattern
-// against the optional URL passed on the command line.
+// Entry point for the find-address pattern. Launches Chrome if needed,
+// starts the browser-mcp scrape server, wires grandma-kat to the tools,
+// and runs the pattern against the optional URL passed on the command line.
 
+import { launchChrome } from '../browser-mcp/launch-chrome.mjs';
 import { startScrapeServer, callTool, stopScrapeServer } from '../lib/mcp.mjs';
 import { loadConfig } from '../lib/config.mjs';
 import grandma, { KnitError } from '../../src/index.mjs';
@@ -11,6 +12,8 @@ import { pattern } from './find-address.mjs';
 const url = process.argv[2];
 
 if (url) console.log(`Target URL: ${url}\n`);
+
+await launchChrome();
 
 const config = loadConfig();
 console.log('Starting scrape MCP server...');

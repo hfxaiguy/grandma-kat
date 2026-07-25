@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // Launch Chrome once, detached, with a remote-debugging port so the MCP server
 // can attach to it. The browser outlives this script.
+//
+// Can be used as a library: import { launchChrome, isUp } from './launch-chrome.mjs';
+// Or run directly: node launch-chrome.mjs
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -20,7 +23,7 @@ function findChrome() {
   return installations[0];
 }
 
-async function isUp(port) {
+export async function isUp(port = PORT) {
   try {
     await CDP.Version({ port });
     return true;
@@ -29,7 +32,7 @@ async function isUp(port) {
   }
 }
 
-async function launchChrome() {
+export async function launchChrome() {
   if (await isUp(PORT)) {
     console.log(`Chrome already running on port ${PORT}.`);
     const targets = await CDP.List({ port: PORT });
@@ -60,7 +63,6 @@ async function launchChrome() {
       fs.writeFileSync(STATE_FILE, JSON.stringify({ pid: child.pid, port: PORT, profileDir: PROFILE_DIR }, null, 2));
       console.log(`Chrome launched (pid ${child.pid}) on port ${PORT}.`);
       console.log(`Profile: ${PROFILE_DIR}`);
-      console.log('Navigate to your target page in this window, then use the browser tools.');
       return { port: PORT, pid: child.pid, reused: false };
     }
     await new Promise((r) => setTimeout(r, 250));
@@ -69,7 +71,11 @@ async function launchChrome() {
   throw new Error('Chrome did not expose its debugging port in time.');
 }
 
-launchChrome().catch((err) => {
-  console.error(err.message);
-  process.exit(1);
-});
+// When run directly, launch Chrome and exit.
+const isMain = process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, '/'));
+if (isMain) {
+  launchChrome().catch((err) => {
+    console.error(err.message);
+    process.exit(1);
+  });
+}
