@@ -212,12 +212,9 @@ export const pattern = Tree.name('find-address')
         .prompt(m => [
           { role: 'system', content: SYSTEM_PROMPT },
             { role: 'user', content: PICK_ACTION_PROMPT
-            .replace('{candidates}', (m.branch.candidates ?? []).map(el => {
-              const tag = String(el.tag || '?').toLowerCase();
-              const text = String(el.text || '').replace(/\n/g, ' ').trim().slice(0, 80);
-              const href = el.href ? ` (${el.href})` : '';
-              return `<${tag}> "${text}"${href}`;
-            }).join('\n') || '(none)')
+            .replace('{candidates}', (m.branch.candidates ?? []).map(el =>
+              JSON.stringify(el)
+            ).join('\n') || '(none)')
             .replace('{tried}', JSON.stringify(m.branch.tried ?? []))
             .replace('{feedback}', m.error ? `\nPrevious attempt: ${m.error}\n` : '') },
         ])
