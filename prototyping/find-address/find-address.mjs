@@ -121,119 +121,117 @@ function formatClickables(els) {
 
 // ─── THE TREE ────────────────────────────────────────────────────────────────
 //
-// `createFindAddressPattern` builds the tree definition. Pass the result
-// to `grandma.knit(pattern, runtime)`. The runtime provides the AI model
-// and the browser tools (navigate, click, etc.).
+// The tree definition. Pass it to `grandma.knit(pattern, runtime)`.
+// The runtime provides the AI model and the browser tools (navigate, click,
+// etc.).
 
-export function createFindAddressPattern() {
-  // A helper that returns true when the address check said "no" — meaning
-  // we need to keep looking. Used to gate the entire "try to find" branch.
-  const needsMore = (m) => isNo(m.branch.check_address);
+// A helper that returns true when the address check said "no" — meaning
+// we need to keep looking. Used to gate the entire "try to find" branch.
+const needsMore = (m) => isNo(m.branch.check_address);
 
-  return Tree.name('find-address')
-    .model('default')
+export const pattern = Tree.name('find-address')
+  .model('default')
 
-    // STEP 1: Navigate to the starting URL (if one was provided).
-    // This is gated — it only runs if `m.url` exists and is non-empty.
-    // If no URL was given (already on a page), this step is skipped.
-    .call(when(m => typeof m.url === 'string' && m.url.length > 0),
-      'navigate',
-      m => ({ url: m.url }))
+  // STEP 1: Navigate to the starting URL (if one was provided).
+  // This is gated — it only runs if `m.url` exists and is non-empty.
+  // If no URL was given (already on a page), this step is skipped.
+  .call(when(m => typeof m.url === 'string' && m.url.length > 0),
+    'navigate',
+    m => ({ url: m.url }))
 
-    // STEP 2: Grab the page content. This runs a small piece of JavaScript
-    // in the browser that reads the page text, URL, and title. The result
-    // is stored in memory as `get_page` so later steps can read it.
-    .call('get_page', 'exec_js', () => ({ code: GET_PAGE_CODE }))
+  // STEP 2: Grab the page content. This runs a small piece of JavaScript
+  // in the browser that reads the page text, URL, and title. The result
+  // is stored in memory as `get_page` so later steps can read it.
+  .call('get_page', 'exec_js', () => ({ code: GET_PAGE_CODE }))
 
-    // STEP 3: Ask the AI "Is there an address on this page?"
-    // The AI sees the page text and responds with either the address (yes)
-    // or the word "no". The response is stored as `check_address`.
-    .branch(Tree.name('check_address')
-      .prompt(m => [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: `Page text:\n\n${m.branch.get_page?.text ?? ''}` },
-        { role: 'user', content: STEP1_PROMPT },
-      ]))
+  // STEP 3: Ask the AI "Is there an address on this page?"
+  // The AI sees the page text and responds with either the address (yes)
+  // or the word "no". The response is stored as `check_address`.
+  .branch(Tree.name('check_address')
+    .prompt(m => [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: `Page text:\n\n${m.branch.get_page?.text ?? ''}` },
+      { role: 'user', content: STEP1_PROMPT },
+    ]))
 
-    // STEP 4: If the address wasn't found, try to find it by clicking around.
-    // This entire branch only runs when check_address said "no". Inside it,
-    // we scan the page for clickable things, pick one, click it, and loop.
-    .branch(when(needsMore),
-      Tree.name('try_find')
+  // STEP 4: If the address wasn't found, try to find it by clicking around.
+  // This entire branch only runs when check_address said "no". Inside it,
+  // we scan the page for clickable things, pick one, click it, and loop.
+  .branch(when(needsMore),
+    Tree.name('try_find')
 
-        // 4a: Scan the page for clickable elements (links, buttons, etc.).
-        // Returns an array of { tag, text, href, listeners } objects.
-        .call('scan_clickables', 'scan_clickables', () => ({}))
+      // 4a: Scan the page for clickable elements (links, buttons, etc.).
+      // Returns an array of { tag, text, href, listeners } objects.
+      .call('scan_clickables', 'scan_clickables', () => ({}))
 
-        // 4b: Format the clickable elements into a readable list for the AI.
-        // Turns raw element data into lines like: <a> "Contact" (https://example.com/contact)
-        .memory('format_clickables', m =>
-          formatClickables(m.branch.scan_clickables ?? []))
+      // 4b: Format the clickable elements into a readable list for the AI.
+      // Turns raw element data into lines like: <a> "Contact" (https://example.com/contact)
+      .memory('format_clickables', m =>
+        formatClickables(m.branch.scan_clickables ?? []))
 
-        // 4c: Ask the AI to pick the best element to click.
-        // The AI sees the formatted list, what we've already tried, and any
-        // feedback from previous failures. It either calls a tool (navigate
-        // or click) or says "no candidates" if nothing looks promising.
-        .branch(Tree.name('pick_action')
-          .tools('navigate', 'click')
-          .prompt(m => [
-            { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: STEP3_PROMPT
-              .replace('{candidates}', m.branch.format_clickables || '(none)')
-              .replace('{tried}', JSON.stringify(m.branch.tried ?? []))
-              .replace('{feedback}', m.error ? `\nPrevious attempt: ${m.error}\n` : '') },
-          ])
+      // 4c: Ask the AI to pick the best element to click.
+      // The AI sees the formatted list, what we've already tried, and any
+      // feedback from previous failures. It either calls a tool (navigate
+      // or click) or says "no candidates" if nothing looks promising.
+      .branch(Tree.name('pick_action')
+        .tools('navigate', 'click')
+        .prompt(m => [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: STEP3_PROMPT
+            .replace('{candidates}', m.branch.format_clickables || '(none)')
+            .replace('{tried}', JSON.stringify(m.branch.tried ?? []))
+            .replace('{feedback}', m.error ? `\nPrevious attempt: ${m.error}\n` : '') },
+        ])
 
-          // 4d: Validate the AI's choice. The AI must either:
-          //   - Call a tool (navigate or click) with valid arguments, OR
-          //   - Say "no candidates" (a short text response containing "no")
-          //
-          // If the AI gives a long rambling answer or invalid tool arguments,
-          // the check fails and the AI is asked to try again (up to 3 times).
-          .check(
-            m => {
-              const tc = m.raw.prev[0]?.toolCalls?.[0];
-              if (!tc) {
-                const text = String(m.prev[0] ?? '').trim().toLowerCase();
-                if (!text) return 'Empty response. Call navigate/click or say "no candidates".';
-                if (text.length < 80 && /\bno\b/.test(text)) return true;
-                return 'Did not call a tool. Call navigate/click, or respond with "no candidates".';
-              }
-              try { JSON.parse(tc.arguments); return true; }
-              catch { return 'Invalid JSON in tool call arguments.'; }
-            },
-            goback(1, max(3, m => `pick_action gave up: ${m.error}`))
-          ))
-
-        // 4e: Remember what we just tried. This adds the tool call arguments
-        // (e.g., the URL we navigated to, or the selector we clicked) to a
-        // running list in memory. Next time through the loop, this list is
-        // shown to the AI so it doesn't pick the same thing again.
+        // 4d: Validate the AI's choice. The AI must either:
+        //   - Call a tool (navigate or click) with valid arguments, OR
+        //   - Say "no candidates" (a short text response containing "no")
         //
-        // This runs at the try_find level (not inside pick_action) so the
-        // memory slot persists across loop iterations.
-        .memory(when(m => {
-            const tc = m.raw.branch.pick_action?.toolCalls?.[0];
-            return Boolean(tc && tc.name);
-          }),
-          'tried',
-          (m, cur) => {
-            const tc = m.raw.branch.pick_action?.toolCalls?.[0];
-            return [...(cur ?? []), tc.arguments];
-          })
+        // If the AI gives a long rambling answer or invalid tool arguments,
+        // the check fails and the AI is asked to try again (up to 3 times).
+        .check(
+          m => {
+            const tc = m.raw.prev[0]?.toolCalls?.[0];
+            if (!tc) {
+              const text = String(m.prev[0] ?? '').trim().toLowerCase();
+              if (!text) return 'Empty response. Call navigate/click or say "no candidates".';
+              if (text.length < 80 && /\bno\b/.test(text)) return true;
+              return 'Did not call a tool. Call navigate/click, or respond with "no candidates".';
+            }
+            try { JSON.parse(tc.arguments); return true; }
+            catch { return 'Invalid JSON in tool call arguments.'; }
+          },
+          goback(1, max(3, m => `pick_action gave up: ${m.error}`))
+        ))
 
-        // 4f: Wait for the page to load after clicking. This only runs if
-        // pick_action actually called a tool (navigated or clicked). If the
-        // AI said "no candidates" instead, there's nothing to wait for.
-        .call(when(m => m.branch.tried != null),
-          'wait_for_load', 'wait_for_load', () => ({ timeoutMs: 10000 })))
+      // 4e: Remember what we just tried. This adds the tool call arguments
+      // (e.g., the URL we navigated to, or the selector we clicked) to a
+      // running list in memory. Next time through the loop, this list is
+      // shown to the AI so it doesn't pick the same thing again.
+      //
+      // This runs at the try_find level (not inside pick_action) so the
+      // memory slot persists across loop iterations.
+      .memory(when(m => {
+          const tc = m.raw.branch.pick_action?.toolCalls?.[0];
+          return Boolean(tc && tc.name);
+        }),
+        'tried',
+        (m, cur) => {
+          const tc = m.raw.branch.pick_action?.toolCalls?.[0];
+          return [...(cur ?? []), tc.arguments];
+        })
 
-    // THE LOOP: Keep going until the address is found, or give up after
-    // 3 full attempts. Each attempt = check the page, scan for clicks,
-    // pick one, click it, check the new page. If we exhaust all attempts,
-    // the tree throws an error with a descriptive message.
-    .until(
-      m => !isNo(m.branch.check_address),
-      max(3, m => `find-address: gave up after 3 iterations: ${m.error ?? 'address not found'}`)
-    );
-}
+      // 4f: Wait for the page to load after clicking. This only runs if
+      // pick_action actually called a tool (navigated or clicked). If the
+      // AI said "no candidates" instead, there's nothing to wait for.
+      .call(when(m => m.branch.tried != null),
+        'wait_for_load', 'wait_for_load', () => ({ timeoutMs: 10000 })))
+
+  // THE LOOP: Keep going until the address is found, or give up after
+  // 3 full attempts. Each attempt = check the page, scan for clicks,
+  // pick one, click it, check the new page. If we exhaust all attempts,
+  // the tree throws an error with a descriptive message.
+  .until(
+    m => !isNo(m.branch.check_address),
+    max(3, m => `find-address: gave up after 3 iterations: ${m.error ?? 'address not found'}`)
+  );

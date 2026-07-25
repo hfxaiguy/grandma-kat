@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import grandma from '../src/index.mjs';
 import { tool } from './helpers.mjs';
-import { createFindAddressPattern } from '../prototyping/find-address/find-address.mjs';
+import { pattern } from '../prototyping/find-address/find-address.mjs';
 
 // Tool registry that mimics browser-mcp over an in-memory page. The exec_js
 // tool runs a small interpreter for the get_page pattern used by find-address.
@@ -65,7 +65,7 @@ test('find-address: exits on first iteration when page has an address', async ()
   });
 
   const { result, memory } = await grandma.knit(
-    createFindAddressPattern(),
+    pattern,
     { models: { default: { model: 'mock', handler } }, tools: makeBrowserTools(page) }
   );
 
@@ -83,7 +83,7 @@ test('find-address: navigates when m.url is set', async () => {
   });
   const tools = makeBrowserTools(page);
 
-  await grandma.knit(createFindAddressPattern(), {
+  await grandma.knit(pattern, {
     models: { default: { model: 'mock', handler } },
     tools,
     memory: { url: 'https://acme.example/contact' },
@@ -100,7 +100,7 @@ test('find-address: does not navigate when m.url is absent', async () => {
     throw new Error('unexpected call');
   });
 
-  await grandma.knit(createFindAddressPattern(), {
+  await grandma.knit(pattern, {
     models: { default: { model: 'mock', handler } },
     tools: makeBrowserTools(page),
   });
@@ -133,7 +133,7 @@ test('find-address: loops, picks a clickable, then finds the address', async () 
     throw new Error('unexpected call ' + n);
   };
 
-  const { result } = await grandma.knit(createFindAddressPattern(), {
+  const { result } = await grandma.knit(pattern, {
     models: { default: { model: 'mock', handler } },
     tools,
   });
@@ -177,7 +177,7 @@ test('find-address: passes tried list into the next pick_action prompt', async (
   };
 
   await assert.rejects(
-    grandma.knit(createFindAddressPattern(), {
+    grandma.knit(pattern, {
       models: { default: { model: 'mock', handler } },
       tools,
     }),
@@ -219,7 +219,7 @@ test('find-address: retries pick_action when the LLM emits no tool call', async 
     throw new Error('unexpected call ' + n);
   };
 
-  const { result } = await grandma.knit(createFindAddressPattern(), {
+  const { result } = await grandma.knit(pattern, {
     models: { default: { model: 'mock', handler } },
     tools,
   });
@@ -248,7 +248,7 @@ test('find-address: until loop exhausts after max iterations', async () => {
   };
 
   await assert.rejects(
-    grandma.knit(createFindAddressPattern(), {
+    grandma.knit(pattern, {
       models: { default: { model: 'mock', handler } },
       tools,
     }),
@@ -281,7 +281,7 @@ test('find-address: pick_action passes through with "no candidates" text', async
   };
 
   await assert.rejects(
-    grandma.knit(createFindAddressPattern(), {
+    grandma.knit(pattern, {
       models: { default: { model: 'mock', handler } },
       tools: makeBrowserTools(page),
     }),
@@ -295,7 +295,7 @@ test('find-address: pattern validates at knit() time (all tools exist)', async (
   // A pattern referencing tools not in the runtime registry should fail
   // loudly at knit() start.
   await assert.rejects(
-    grandma.knit(createFindAddressPattern(), {
+    grandma.knit(pattern, {
       models: { default: { model: 'mock', handler: async () => ({ content: 'x' }) } },
       tools: {
         navigate: tool(async () => 'n'),

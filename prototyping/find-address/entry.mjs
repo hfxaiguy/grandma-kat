@@ -6,7 +6,7 @@
 import { startScrapeServer, callTool, stopScrapeServer } from '../lib/mcp.mjs';
 import { loadConfig } from '../lib/config.mjs';
 import grandma, { KnitError } from '../../src/index.mjs';
-import { createFindAddressPattern } from './find-address.mjs';
+import { pattern } from './find-address.mjs';
 
 const url = process.argv[2];
 
@@ -18,7 +18,7 @@ const client = await startScrapeServer();
 
 try {
   const { result, memory, runId } = await grandma.knit(
-    createFindAddressPattern(),
+    pattern,
     {
       models: {
         default: {
