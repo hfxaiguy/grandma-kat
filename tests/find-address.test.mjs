@@ -1,6 +1,6 @@
 // Tests for the find-address pattern. These mock the LLM and the browser-mcp
-// tools, so the runner exercises the full tree (gates, tools, agentic loop,
-// .until) without needing a real browser.
+// tools, so the runner exercises the full tree (gates, tools, flow control)
+// without needing a real browser.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -43,11 +43,7 @@ function freshPage() {
   };
 }
 
-// A scripted handler that takes a list of "scenes" and a `sceneForCall`
-// function. Each scene returns the response for the Nth LLM call. This
-// models the agentic loop: a single pick_action invocation can take 2
-// calls (one for the tool call, one for the final text after seeing the
-// tool result).
+// A scripted handler that returns responses for the Nth LLM call.
 function scriptedScenes(callCount, sceneForCall) {
   let i = 0;
   return async (messages, { tools } = {}) => {
@@ -126,10 +122,9 @@ test('find-address: loops, picks a clickable, then finds the address', async () 
   let i = 0;
   const handler = async () => {
     const n = i++;
-    if (n === 0) return { content: 'no' };
-    if (n === 1) return { tool_calls: [{ id: 'tc1', function: { name: 'navigate', arguments: '{"url":"https://example.com/locations"}' } }] };
-    if (n === 2) return { content: '' };
-    if (n === 3) return { content: '500 Elm St, Portland, OR 97201' };
+    if (n === 0) return { content: 'no' };                                         // check_address
+    if (n === 1) return { tool_calls: [{ id: 'tc1', function: { name: 'navigate', arguments: '{"url":"https://example.com/locations"}' } }] }; // pick_action
+    if (n === 2) return { content: '500 Elm St, Portland, OR 97201' };             // check_address (address found)
     throw new Error('unexpected call ' + n);
   };
 
@@ -155,25 +150,19 @@ test('find-address: passes tried list into the next pick_action prompt', async (
   const calls = [];
   let i = 0;
   // max(3) → 4 passes (initial + 3 retries). Each pass does check_address
-  // (1 call) + pick_action (2 calls, agentic loop). Total = 12 calls; we
-  // supply the first 8 (which include 3 successful pick_actions) and let
-  // the runner exhaust on pass 4.
+  // (1 call) + pick_action (1 call). Total = 2 calls per pass = 8 calls.
   const handler = async (messages) => {
     calls.push(messages.map((m) => ({ ...m })));
     const n = i++;
-    if (n === 0) return { content: 'no' };
-    if (n === 1) return { tool_calls: [{ id: 'tc1', function: { name: 'navigate', arguments: '{"url":"https://example.com/locations"}' } }] };
-    if (n === 2) return { content: '' };
-    if (n === 3) return { content: 'no' };
-    if (n === 4) return { tool_calls: [{ id: 'tc2', function: { name: 'navigate', arguments: '{"url":"https://example.com/about"}' } }] };
-    if (n === 5) return { content: '' };
-    if (n === 6) return { content: 'no' };
-    if (n === 7) return { tool_calls: [{ id: 'tc3', function: { name: 'navigate', arguments: '{"url":"https://example.com/third"}' } }] };
-    if (n === 8) return { content: '' };
-    if (n === 9) return { content: 'no' };
-    // Pass 4's pick_action would emit a tool call; we don't care — the
-    // .until() check fires after all children and throws.
-    return { content: 'no' };
+    if (n === 0) return { content: 'no' };                                         // pass 1 check
+    if (n === 1) return { tool_calls: [{ id: 'tc1', function: { name: 'navigate', arguments: '{"url":"https://example.com/locations"}' } }] }; // pass 1 pick
+    if (n === 2) return { content: 'no' };                                         // pass 2 check
+    if (n === 3) return { tool_calls: [{ id: 'tc2', function: { name: 'navigate', arguments: '{"url":"https://example.com/about"}' } }] }; // pass 2 pick
+    if (n === 4) return { content: 'no' };                                         // pass 3 check
+    if (n === 5) return { tool_calls: [{ id: 'tc3', function: { name: 'navigate', arguments: '{"url":"https://example.com/third"}' } }] }; // pass 3 pick
+    if (n === 6) return { content: 'no' };                                         // pass 4 check
+    if (n === 7) return { content: 'no' };                                         // pass 4 pick (exhausts)
+    throw new Error('unexpected call ' + n);
   };
 
   await assert.rejects(
@@ -184,13 +173,13 @@ test('find-address: passes tried list into the next pick_action prompt', async (
     /gave up/i
   );
 
-  // pick_action on iter 2 (call index 4) saw the tried list from iter 1.
-  const iter2Pick = calls[4].find((m) => m.content.includes('Already tried'));
+  // pick_action on iter 2 (call index 3) saw the tried list from iter 1.
+  const iter2Pick = calls[3].find((m) => m.content.includes('Already tried'));
   assert.ok(iter2Pick, 'iter 2 pick_action prompt must include the tried list');
   assert.ok(iter2Pick.content.includes('https://example.com/locations'));
 
-  // pick_action on iter 3 (call index 7) saw the tried list from iters 1+2.
-  const iter3Pick = calls[7].find((m) => m.content.includes('Already tried'));
+  // pick_action on iter 3 (call index 5) saw the tried list from iters 1+2.
+  const iter3Pick = calls[5].find((m) => m.content.includes('Already tried'));
   assert.ok(iter3Pick, 'iter 3 pick_action prompt must include the tried list');
   assert.ok(iter3Pick.content.includes('https://example.com/locations'));
   assert.ok(iter3Pick.content.includes('https://example.com/about'));
@@ -211,11 +200,10 @@ test('find-address: retries pick_action when the LLM emits no tool call', async 
   const handler = async (messages) => {
     calls.push(messages.map((m) => ({ ...m })));
     const n = i++;
-    if (n === 0) return { content: 'no' };
-    if (n === 1) return { content: 'I am thinking very hard about the situation and considering all of the various elements on the page that might be relevant. There are several candidates to evaluate and I want to be thorough in my analysis. Let me describe each one carefully and explain my reasoning for why each might or might not lead to a useful page.' };
-    if (n === 2) return { tool_calls: [{ id: 'tc1', function: { name: 'navigate', arguments: '{"url":"https://example.com/c"}' } }] };
-    if (n === 3) return { content: '' };
-    if (n === 4) return { content: '1 Acme Way, NYC' };
+    if (n === 0) return { content: 'no' };                                         // check_address
+    if (n === 1) return { content: 'I am thinking very hard about the situation and considering all of the various elements on the page that might be relevant. There are several candidates to evaluate and I want to be thorough in my analysis. Let me describe each one carefully and explain my reasoning for why each might or might not lead to a useful page.' }; // pick_action (ramble, no tool call)
+    if (n === 2) return { tool_calls: [{ id: 'tc1', function: { name: 'navigate', arguments: '{"url":"https://example.com/c"}' } }] }; // pick_action retry (tool call)
+    if (n === 3) return { content: '1 Acme Way, NYC' };                           // check_address (address found)
     throw new Error('unexpected call ' + n);
   };
 
@@ -237,14 +225,13 @@ test('find-address: until loop exhausts after max iterations', async () => {
   const tools = makeBrowserTools(page);
 
   let i = 0;
-  // max(3) → 4 passes. Each pass = 1 check + 2 pick_action rounds = 3 calls.
-  // We supply 12 responses (covering all 4 passes) so the runner can finish
+  // max(3) → 4 passes. Each pass = 1 check + 1 pick_action = 2 calls.
+  // We supply 8 responses (covering all 4 passes) so the runner can finish
   // pass 4 and throw on the .until() exhaustion check.
   const handler = async () => {
     const n = i++;
-    if (n % 3 === 0) return { content: 'no' };
-    if (n % 3 === 1) return { tool_calls: [{ id: `tc${n}`, function: { name: 'navigate', arguments: `{"url":"https://p${Math.floor(n/3)}"}` } }] };
-    return { content: '' };
+    if (n % 2 === 0) return { content: 'no' };                                     // check_address
+    return { tool_calls: [{ id: `tc${n}`, function: { name: 'navigate', arguments: `{"url":"https://p${Math.floor(n/2)}"}` } }] }; // pick_action
   };
 
   await assert.rejects(
@@ -258,7 +245,7 @@ test('find-address: until loop exhausts after max iterations', async () => {
     }
   );
 
-  assert.equal(i, 12); // 4 passes × 3 calls
+  assert.equal(i, 8); // 4 passes × 2 calls
 });
 
 test('find-address: pick_action passes through with "no candidates" text', async () => {

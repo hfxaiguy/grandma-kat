@@ -188,20 +188,23 @@ export const pattern = Tree.name('find-address')
         ])
 
         // 4d: Validate the AI's choice. The AI must either:
-        //   - Call a tool (navigate or click) with valid arguments, OR
+        //   - Call a tool (navigate or click) that succeeds, OR
         //   - Say "no candidates" (a short text response containing "no")
         //
-        // If the AI gives a long rambling answer or invalid tool arguments,
-        // the check fails and the AI is asked to try again (up to 3 times).
+        // If the AI gives a long rambling answer, calls a tool that fails,
+        // or provides invalid tool arguments, the check fails and the AI
+        // is asked to try again (up to 3 times).
         .check(
           m => {
             const tc = m.raw.prev[0]?.toolCalls?.[0];
+            const tr = m.raw.prev[0]?.toolResults?.[0];
             if (!tc) {
               const text = String(m.prev[0] ?? '').trim().toLowerCase();
               if (!text) return 'Empty response. Call navigate/click or say "no candidates".';
               if (text.length < 80 && /\bno\b/.test(text)) return true;
               return 'Did not call a tool. Call navigate/click, or respond with "no candidates".';
             }
+            if (tr?.isError) return `Tool '${tc.name}' failed: ${tr.result}. Try a different element or use navigate instead of click.`;
             try { JSON.parse(tc.arguments); return true; }
             catch { return 'Invalid JSON in tool call arguments.'; }
           },

@@ -16,7 +16,6 @@ export class KnitError extends Error {
 }
 
 const RESERVED_MEMORY_KEYS = new Set(['prev', 'branch', 'raw', 'error']);
-const DEFAULT_MAX_TOOL_ROUNDS = 5;
 
 export async function knit(rootInput, runtime = {}) {
   const def = finalize(rootInput, runtime);
@@ -171,56 +170,53 @@ async function execPrompt(exec, child, scope) {
     },
   }));
 
-  const maxRounds = child.options.maxRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
   const record = { content: null, reasoning: null, toolCalls: [], toolResults: [], calls: [], model: modelName };
 
-  for (let round = 1; ; round++) {
-    const response = await callLlm(modelEntry, messages, { tools });
-    record.calls.push({
-      round,
-      messages: messages.map((m) => ({ ...m })),
-      response: { content: response.content, reasoning: response.reasoning, tool_calls: response.tool_calls ?? null },
-    });
-    logEvent(exec, 'llm_call', {
-      child: child.name, round, model: modelName,
-      content: response.content, toolCalls: response.tool_calls ?? null,
-    });
+  // One LLM call. If the model returns tool calls, execute them — but do
+  // NOT loop. The tree controls retries via .check() + goback().
+  const response = await callLlm(modelEntry, messages, { tools });
+  record.calls.push({
+    round: 1,
+    messages: messages.map((m) => ({ ...m })),
+    response: { content: response.content, reasoning: response.reasoning, tool_calls: response.tool_calls ?? null },
+  });
+  logEvent(exec, 'llm_call', {
+    child: child.name, round: 1, model: modelName,
+    content: response.content, toolCalls: response.tool_calls ?? null,
+  });
 
-    if (!response.tool_calls?.length) {
-      record.content = response.content;
-      record.reasoning = response.reasoning || null;
-      return { value: response.content, record };
-    }
-    if (round >= maxRounds) {
-      throw new KnitError(`prompt '${child.name}' exceeded max tool rounds (${maxRounds})`);
-    }
-
-    // Internal agentic loop: execute tool calls, feed results back.
-    messages.push({ role: 'assistant', content: response.content || null, tool_calls: response.tool_calls });
-    for (const tc of response.tool_calls) {
-      const name = tc.function?.name;
-      record.toolCalls.push({ id: tc.id, name, arguments: tc.function?.arguments });
-      const args = (() => { try { return JSON.parse(tc.function.arguments); } catch { return tc.function.arguments; } })();
-      let result;
-      let isError = false;
-      try {
-        const tool = exec.runtime.tools?.[name];
-        if (!tool) throw new KnitError(`unknown tool '${name}'`);
-        result = await tool.execute(args);
-      } catch (err) {
-        // Tool errors are fed back to the model, not fatal to the tree.
-        isError = true;
-        result = `error: ${err.message}`;
-      }
-      record.toolResults.push({ name, result, isError });
-      logEvent(exec, 'tool_result', { child: child.name, tool: name, args, result, isError });
-      messages.push({
-        role: 'tool',
-        tool_call_id: tc.id,
-        content: typeof result === 'string' ? result : JSON.stringify(result),
-      });
-    }
+  if (!response.tool_calls?.length) {
+    // No tool calls — text-only response.
+    record.content = response.content;
+    record.reasoning = response.reasoning || null;
+    return { value: response.content, record };
   }
+
+  // Execute tool calls (one round), then return.
+  for (const tc of response.tool_calls) {
+    const name = tc.function?.name;
+    record.toolCalls.push({ id: tc.id, name, arguments: tc.function?.arguments });
+    const args = (() => { try { return JSON.parse(tc.function.arguments); } catch { return tc.function.arguments; } })();
+    let result;
+    let isError = false;
+    try {
+      const tool = exec.runtime.tools?.[name];
+      if (!tool) throw new KnitError(`unknown tool '${name}'`);
+      result = await tool.execute(args);
+    } catch (err) {
+      isError = true;
+      result = `error: ${err.message}`;
+    }
+    record.toolResults.push({ name, result, isError });
+    logEvent(exec, 'tool_result', { child: child.name, tool: name, args, result, isError });
+  }
+
+  // The value is the text the model returned alongside the tool calls,
+  // or empty string if it only returned tool calls. The tree reads
+  // tool results via m.raw.prev[0].toolResults.
+  record.content = response.content || '';
+  record.reasoning = response.reasoning || null;
+  return { value: record.content, record };
 }
 
 async function execCall(exec, child, scope) {

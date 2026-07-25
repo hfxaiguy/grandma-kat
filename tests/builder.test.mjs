@@ -77,7 +77,7 @@ test('.needs() dedupes', () => {
 test('prompt options validate', () => {
   assert.throws(() => Tree.name('a').prompt(m => 'x', { bogus: 1 }), /unknown option/);
   assert.throws(() => Tree.name('a').prompt(m => 'x', { tools: 'nope' }), /array of strings/);
-  assert.doesNotThrow(() => Tree.name('a').prompt(m => 'x', { tools: [], maxRounds: 2 }));
+  assert.doesNotThrow(() => Tree.name('a').prompt(m => 'x', { tools: [] }));
 });
 
 test('registry: Tree.from() retrieves named trees', () => {

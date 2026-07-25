@@ -668,17 +668,14 @@ prompt children (resolution up the scope chain, like `.model()`). Opt out
 per prompt via options bag: `.prompt(fn, { tools: [] })`. Per-prompt tool
 sets → use named branches.
 
-**Round-trips: internal agentic loop (chosen).** When the LLM responds with
-tool calls, the prompt-leaf executes them via the runtime registry, appends
-assistant/tool messages, and re-invokes — until final text or a mandatory
-max-rounds cap. The leaf's exported value = the final text; reasoning, tool
-calls, and tool results are exposed via `m.raw` (nothing is hidden).
-Deferred: "pause mode" (leaf exports un-executed `toolCalls`; an explicit
-`.call()` sibling executes them) for pre-execution approval gates — design
-against a concrete approval use case. The protocol details (matching
-`tool_call_id`s, parallel calls, ordering) are exactly what LLM authors
-fumble — hiding them in the leaf mirrors the autoname contract: machinery
-invisible, contract explicit.
+**Tool calls: single round (chosen).** When the LLM responds with
+tool calls, the prompt-leaf executes them once — no internal loop. The
+leaf's exported value = the text the model returned (empty string if it
+only returned tool calls). Tool calls, results, and errors are exposed
+via `m.raw.prev[0].toolCalls` and `m.raw.prev[0].toolResults`. The tree
+controls retries via `.check()` + `goback()` — visible, controllable,
+debuggable. Small models often make poor recovery choices in an opaque
+loop; the tree structure makes every decision explicit.
 
 **Naming (chosen):** the direct tool-call leaf is `.call(name, argsFn)`,
 not `.tool()` — one letter from `.tools()`, too confusable.
@@ -812,7 +809,7 @@ Resolved:
 - ~~Memory history~~ → `m.prev` rewinds (current-path log); named slots
   latest-only with overwrite; full history via `m.raw.calls` and logs (see
   Memory Model).
-- ~~Tool-call round-trips~~ → internal agentic loop in the prompt-leaf with
-  max-rounds cap; everything exposed via `m.raw` (see Per-step tools).
+- ~~Tool-call round-trips~~ → single round: prompt executes tool calls once,
+  tree controls retries via `.check()` + `goback()` (see Per-step tools).
 - ~~`.tool()`/`.tools()` naming~~ → direct call is `.call()` (see Per-step
   tools).

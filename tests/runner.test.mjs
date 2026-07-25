@@ -156,40 +156,36 @@ test('model resolution: tree .model() overrides runtime default', async () => {
   assert.equal(usedBy.b, 1);
 });
 
-test('agentic tool loop: tool call executed, result fed back', async () => {
+test('prompt with tools: tool call executed, result in record', async () => {
   const executed = [];
   const tools = {
     search: tool(async ({ q }) => { executed.push(q); return `result:${q}`; }),
   };
   const handler = scripted([
     { content: '', tool_calls: [{ id: '1', function: { name: 'search', arguments: '{"q":"x"}' } }] },
-    { content: 'done' },
   ]);
   const pattern = Tree.name('agent')
     .tools('search')
     .prompt(m => 'find something');
 
   const { result } = await grandma.knit(pattern, mockRuntime(handler, { tools }));
-  assert.equal(result, 'done');
+  // One LLM call — tool was executed, result is in the record, not fed back.
+  assert.equal(result, '');
   assert.deepEqual(executed, ['x']);
-  // second LLM call received the tool result as a tool message
-  const second = handler.calls[1].messages;
-  assert.equal(second[second.length - 1].role, 'tool');
-  assert.equal(second[second.length - 1].content, 'result:x');
+  assert.equal(handler.calls.length, 1);
 });
 
-test('tool errors are fed back to the model, not fatal', async () => {
+test('tool errors are recorded, not fatal', async () => {
   const tools = { boom: tool(async () => { throw new Error('kaput'); }) };
   const handler = scripted([
     { content: '', tool_calls: [{ id: '1', function: { name: 'boom', arguments: '{}' } }] },
-    { content: 'recovered' },
   ]);
   const pattern = Tree.name('agent').tools('boom').prompt(m => 'go');
 
   const { result } = await grandma.knit(pattern, mockRuntime(handler, { tools }));
-  assert.equal(result, 'recovered');
-  const second = handler.calls[1].messages;
-  assert.equal(second[second.length - 1].content, 'error: kaput');
+  // One LLM call — tool error is recorded, not fed back to the model.
+  assert.equal(result, '');
+  assert.equal(handler.calls.length, 1);
 });
 
 test('.call() leaf executes a tool directly with args from memory', async () => {

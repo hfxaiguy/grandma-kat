@@ -244,15 +244,12 @@ function takeOptions(args, method) {
     return {};
   }
   args.pop();
-  const allowed = new Set(['tools', 'maxRounds']);
+  const allowed = new Set(['tools']);
   for (const k of Object.keys(opts)) {
     if (!allowed.has(k)) throw new TypeError(`${method}: unknown option '${k}'`);
   }
   if (opts.tools !== undefined && (!Array.isArray(opts.tools) || opts.tools.some((t) => typeof t !== 'string'))) {
     throw new TypeError(`${method}: options.tools must be an array of strings`);
-  }
-  if (opts.maxRounds !== undefined && (!Number.isInteger(opts.maxRounds) || opts.maxRounds < 1)) {
-    throw new TypeError(`${method}: options.maxRounds must be a positive integer`);
   }
   return opts;
 }
