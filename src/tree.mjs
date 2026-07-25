@@ -126,8 +126,8 @@ function makeBuilder(def) {
       return next(def, (d) => { d.children.push(child); });
     },
 
-    // Accumulative: append a memory-write leaf (side-effect only, no m.prev output).
-    //   .memory(name, fn)               — fn(m) or fn(m, currentValue) → stored value
+    // Accumulative: append a memory-write leaf.
+    //   .memory(name, fn)               — fn(m) or fn(m, currentValue) → stored value, appears in m.prev
     //   .memory(when(cond), name, fn)
     memory(...rawArgs) {
       const { gate, args } = takeGate(rawArgs, '.memory()');
@@ -142,6 +142,23 @@ function makeBuilder(def) {
       }
       if (args.length !== 0) throw new TypeError('.memory(): too many arguments');
       const child = { kind: 'memory', name, fn, gate };
+      return next(def, (d) => { d.children.push(child); });
+    },
+
+    // Accumulative: append a return leaf (early exit).
+    //   .return(fn)              — fn(m) → value; tree stops if value != null
+    //   .return(when(cond), fn)  — gated
+    // If fn returns undefined/null, the tree continues to the next child.
+    // If fn returns a value, remaining children are skipped and the tree
+    // exports that value.
+    return(...rawArgs) {
+      const { gate, args } = takeGate(rawArgs, '.return()');
+      const fn = args.shift();
+      if (typeof fn !== 'function') {
+        throw new TypeError('.return(): first argument must be a function, e.g. .return(m => "done")');
+      }
+      if (args.length !== 0) throw new TypeError('.return(): too many arguments');
+      const child = { kind: 'return', name: null, fn, gate };
       return next(def, (d) => { d.children.push(child); });
     },
 

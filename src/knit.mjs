@@ -116,7 +116,16 @@ async function execTree(exec, tree, scope, parentScope) {
         } else if (child.kind === 'prompt') {
           outcome = await execPrompt(exec, child, scope);
         } else if (child.kind === 'memory') {
-          await execMemory(exec, child, scope);
+          outcome = await execMemory(exec, child, scope);
+        } else if (child.kind === 'return') {
+          const view = makeView(scope);
+          const val = await callFn(child.fn, view, `return fn of '${child.name}'`);
+          if (val !== undefined && val !== null) {
+            const outcome = { value: val, record: { content: val } };
+            record(scope, i, child.name, outcome);
+            logEvent(exec, 'return', { child: child.name, value: val });
+            return exportOutcome(scope);
+          }
           i++;
           continue;
         } else {
@@ -237,13 +246,14 @@ async function execCall(exec, child, scope) {
   return { value: result, record: { content: result, tool: child.tool, args, toolResults: [result] } };
 }
 
-// Side-effect only: writes to a named memory slot, produces no m.prev output.
+// Writes to a named memory slot AND produces m.prev output (like a prompt).
 async function execMemory(exec, child, scope) {
   const view = makeView(scope);
   const current = scope.slots[child.name]; // read before write (may be undefined)
   const value = await callFn(child.fn, view, `memory fn of '${child.name}'`, current);
   scope.slots[child.name] = value;
   logEvent(exec, 'memory', { child: child.name, value });
+  return { value, record: { content: value } };
 }
 
 // --- memory helpers ---

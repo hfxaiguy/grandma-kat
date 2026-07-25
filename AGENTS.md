@@ -140,7 +140,8 @@ anonymous child**. A named tree is a pure container with config (`.name`,
 children. Leaves are anonymous invocation nodes: prompt-leaves (from
 `.prompt()`), tool-leaves (from `.call()`), check-leaves (from `.check()`,
 which produce no output on pass), memory-leaves (from `.memory()`, which
-write to a named slot but produce no `m.prev` output). Internal nodes are
+write to a named slot and produce `m.prev` output), return-leaves (from
+`.return()`, which can stop tree execution early). Internal nodes are
 named containers.
 
 ```js
@@ -163,7 +164,7 @@ only children exist. A named tree with zero children is a build error.
 **Chained prompts are sequences.** `.prompt(a).prompt(b)` runs both, in
 declared order (accumulative, like `.branch()`) — NOT last-match-wins. Rule
 of thumb: *doing* methods (`.branch`, `.prompt`, `.call`, `.check`,
-`.memory`) accumulate; *config* methods (`.model`, `.until`) select. Prompt variants
+`.memory`, `.return`) accumulate; *config* methods (`.model`, `.until`) select. Prompt variants
 are expressed as gated children:
 
 ```js
@@ -387,10 +388,50 @@ Tree.name('loop')
   .until(m => done, max(5))
 ```
 
-**`m.prev` behavior:** `.memory()` never appears in `m.prev`. The sibling
-after it sees `m.prev[0]` as whatever ran before the memory op. This is
-correct — memory writes are invisible plumbing, not data flowing through the
-pipeline.
+**`m.prev` behavior:** `.memory()` produces `m.prev` output — its written
+value appears in `m.prev` like a prompt's output. The sibling after it sees
+`m.prev[0]` as the memory value. This makes `.memory()` usable as the final
+step in a `.map()` subtree, where the collected value is the memory output.
+
+### `.return()`: early exit (chosen)
+
+`.return(fn)` is a leaf child that can stop tree execution early. If `fn`
+returns a value, remaining children are skipped and the tree exports that
+value. If `fn` returns `undefined` or `null`, the tree continues normally.
+
+```js
+.return(m => 'done')                           // always returns
+.return(when(m => m.branch.rated.length === 0), m => 'no candidates')  // conditional
+```
+
+**Signature:** `.return(fn)` or `.return(when(cond), fn)`.
+
+**Semantics:**
+- `fn(memory)` is called with the full memory view
+- If the return value is not `undefined`/`null`: the value is pushed to
+  `m.prev`, recorded, and the tree stops — remaining children are skipped
+- If the return value is `undefined`/`null`: the tree continues to the next
+  child (the return is a no-op)
+- `.return()` is anonymous (auto-named like prompts)
+- Does NOT write to a named slot (use `.memory()` for that)
+
+**Use case:** conditional early exit — if a preliminary check determines
+there's nothing to do, stop the tree instead of running remaining steps.
+
+```js
+Tree.name('pick_action')
+  .prompt(m => `Pick an element:\n${m.branch.format_clickables}`)
+  .return(m => {
+    const text = m.prev[0].trim().toLowerCase();
+    if (text.includes('no candidates')) return 'no candidates';
+    // not a return — tree continues
+  })
+  .check(m => { ... })
+```
+
+**`m.prev` behavior:** when `.return()` fires, its value appears in `m.prev`
+and the tree's exported value is the return value. When it doesn't fire
+(returns `undefined`), it occupies no position in `m.prev`.
 
 ## Memory Model: Scope Chain (chosen)
 
@@ -732,7 +773,7 @@ may import either convention by habit.
   matching rule wins.
 - *Accumulative (doing)* — every matching rule applies, in declared order:
   `.branch(when(cond), child)`, `.prompt(...)`, `.call(...)`, `.check(...)`,
-  `.memory(...)`.
+  `.memory(...)`, `.return(...)`.
   No overriding; authors must not expect switch-like behavior. (See Trees
   Are Containers.)
 

@@ -135,3 +135,23 @@ test('.memory() validates arguments', () => {
   assert.throws(() => Tree.name('a').memory('x'), /function/);
   assert.throws(() => Tree.name('a').memory('has#hash', m => m), /reserved/);
 });
+
+test('.return() parses fn', () => {
+  const t = Tree.name('a').prompt(m => 'x').return(m => 'done');
+  const ret = t.def.children[1];
+  assert.equal(ret.kind, 'return');
+  assert.equal(typeof ret.fn, 'function');
+  assert.equal(ret.gate, null);
+});
+
+test('.return() supports when() gate', () => {
+  const t = Tree.name('a').return(when(m => true), m => 'done');
+  const ret = t.def.children[0];
+  assert.equal(ret.kind, 'return');
+  assert.equal(typeof ret.gate, 'function');
+});
+
+test('.return() validates arguments', () => {
+  assert.throws(() => Tree.name('a').return(), /function/);
+  assert.throws(() => Tree.name('a').return('not a fn'), /function/);
+});

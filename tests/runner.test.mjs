@@ -254,7 +254,7 @@ test('memory out feeds the next run (sessions)', async () => {
   assert.ok(second.memory['s#1'] === 'v2');
 });
 
-test('.memory() writes to a named slot, no m.prev output', async () => {
+test('.memory() writes to a named slot and produces m.prev output', async () => {
   const seen = [];
   const handler = scripted(['hello', 'result']);
   const pattern = Tree.name('m')
@@ -265,9 +265,9 @@ test('.memory() writes to a named slot, no m.prev output', async () => {
   const { result, memory } = await grandma.knit(pattern, mockRuntime(handler));
   // memory slot was written
   assert.equal(memory.greeting, 'hello');
-  // .memory() does not appear in m.prev — the second prompt sees only the first prompt
+  // .memory() now appears in m.prev — the second prompt sees prompt + memory
   assert.equal(seen[0].greeting, 'hello');
-  assert.equal(seen[0].prevLen, 1);
+  assert.equal(seen[0].prevLen, 2);
 });
 
 test('.memory() with gate skips when gate is false', async () => {
@@ -289,11 +289,58 @@ test('.memory() accumulates across loop iterations', async () => {
     return { content: 'done' };
   };
   const pattern = Tree.name('loop')
-    .prompt(m => `iter`)
-    .memory('items', (m, cur) => [...(cur ?? []), m.prev[0]])
-    .until(m => m.prev[0] === 'done', max(5));
+    .prompt('step', m => `iter`)
+    .memory('items', (m, cur) => [...(cur ?? []), m.branch.step])
+    .until(m => m.branch.step === 'done', max(5));
 
   const { memory } = await grandma.knit(pattern, mockRuntime(handler));
   // items accumulated across all iterations including the final 'done' pass
   assert.deepEqual(memory.items, ['item-0', 'item-1', 'item-2', 'done']);
+});
+
+test('.return() stops tree execution and exports value', async () => {
+  const handler = scripted(['a', 'b', 'c']);
+  const pattern = Tree.name('r')
+    .prompt(m => 'first')
+    .return(m => 'early')
+    .prompt(m => 'should not run');
+
+  const { result, memory } = await grandma.knit(pattern, mockRuntime(handler));
+  assert.equal(result, 'early');
+  assert.equal(handler.calls.length, 1); // only the first prompt ran
+});
+
+test('.return() with undefined continues the tree', async () => {
+  const handler = scripted(['first', 'second']);
+  const pattern = Tree.name('r')
+    .prompt(m => 'first')
+    .return(m => undefined) // don't return, continue
+    .prompt(m => 'second');
+
+  const { result } = await grandma.knit(pattern, mockRuntime(handler));
+  assert.equal(result, 'second');
+  assert.equal(handler.calls.length, 2); // both prompts ran
+});
+
+test('.return() with gate only fires when condition is true', async () => {
+  const handler = scripted(['not-trigger', 'continued']);
+  const pattern = Tree.name('r')
+    .prompt(m => 'val')
+    .return(when(m => m.prev[0] === 'trigger'), m => 'stopped')
+    .prompt(m => 'continued');
+
+  const { result } = await grandma.knit(pattern, mockRuntime(handler));
+  assert.equal(result, 'continued'); // gate was false, return skipped
+});
+
+test('.return() with gate fires when condition is true', async () => {
+  const handler = scripted(['trigger']);
+  const pattern = Tree.name('r')
+    .prompt(m => 'val')
+    .return(when(m => m.prev[0] === 'trigger'), m => 'stopped')
+    .prompt(m => 'should not run');
+
+  const { result } = await grandma.knit(pattern, mockRuntime(handler));
+  assert.equal(result, 'stopped');
+  assert.equal(handler.calls.length, 1);
 });
