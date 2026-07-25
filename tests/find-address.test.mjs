@@ -9,29 +9,11 @@ import { tool } from './helpers.mjs';
 import { createFindAddressPattern } from '../prototyping/find-address/find-address.mjs';
 
 // Tool registry that mimics browser-mcp over an in-memory page. The exec_js
-// tool runs a small interpreter for the patterns used by find-address.mjs.
+// tool runs a small interpreter for the get_page pattern used by find-address.
 function makeBrowserTools(page) {
   const execJs = tool(async ({ code }) => {
     if (code.includes('document.body ? document.body.innerText')) {
       return { text: page.text, url: page.url, title: page.title };
-    }
-    if (code.startsWith('(() => {')) {
-      // format_clickables: code embeds `const els = <JSON>;`
-      const m = code.match(/const els = (.+?);\n/);
-      if (m) {
-        const els = JSON.parse(m[1]);
-        if (!Array.isArray(els) || !els.length) return '';
-        return els.map((el) => {
-          const tag = String(el.tag || '?').toLowerCase();
-          const text = String(el.text || '').replace(/\n/g, ' ').trim();
-          let suffix = '';
-          if (el.href) suffix += ` (${el.href})`;
-          if (Array.isArray(el.listeners) && el.listeners.length) {
-            suffix += ` [${el.listeners.map((l) => l.type).join(',')}]`;
-          }
-          return `<${tag}> "${text}"${suffix}`.trim();
-        }).filter((l) => l.length > 4).join('\n');
-      }
     }
     return null;
   });

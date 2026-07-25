@@ -101,26 +101,23 @@ const GET_PAGE_CODE = `JSON.stringify({
   title: document.title
 })`;
 
-// JavaScript code that takes a list of clickable elements (links, buttons,
-// etc.) found on the page and formats them into a human-readable list.
+// Formats a list of clickable elements into a human-readable string.
 // Each line shows the element type, its text, where it links to, and
 // whether it has click handlers. The AI uses this list to decide what to
-// click next. The __CLICKABLES__ placeholder is replaced at runtime with
-// the actual elements from the page.
-const FORMAT_CLICKABLES_CODE = `(() => {
-  const els = __CLICKABLES__;
+// click next.
+function formatClickables(els) {
   if (!Array.isArray(els) || !els.length) return '';
   return els.map((el) => {
     const tag = String(el.tag || el.tagName || '?').toLowerCase();
-    const text = String(el.text || el.innerText || '').replace(/\\n/g, ' ').trim();
+    const text = String(el.text || el.innerText || '').replace(/\n/g, ' ').trim();
     let suffix = '';
-    if (el.href) suffix += ' (' + el.href + ')';
+    if (el.href) suffix += ` (${el.href})`;
     if (Array.isArray(el.listeners) && el.listeners.length) {
-      suffix += ' [' + el.listeners.map((l) => l.type).join(',') + ']';
+      suffix += ` [${el.listeners.map((l) => l.type).join(',')}]`;
     }
-    return (tag + ' "' + text + '"' + suffix).trim();
-  }).filter((l) => l.length > 4).join('\\n');
-})()`;
+    return `${tag} "${text}"${suffix}`.trim();
+  }).filter((l) => l.length > 4).join('\n');
+}
 
 // ─── THE TREE ────────────────────────────────────────────────────────────────
 //
@@ -171,12 +168,8 @@ export function createFindAddressPattern({ model = 'default' } = {}) {
 
         // 4b: Format the clickable elements into a readable list for the AI.
         // Turns raw element data into lines like: <a> "Contact" (https://example.com/contact)
-        .call('format_clickables', 'exec_js', m => ({
-          code: FORMAT_CLICKABLES_CODE.replace(
-            '__CLICKABLES__',
-            JSON.stringify(m.branch.scan_clickables ?? [])
-          ),
-        }))
+        .memory('format_clickables', m =>
+          formatClickables(m.branch.scan_clickables ?? []))
 
         // 4c: Ask the AI to pick the best element to click.
         // The AI sees the formatted list, what we've already tried, and any
