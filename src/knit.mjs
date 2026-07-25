@@ -203,6 +203,12 @@ async function execPrompt(exec, child, scope) {
       const tool = exec.runtime.tools?.[name];
       if (!tool) throw new KnitError(`unknown tool '${name}'`);
       result = await tool.execute(args);
+      // Tools may return error-shaped results instead of throwing.
+      if (result && typeof result === 'object' && 'error' in result) {
+        isError = true;
+      } else if (typeof result === 'string' && result.toLowerCase().startsWith('error')) {
+        isError = true;
+      }
     } catch (err) {
       isError = true;
       result = `error: ${err.message}`;
