@@ -200,19 +200,20 @@ async function execPrompt(exec, child, scope) {
     for (const tc of response.tool_calls) {
       const name = tc.function?.name;
       record.toolCalls.push({ id: tc.id, name, arguments: tc.function?.arguments });
+      const args = (() => { try { return JSON.parse(tc.function.arguments); } catch { return tc.function.arguments; } })();
       let result;
       let isError = false;
       try {
         const tool = exec.runtime.tools?.[name];
         if (!tool) throw new KnitError(`unknown tool '${name}'`);
-        result = await tool.execute(JSON.parse(tc.function.arguments));
+        result = await tool.execute(args);
       } catch (err) {
         // Tool errors are fed back to the model, not fatal to the tree.
         isError = true;
         result = `error: ${err.message}`;
       }
       record.toolResults.push({ name, result, isError });
-      logEvent(exec, 'tool_result', { child: child.name, tool: name, result, isError });
+      logEvent(exec, 'tool_result', { child: child.name, tool: name, args, result, isError });
       messages.push({
         role: 'tool',
         tool_call_id: tc.id,

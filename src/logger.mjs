@@ -60,7 +60,7 @@ class ConsoleLogger {
         console.error(`  ${label}${path}: ${c.tool ?? c.child ?? '?'}${c.args ? `(${truncate(JSON.stringify(c.args), 60)})` : ''}`);
         break;
       case 'tool_result':
-        console.error(`  ${label}${path}: ${c.tool ?? '?'} → ${truncate(JSON.stringify(c.result), 80)}`);
+        console.error(`  ${label}${path}: ${c.tool ?? '?'}${c.args ? `(${truncate(JSON.stringify(c.args), 80)})` : ''} → ${truncate(JSON.stringify(c.result), 80)}`);
         break;
       case 'flow':
         console.error(`  ${label}${path}: ${c.type}${c.n ? ` goback(${c.n})` : ''}${c.child ? ` from '${c.child}'` : ''}${c.used ? ` (${c.used}/${c.max ?? '?'})` : ''}`);
