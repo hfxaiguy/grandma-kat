@@ -75,47 +75,56 @@ export async function callLlm(model, messages, { tools } = {}) {
   return { content, reasoning, tool_calls, raw: data };
 }
 
-// Try to parse tool invocations from plain text. Supports patterns like:
+// Try to parse tool invocations from plain text. Only matches when the
+// text is short and starts with a tool name — avoids false positives on
+// long responses that happen to mention tool names in running text.
+// Supports:
 //   navigate https://example.com
 //   click .contact-link
 //   {"name":"navigate","arguments":{"url":"..."}}
 function parseTextToolCalls(text, tools) {
   const toolNames = new Set(tools.map(t => t.function?.name).filter(Boolean));
-  const calls = [];
+  const trimmed = text.trim();
+
+  // Only attempt parsing if the response is short (a real text-based tool
+  // call is typically under 150 chars). Long responses are normal text.
+  if (trimmed.length > 200) return null;
 
   // Try JSON format first: {"name":"tool","arguments":{...}}
-  const jsonMatch = text.match(/\{[\s\S]*"name"\s*:\s*"([^"]+)"[\s\S]*\}/);
+  const jsonMatch = trimmed.match(/^\{[\s\S]*"name"\s*:\s*"([^"]+)"[\s\S]*\}$/);
   if (jsonMatch && toolNames.has(jsonMatch[1])) {
     try {
-      const obj = JSON.parse(jsonMatch[0]);
+      const obj = JSON.parse(trimmed);
       if (obj.name && toolNames.has(obj.name)) {
-        calls.push({
-          id: `text_${calls.length}`,
+        return [{
+          id: 'text_0',
+          type: 'function',
           function: {
             name: obj.name,
             arguments: typeof obj.arguments === 'string' ? obj.arguments : JSON.stringify(obj.arguments ?? {}),
           },
-        });
-        return calls;
+        }];
       }
     } catch { /* not valid JSON, continue */ }
   }
 
-  // "navigate URL" or "click selector" patterns
+  // Tool name must appear at the start of the text (after optional
+  // whitespace/newlines). This prevents matching "click" inside
+  // "The clickable elements..." or other running text.
   for (const name of toolNames) {
-    const re = new RegExp(`\\b${name}\\s+(?:with\\s+)?(?:url[:\\s]+)?([\\S]+)`, 'i');
-    const m = text.match(re);
+    const re = new RegExp(`^\\s*(?:I'll\\s+)?(?:call\\s+)?${name}\\s+(?:with\\s+)?(?:url[:\\s]+)?([\\S]+)`, 'i');
+    const m = trimmed.match(re);
     if (m) {
       const val = m[1].replace(/^["']|["']$/g, '');
       const paramKey = name === 'navigate' ? 'url' : name === 'click' ? 'selector' : 'input';
-      calls.push({
-        id: `text_${calls.length}`,
+      return [{
+        id: 'text_0',
+        type: 'function',
         function: {
           name,
           arguments: JSON.stringify({ [paramKey]: val }),
         },
-      });
-      return calls;
+      }];
     }
   }
 
