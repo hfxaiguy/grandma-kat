@@ -121,18 +121,17 @@ function formatClickables(els) {
 
 // ─── THE TREE ────────────────────────────────────────────────────────────────
 //
-// `createFindAddressPattern` builds the tree definition. Call it with a
-// model name, then pass the result to `grandma.knit(pattern, runtime)`.
-// The runtime provides the AI model and the browser tools (navigate, click,
-// etc.).
+// `createFindAddressPattern` builds the tree definition. Pass the result
+// to `grandma.knit(pattern, runtime)`. The runtime provides the AI model
+// and the browser tools (navigate, click, etc.).
 
-export function createFindAddressPattern({ model = 'default' } = {}) {
+export function createFindAddressPattern() {
   // A helper that returns true when the address check said "no" — meaning
   // we need to keep looking. Used to gate the entire "try to find" branch.
   const needsMore = (m) => isNo(m.branch.check_address);
 
   return Tree.name('find-address')
-    .model(model)
+    .model('default')
 
     // STEP 1: Navigate to the starting URL (if one was provided).
     // This is gated — it only runs if `m.url` exists and is non-empty.

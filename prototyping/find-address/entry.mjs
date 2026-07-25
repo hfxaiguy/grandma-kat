@@ -9,7 +9,6 @@ import grandma, { KnitError } from '../../src/index.mjs';
 import { createFindAddressPattern } from './find-address.mjs';
 
 const url = process.argv[2];
-const modelName = process.argv[3];
 
 if (url) console.log(`Target URL: ${url}\n`);
 
@@ -19,7 +18,7 @@ const client = await startScrapeServer();
 
 try {
   const { result, memory, runId } = await grandma.knit(
-    createFindAddressPattern({ model: modelName ?? 'default' }),
+    createFindAddressPattern(),
     {
       models: {
         default: {
