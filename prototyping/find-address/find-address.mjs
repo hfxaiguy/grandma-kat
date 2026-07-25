@@ -63,7 +63,7 @@ const SYSTEM_PROMPT = 'You are a web navigation assistant. You help find informa
 // This is the question we ask the AI when looking at a page. We show it
 // the page's text and ask: "Is there a business address here?" The AI
 // either writes out the address (if found) or says "no" (if not found).
-const STEP1_PROMPT = `Below is the text content of a web page.
+const CHECK_ADDRESS_PROMPT = `Below is the text content of a web page.
 
 Your task: Does this page contain a business address? A business address has a street number, street name, city, and country or postal code.
 
@@ -74,7 +74,7 @@ If NO: Respond with exactly one word: no`;
 // This prompt shows the AI the list of clickable elements and asks it to
 // pick the best one. We also show what we've already tried (so it doesn't
 // repeat mistakes) and any feedback from previous failed attempts.
-const STEP3_PROMPT = `Below are candidate clickable elements that might lead to a business address:
+const PICK_ACTION_PROMPT = `Below are candidate clickable elements that might lead to a business address:
 
 {candidates}
 
@@ -147,7 +147,7 @@ export const pattern = Tree.name('find-address')
     .prompt(m => [
       { role: 'system', content: SYSTEM_PROMPT },
       { role: 'user', content: `Page text:\n\n${m.branch.get_page?.text ?? ''}` },
-      { role: 'user', content: STEP1_PROMPT },
+        { role: 'user', content: CHECK_ADDRESS_PROMPT },
     ]))
 
   // STEP 4: If the address wasn't found, try to find it by clicking around.
@@ -173,7 +173,7 @@ export const pattern = Tree.name('find-address')
         .tools('navigate', 'click')
         .prompt(m => [
           { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: STEP3_PROMPT
+            { role: 'user', content: PICK_ACTION_PROMPT
             .replace('{candidates}', m.branch.format_clickables || '(none)')
             .replace('{tried}', JSON.stringify(m.branch.tried ?? []))
             .replace('{feedback}', m.error ? `\nPrevious attempt: ${m.error}\n` : '') },
