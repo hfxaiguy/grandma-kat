@@ -125,10 +125,6 @@ function formatClickables(els) {
 // The runtime provides the AI model and the browser tools (navigate, click,
 // etc.).
 
-// A helper that returns true when the address check said "no" — meaning
-// we need to keep looking. Used to gate the entire "try to find" branch.
-const needsMore = (m) => isNo(m.branch.check_address);
-
 export const pattern = Tree.name('find-address')
   .model('default')
 
@@ -157,7 +153,7 @@ export const pattern = Tree.name('find-address')
   // STEP 4: If the address wasn't found, try to find it by clicking around.
   // This entire branch only runs when check_address said "no". Inside it,
   // we scan the page for clickable things, pick one, click it, and loop.
-  .branch(when(needsMore),
+  .branch(when(m => isNo(m.branch.check_address)),
     Tree.name('try_find')
 
       // 4a: Scan the page for clickable elements (links, buttons, etc.).
