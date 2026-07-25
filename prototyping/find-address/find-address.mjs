@@ -57,8 +57,9 @@
 import { Tree, when, goback, max } from '../../src/index.mjs';
 
 // The system prompt tells the AI what kind of assistant it is. Think of it
-// as setting the AI's "job title" — it's a web navigation helper.
-const SYSTEM_PROMPT = 'You are a web navigation assistant. You help find information on web pages by reading page content and deciding what to click or navigate to.';
+// as setting the AI's "job title" — it's a web navigation helper that
+// always uses tools to interact with pages.
+const SYSTEM_PROMPT = 'You are a web navigation assistant. You find business addresses on websites. Always use the provided tools to navigate or click elements. Never answer without calling a tool when tools are available.';
 
 // This is the question we ask the AI when looking at a page. We show it
 // the page's text and ask: "Is there a business address here?" The AI
@@ -74,19 +75,19 @@ If NO: Respond with exactly one word: no`;
 // This prompt shows the AI the list of clickable elements and asks it to
 // pick the best one. We also show what we've already tried (so it doesn't
 // repeat mistakes) and any feedback from previous failed attempts.
-const PICK_ACTION_PROMPT = `Below are candidate clickable elements that might lead to a business address:
+const PICK_ACTION_PROMPT = `Clickable elements on this page:
 
 {candidates}
 
-Already tried (do NOT pick any of these): {tried}
+Already tried (skip these): {tried}
 
 {feedback}
 
-Pick the element most likely to lead to a page containing a business address and call exactly one tool:
-- Call "navigate" with the URL when the element has a URL.
-- Call "click" with a CSS selector when the element has no URL.
+Pick the best element and call a tool:
+- "navigate" with the URL when the element has a URL
+- "click" with a CSS selector when the element has no URL
 
-If the candidates list is empty or nothing looks promising, call neither tool and just say "no candidates" in plain text.`;
+If there are no good candidates, respond: no candidates`;
 
 // A simple helper that checks if the AI's answer means "no address found."
 // It handles variations like "No", "NO", "no " (with extra spaces), etc.
