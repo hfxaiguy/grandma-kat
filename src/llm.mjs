@@ -16,11 +16,25 @@ export async function callLlm(model, messages, { tools } = {}) {
     headers.Authorization = `Bearer ${model.apiKey}`;
   }
 
-  const res = await fetch(`${baseURL}/chat/completions`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120_000);
+
+  let res;
+  try {
+    res = await fetch(`${baseURL}/chat/completions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timeout);
+    if (err.name === 'AbortError') {
+      throw new Error(`LLM request timed out after 120s (${baseURL})`);
+    }
+    throw err;
+  }
+  clearTimeout(timeout);
 
   if (!res.ok) {
     throw new Error(`LLM request failed (${res.status}): ${await res.text()}`);
