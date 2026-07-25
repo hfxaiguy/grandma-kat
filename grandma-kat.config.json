@@ -11,5 +11,5 @@
       "model": "models/LFM2.5-1.2B-Thinking-Q4_K_M.gguf"
     }
   },
-  "default": "huggingface"
+  "default": "local"
 }

@@ -196,3 +196,222 @@ Root Thread (model: gpt-4)
 - Memory is ephemeral at runtime; the Logging database is the persistent record of all Calls
 - `call_id` is auto-incremented for every Call logged, in execution order, serving as the unique call identifier
 - Model inheritance: step → thread → parent thread → root thread (explicit model required at root)
+
+## Writing Prototype Scripts
+
+When converting an imperative prototype script to a grandma-kat tree, follow
+these conventions. They're derived from the find-address conversion and are
+meant to keep patterns readable, testable, and consistent.
+
+### File structure
+
+Each prototype lives in its own directory under `prototyping/`:
+
+```
+prototyping/my-prototype/
+  my-prototype.mjs   — the tree definition (export const pattern = ...)
+  entry.mjs           — CLI entry point (launches Chrome, starts server, runs pattern)
+```
+
+### The pattern file (`my-prototype.mjs`)
+
+**Export `pattern` directly**, not a factory function. If the tree needs
+configuration, the runtime provides it (via `memory`, `models`, `tools`).
+Only use a factory function if the tree shape genuinely varies by input.
+
+```js
+// Good
+export const pattern = Tree.name('my-tree')
+  .model('default')
+  .prompt(m => `...`)
+  .until(m => done, max(3));
+
+// Only if the tree shape varies
+export function createPattern({ mode }) { ... }
+```
+
+**Name constants after what they do**, not step numbers. Match the branch
+name they're used in:
+
+```js
+// Bad
+const STEP1_PROMPT = `...`;
+const STEP3_PROMPT = `...`;
+
+// Good
+const CHECK_ADDRESS_PROMPT = `...`;
+const PICK_ACTION_PROMPT = `...`;
+```
+
+**Use `.memory()` for pure data manipulation.** If you're computing a
+value from existing data (formatting a list, accumulating an array,
+incrementing a counter), `.memory()` is the right tool. Don't route
+through `exec_js` or a fake tool call for side-channel state.
+
+```js
+// Bad — exec_js as a side-channel for state
+.call('get_tried', 'exec_js', () => ({ code: 'JSON.stringify(window.__tried)' }))
+.call('record_tried', 'exec_js', m => ({ code: `window.__tried.push(...)` }))
+
+// Good — memory is the tree's own state
+.memory('tried', (m, cur) => [...(cur ?? []), m.prev[0]])
+```
+
+**Scope `.memory()` to where the data needs to persist.** If a value
+must survive across loop iterations, place `.memory()` at the loop
+level — not inside a branch that gets recreated each pass. Read child
+branch data via `m.raw.branch.X`.
+
+```js
+// tried persists across .until() iterations because it's at the loop level
+.branch(when(...),
+  Tree.name('try_find')
+    .branch(Tree.name('pick_action')
+      .prompt(...)
+      .check(...))
+    .memory(when(...), 'tried', (m, cur) => {
+      const tc = m.raw.branch.pick_action?.toolCalls?.[0];
+      return [...(cur ?? []), tc.arguments];
+    })
+    .call(when(...), 'wait_for_load', ...))
+```
+
+**One gate for a group, not one gate per step.** If multiple children
+only run when a condition is true, wrap them in a single gated branch
+instead of gating each one individually:
+
+```js
+// Bad — repetitive gates
+.call(when(needsMore), 'scan', ...)
+.call(when(needsMore), 'format', ...)
+.call(when(needsMore), 'pick', ...)
+.call(when(needsMore && pickCalled), 'wait', ...)
+
+// Good — one gate, inner logic handles the rest
+.branch(when(needsMore),
+  Tree.name('try_find')
+    .call('scan', ...)
+    .memory('format', ...)
+    .branch(Tree.name('pick_action') ...)
+    .call(when(m => m.branch.tried != null), 'wait', ...))
+```
+
+**Inline one-use helpers.** If a helper function is only used once,
+fold it into the call site rather than defining it separately:
+
+```js
+// Unnecessary indirection
+const needsMore = (m) => isNo(m.branch.check_address);
+.branch(when(needsMore), ...)
+
+// Direct
+.branch(when(m => isNo(m.branch.check_address)), ...)
+```
+
+**Add non-technical comments.** Every constant and every tree step
+should have a comment explaining what it does in plain language.
+The audience is someone reading the code who hasn't seen grandma-kat
+before. Explain the *why*, not just the *what*.
+
+```js
+// This is the question we ask the AI when looking at a page. We show it
+// the page's text and ask: "Is there a business address here?" The AI
+// either writes out the address (if found) or says "no" (if not found).
+const CHECK_ADDRESS_PROMPT = `...`;
+```
+
+### The entry file (`entry.mjs`)
+
+Follow this template:
+
+```js
+#!/usr/bin/env node
+import { launchChrome } from '../browser-mcp/launch-chrome.mjs';
+import { startScrapeServer, callTool, stopScrapeServer } from '../lib/mcp.mjs';
+import { loadConfig } from '../lib/config.mjs';
+import grandma, { KnitError } from '../../src/index.mjs';
+import { pattern } from './my-prototype.mjs';
+
+const url = process.argv[2];
+if (url) console.log(`Target URL: ${url}\n`);
+
+await launchChrome();
+
+const config = loadConfig();
+console.log('Starting scrape MCP server...');
+const client = await startScrapeServer();
+
+try {
+  const { result, memory, runId } = await grandma.knit(pattern, {
+    models: {
+      default: {
+        baseURL: config.provider.baseURL,
+        apiKey: config.provider.apiKey,
+        model: config.model,
+      },
+    },
+    tools: makeToolRegistry(client),
+    memory: url ? { url } : {},
+  });
+
+  console.log(`\nRun: ${runId}`);
+  console.log('Result:', result);
+} catch (err) {
+  if (err instanceof KnitError) {
+    console.error(`failed: ${err.message}`);
+  } else {
+    console.error('failed:', err);
+  }
+  process.exit(1);
+} finally {
+  await stopScrapeServer(client);
+}
+
+function makeToolRegistry(client) {
+  return {
+    navigate: {
+      description: 'Open a URL in the browser tab.',
+      parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
+      execute: async (args) => callTool(client, 'navigate', args),
+    },
+    // ... other tools
+  };
+}
+```
+
+Key points:
+- `launchChrome()` is called first — it's a no-op if Chrome is already up.
+- `loadConfig()` reads `grandma-kat.config.json` from the repo root.
+- The tool registry wraps `callTool(client, name, args)` — keep it in
+  entry.mjs, not in the pattern file. Patterns stay decoupled from MCP.
+- `memory` seeds the root scope with initial inputs (like a URL).
+- The pattern always uses `.model('default')` — the runtime config decides
+  which actual model that resolves to.
+
+### Testing
+
+Tests mock the LLM handler and browser tools. The pattern file is imported
+directly — no Chrome or real LLM needed:
+
+```js
+import { pattern } from '../prototyping/my-prototype/my-prototype.mjs';
+import grandma from '../src/index.mjs';
+import { tool } from './helpers.mjs';
+
+const tools = {
+  navigate: tool(async (args) => { /* mock */ }),
+  // ...
+};
+
+const handler = async (messages) => {
+  // scripted LLM responses
+};
+
+const { result, memory } = await grandma.knit(pattern, {
+  models: { default: { model: 'mock', handler } },
+  tools,
+});
+```
+
+Test the interesting paths: happy path, retries, exhaustion, gating.
+Don't test the LLM's judgment — test the tree's structure.
