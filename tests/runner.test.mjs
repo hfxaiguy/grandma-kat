@@ -298,6 +298,63 @@ test('.memory() accumulates across loop iterations', async () => {
   assert.deepEqual(memory.items, ['item-0', 'item-1', 'item-2', 'done']);
 });
 
+test('.memoryUpdate() updates existing slot from parent scope', async () => {
+  const handler = scripted(['hello', 'updated']);
+  const pattern = Tree.name('m')
+    .memory('greeting', () => 'initial')
+    .prompt(m => 'hello')
+    .memoryUpdate('greeting', (m, cur) => `${cur}-${m.prev[0]}`)
+    .prompt(m => m.branch.greeting);
+
+  const { result, memory } = await grandma.knit(pattern, mockRuntime(handler));
+  assert.equal(memory.greeting, 'initial-hello');
+  assert.equal(result, 'updated');
+});
+
+test('.memoryUpdate() errors when slot does not exist', async () => {
+  const handler = scripted(['hello']);
+  const pattern = Tree.name('m')
+    .prompt(m => 'hello')
+    .memoryUpdate('missing', (m, cur) => 'should fail');
+
+  await assert.rejects(
+    grandma.knit(pattern, mockRuntime(handler)),
+    (err) => {
+      assert.ok(err instanceof KnitError);
+      assert.match(err.message, /does not exist in the scope chain/);
+      return true;
+    }
+  );
+});
+
+test('.memoryUpdate() resolves from ancestor scope', async () => {
+  const handler = scripted(['inner', 'updated']);
+  const pattern = Tree.name('outer')
+    .memory('slot', () => 'from-parent')
+    .branch(
+      Tree.name('inner')
+        .prompt(m => 'inner')
+        .memoryUpdate('slot', (m, cur) => `${cur}-updated`)
+    )
+    .prompt(m => m.branch.slot);
+
+  const { result, memory } = await grandma.knit(pattern, mockRuntime(handler));
+  assert.equal(memory.slot, 'from-parent-updated');
+  assert.equal(result, 'updated');
+});
+
+test('.memoryUpdate() with gate skips when gate is false', async () => {
+  const handler = scripted(['val']);
+  const pattern = Tree.name('m')
+    .memory('slot', () => 'original')
+    .prompt(m => 'val')
+    .memoryUpdate(when(m => false), 'slot', (m, cur) => 'should not run')
+    .prompt(m => m.branch.slot);
+
+  const { memory } = await grandma.knit(pattern, mockRuntime(handler));
+  assert.equal(memory.slot, 'original');
+});
+
 test('.return() stops tree execution and exports value', async () => {
   const handler = scripted(['a', 'b', 'c']);
   const pattern = Tree.name('r')

@@ -117,6 +117,8 @@ async function execTree(exec, tree, scope, parentScope) {
           outcome = await execPrompt(exec, child, scope);
         } else if (child.kind === 'memory') {
           outcome = await execMemory(exec, child, scope);
+        } else if (child.kind === 'memoryUpdate') {
+          outcome = await execMemoryUpdate(exec, child, scope);
         } else if (child.kind === 'return') {
           const view = makeView(scope);
           const val = await callFn(child.fn, view, `return fn of '${child.name}'`);
@@ -256,6 +258,26 @@ async function execMemory(exec, child, scope) {
   const value = await callFn(child.fn, view, `memory fn of '${child.name}'`, current);
   scope.slots[child.name] = value;
   logEvent(exec, 'memory', { child: child.name, value });
+  return { value, record: { content: value } };
+}
+
+// Like execMemory but the slot must already exist in the scope chain.
+// Updates the slot in the scope where it was found (ancestor or current).
+async function execMemoryUpdate(exec, child, scope) {
+  const view = makeView(scope);
+  // Walk the scope chain to find where the slot lives.
+  let target = scope;
+  while (target) {
+    if (Object.prototype.hasOwnProperty.call(target.slots, child.name)) break;
+    target = target.parent;
+  }
+  if (!target) {
+    throw new KnitError(`memoryUpdate('${child.name}'): slot '${child.name}' does not exist in the scope chain — declare it with .memory() first or inject it`);
+  }
+  const current = target.slots[child.name];
+  const value = await callFn(child.fn, view, `memoryUpdate fn of '${child.name}'`, current);
+  target.slots[child.name] = value;
+  logEvent(exec, 'memory', { child: child.name, value, update: true });
   return { value, record: { content: value } };
 }
 

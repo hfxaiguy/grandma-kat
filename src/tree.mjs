@@ -145,6 +145,27 @@ function makeBuilder(def) {
       return next(def, (d) => { d.children.push(child); });
     },
 
+    // Accumulative: append a memory-update leaf. The slot must already exist
+    // in the scope chain (current tree or an ancestor). Errors at runtime if
+    // the slot is missing.
+    //   .memoryUpdate(name, fn)               — fn(m, currentValue) → stored value
+    //   .memoryUpdate(when(cond), name, fn)
+    memoryUpdate(...rawArgs) {
+      const { gate, args } = takeGate(rawArgs, '.memoryUpdate()');
+      const name = args.shift();
+      if (typeof name !== 'string' || name.length === 0) {
+        throw new TypeError(".memoryUpdate(): first argument must be the slot name (string), e.g. .memoryUpdate('tried', (m, cur) => [...cur, m.prev[0]])");
+      }
+      assertValidName(name, '.memoryUpdate()');
+      const fn = args.shift();
+      if (typeof fn !== 'function') {
+        throw new TypeError('.memoryUpdate(): second argument must be a function');
+      }
+      if (args.length !== 0) throw new TypeError('.memoryUpdate(): too many arguments');
+      const child = { kind: 'memoryUpdate', name, fn, gate };
+      return next(def, (d) => { d.children.push(child); });
+    },
+
     // Accumulative: append a return leaf (early exit).
     //   .return(fn)              — fn(m) → value; tree stops if value != null
     //   .return(when(cond), fn)  — gated

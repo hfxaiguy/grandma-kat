@@ -136,6 +136,29 @@ test('.memory() validates arguments', () => {
   assert.throws(() => Tree.name('a').memory('has#hash', m => m), /reserved/);
 });
 
+test('.memoryUpdate() parses name and fn', () => {
+  const t = Tree.name('a').prompt(m => 'x').memoryUpdate('tried', (m, cur) => [...cur, m.prev[0]]);
+  const mem = t.def.children[1];
+  assert.equal(mem.kind, 'memoryUpdate');
+  assert.equal(mem.name, 'tried');
+  assert.equal(typeof mem.fn, 'function');
+  assert.equal(mem.gate, null);
+});
+
+test('.memoryUpdate() supports when() gate', () => {
+  const t = Tree.name('a').prompt(m => 'x').memoryUpdate(when(m => true), 'tried', (m, cur) => cur);
+  const mem = t.def.children[1];
+  assert.equal(mem.kind, 'memoryUpdate');
+  assert.equal(mem.name, 'tried');
+  assert.equal(typeof mem.gate, 'function');
+});
+
+test('.memoryUpdate() validates arguments', () => {
+  assert.throws(() => Tree.name('a').memoryUpdate(), /slot name/);
+  assert.throws(() => Tree.name('a').memoryUpdate('x'), /function/);
+  assert.throws(() => Tree.name('a').memoryUpdate('has#hash', m => m), /reserved/);
+});
+
 test('.return() parses fn', () => {
   const t = Tree.name('a').prompt(m => 'x').return(m => 'done');
   const ret = t.def.children[1];
