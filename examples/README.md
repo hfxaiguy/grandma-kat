@@ -29,11 +29,13 @@ find-address (loops until address found, max 3 passes)
   ├── navigate        — go to the starting URL, if one was given
   ├── get_page        — snapshot the current page (tool call, no LLM)
   ├── check_address   — ask the model: "is there an address here?"
+  ├── get_company     — extract company name (runs once, when address not found)
+  ├── tried_elements  — track what we've clicked (persists across iterations)
   └── try_find        — only runs when the answer was "no"
-        ├── scan_clickables / filter  — what could we click? (tool + memory)
+        ├── scan_clickables / filter — what could we click?
         ├── try_element   — ask the model about each untried element
-        ├── pick_action   — model calls navigate/click, checked + retried
-        └── remember + wait for load
+        ├── pick_action   — model calls navigate/click, validated + retried
+        └── wait_for_load — wait for page to load after clicking
 ```
 
 - `find-address.mjs` — the pattern (`export const pattern = Tree.name(...)`).

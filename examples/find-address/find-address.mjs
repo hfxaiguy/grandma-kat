@@ -14,12 +14,12 @@
 //   1. Looks at the current page and asks an AI: "Is there an address here?"
 //   2. If yes → done! Return the address.
 //   3. If no → scan the page for things to click (links, buttons).
-//   4. Ask the AI to pick the most promising thing to click.
-//   5. Click it, wait for the new page to load, and repeat from step 1.
+//   4. Ask the AI: "Would clicking this element find the address?"
+//   5. If yes → click it. If no → try the next element.
+//   6. Wait for the page to load, then repeat from step 1.
 //
-//   To avoid clicking the same thing twice, it keeps a "tried" list in
-//   memory. Each time it tries something new, that choice is remembered
-//   and shown to the AI next time so it doesn't repeat itself.
+//   To avoid clicking the same thing twice, it keeps a "tried_elements" list
+//   in memory that persists across loop iterations.
 //
 // HOW IT'S STRUCTURED:
 //
@@ -28,17 +28,15 @@
 //
 //   find-address (the main loop)
 //     ├── navigate        — if a starting URL was given, go there first
-//     ├── get_page        — grab the text content of whatever page we're on
+//     ├── get_page        — snapshot the current page (tool call, no LLM)
 //     ├── check_address   — ask the AI: "Is there an address on this page?"
+//     ├── get_company     — extract company name (runs once, when address not found)
+//     ├── tried_elements  — track what we've clicked (persists across iterations)
 //     └── try_find        — only runs if check_address said "no"
-//           ├── scan the page for clickable elements
-//           ├── format those elements into a readable list
-//           ├── pick_action — ask the AI to choose what to click
-//           │     ├── the AI picks an element and calls a tool (navigate/click)
-//           │     ├── validate that the AI actually made a valid choice
-//           │     └── (if invalid, retry up to 3 times)
-//           ├── remember what we tried (so we don't try it again)
-//           └── wait for the page to load after clicking
+//           ├── scan_clickables / filter — what could we click?
+//           ├── try_element — ask the AI about each untried element
+//           ├── pick_action — model calls navigate/click, validated + retried
+//           └── wait_for_load — wait for page to load after clicking
 //
 //   The whole thing repeats until either the address is found or we've
 //   looped 3 times without success.
@@ -47,8 +45,8 @@
 //
 //   - The AI is asked simple yes/no or pick-one questions, not complex
 //     reasoning tasks. This keeps each step reliable.
-//   - "Tried" elements are tracked in memory (not on the page) so they
-//     persist across loop iterations.
+//   - Steps without tools use a different system prompt to avoid confusing
+//     the model into hallucinating tool calls.
 //   - If the AI says "no candidates" (nothing worth clicking), the loop
 //     stops early rather than wasting attempts.
 //   - Each step can use different tools — the address-checking step needs
@@ -75,14 +73,9 @@ If you find an address, write ONLY the address.
 If there is no address, respond with exactly one word: no`;
 
 // A simple helper that checks if the AI's answer means "no address found."
-// It handles variations like "No", "NO", "no " (with extra spaces), etc.
 const isNo = (v) => typeof v === 'string' && v.trim().toLowerCase() === 'no';
 
-// Formats a list of clickable elements into a human-readable string.
-// Each line shows the element type, its text, where it links to, and
-// whether it has click handlers. The AI uses this list to decide what to
-// click next. Filters out non-interactive tags (body, script, etc.) and
-// truncates long text to keep the list readable.
+// Tags to skip when filtering clickable elements (non-interactive).
 const SKIP_TAGS = new Set(['body', 'html', 'head', 'script', 'style', 'meta', 'link', 'noscript']);
 
 const ASK_ELEMENT_PROMPT = `
@@ -164,7 +157,7 @@ export const pattern = Tree.name("find-address")
 
       // 4d: Try elements one at a time. Pick the next untried element,
       // ask the AI if it would lead to the address. On "yes" → return it.
-      // On "no" → add to tried, loop to the next element.
+      // On "no" → try the next element.
       .branch(
         Tree.name("try_element")
           // Pick the first element not yet tried.
@@ -201,7 +194,7 @@ export const pattern = Tree.name("find-address")
               },
             ];
           })
-          // add this element to the tried list
+          // Record this element as tried (so we skip it in future iterations).
           .memoryUpdate("tried_elements", (m, cur) => {
             const el = m.branch.current;
             return [...(cur ?? []), el?.selector].filter(Boolean);
@@ -213,7 +206,7 @@ export const pattern = Tree.name("find-address")
             if (answer?.startsWith("yes")) return m.branch.current;
           })
 
-          // If "no", loop
+          // If "no", loop to the next element.
           .until((m) => {
             // Stop if we got a yes (current was returned) or no more elements.
             const current = m.branch.current;
