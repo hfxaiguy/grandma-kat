@@ -166,7 +166,12 @@ server.setRequestHandler(ListToolsRequestSchema, () => ({
     {
       name: 'snapshot',
       description: 'Return page URL, title, scroll position, and text preview.',
-      inputSchema: { type: 'object', properties: {} },
+      inputSchema: {
+        type: 'object',
+        properties: {
+          maxLength: { type: 'number', description: 'Max characters of page text to return (default 10000).' },
+        },
+      },
     },
     {
       name: 'click',
@@ -346,6 +351,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'snapshot': {
         const pageClient = await ensurePage();
+        const maxLen = args.maxLength ?? 10000;
         result = await evaluate(pageClient, `
           ({
             url: location.href,
@@ -354,7 +360,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             scrollY: window.scrollY,
             scrollHeight: document.body?.scrollHeight || 0,
             clientHeight: window.innerHeight,
-            textPreview: document.body?.innerText?.slice(0, 2000) || '',
+            textPreview: document.body?.innerText?.slice(0, ${maxLen}) || '',
           })
         `);
         break;

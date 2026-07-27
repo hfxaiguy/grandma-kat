@@ -71,8 +71,8 @@ const CHECK_ADDRESS_PROMPT = `Below is the text content of a web page.
 
 Your task: Does this page contain a business address? A business address has a street number, street name, city, and country or postal code.
 
-If YES: Write the full address on one line.
-If NO: Respond with exactly one word: no`;
+If you find an address, write ONLY the address.
+If there is no address, respond with exactly one word: no`;
 
 // A simple helper that checks if the AI's answer means "no address found."
 // It handles variations like "No", "NO", "no " (with extra spaces), etc.
@@ -278,22 +278,12 @@ export const pattern = Tree.name("find-address")
           ),
       )
 
-      // 4f: Remember what we just tried for the outer loop.
-      .memory(
+      // 4f: Wait for the page to load after clicking/navigating.
+      .call(
         when((m) => {
-          const tc = m.raw.branch.pick_action?.toolCalls?.[0];
+          const tc = m.raw.branch.pick_action?.children?.['pick_action#1']?.toolCalls?.[0];
           return Boolean(tc && tc.name);
         }),
-        "tried",
-        (m, cur) => {
-          const tc = m.raw.branch.pick_action?.toolCalls?.[0];
-          return [...(cur ?? []), tc.arguments];
-        },
-      )
-
-      // 4g: Wait for the page to load after clicking.
-      .call(
-        when((m) => m.branch.tried != null),
         "wait_for_load",
         "wait_for_load",
         () => ({ timeoutMs: 10000 }),
