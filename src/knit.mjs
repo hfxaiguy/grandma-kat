@@ -193,7 +193,8 @@ async function execPrompt(exec, child, scope) {
   });
   logEvent(exec, 'llm_call', {
     child: child.name, round: 1, model: modelName,
-    content: response.content, toolCalls: response.tool_calls ?? null,
+    messages,
+    content: response.content, reasoning: response.reasoning, toolCalls: response.tool_calls ?? null,
   });
 
   if (!response.tool_calls?.length) {
