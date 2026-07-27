@@ -35,10 +35,10 @@ bounded, and logged.
 import grandma, { Tree, goback, max } from 'grandma-kat';
 
 const pattern = Tree.name('draft-and-verify')
-  .branch(Tree.name('draft').prompt(m => `Write one paragraph about ${m.task}.`))
-  .branch(Tree.name('verify').prompt(m =>
-    `Does this paragraph stay on topic? Answer "pass" or "fail".\n\n${m.branch.draft}`))
-  .until(m => m.branch.verify?.trim() === 'pass', max(3));
+  .prompt(m => `Write one paragraph about ${m.task}.`)
+  .prompt(m =>
+    `Does this paragraph stay on topic? Answer "pass" or "fail".\n\n${m.prev[0]}`)
+  .until(m => m.prev[0]?.trim() === 'pass', max(3));
 
 const { result, memory, runId } = await grandma.knit(pattern, {
   models: {
