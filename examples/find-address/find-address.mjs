@@ -135,7 +135,7 @@ export const pattern = Tree.name("find-address")
   )
 
   .branch(
-    when((m) => isNo(m.branch.check_address)),
+    when((m) => isNo(m.branch.check_address) && !m.branch.get_company_start),
     Tree.name("get_company_start").prompt((m) => [
       { role: "system", content: SYSTEM_PROMPT_NO_TOOLS },
       {
@@ -150,16 +150,17 @@ export const pattern = Tree.name("find-address")
     when((m) => isNo(m.branch.check_address)),
     Tree.name("try_find")
       // Initialize the tried list for tracking visited elements.
-      .memory('tried_elements', (m, current) => current || [])
+      .memory("tried_elements", (m, current) => current || [])
 
       // 4b: Scan the page for clickable elements.
       .call("scan_clickables", "scan_clickables", () => ({}))
 
       // 4c: Filter out non-useful elements (body, script, etc.).
-      .memory('filtered', m =>
-        (m.branch.scan_clickables ?? [])
-          .filter(el => !SKIP_TAGS.has(String(el.tag || '').toLowerCase()))
-        )
+      .memory("filtered", (m) =>
+        (m.branch.scan_clickables ?? []).filter(
+          (el) => !SKIP_TAGS.has(String(el.tag || "").toLowerCase()),
+        ),
+      )
 
       // 4d: Try elements one at a time. Pick the next untried element,
       // ask the AI if it would lead to the address. On "yes" → return it.
@@ -176,7 +177,7 @@ export const pattern = Tree.name("find-address")
             );
           })
           // Ask the AI: would clicking this find the address?
-          .prompt((m) => {
+          .prompt("try_interact", (m) => {
             const el = m.branch.current;
             if (!el)
               return [{ role: "user", content: "No more elements to try." }];
@@ -200,16 +201,19 @@ export const pattern = Tree.name("find-address")
               },
             ];
           })
-          // If the answer is "yes", return the element. Tree stops.
-          .return((m) => {
-            const answer = m.prev[0]?.trim().toLowerCase();
-            if (answer?.startsWith("yes")) return m.branch.current;
-          })
-          // "no" → add this element to the tried list, loop.
+          // add this element to the tried list
           .memoryUpdate("tried_elements", (m, cur) => {
             const el = m.branch.current;
             return [...(cur ?? []), el?.selector].filter(Boolean);
           })
+          
+          // If the answer is "yes", return the element. Tree stops.
+          .return((m) => {
+            const answer = m.try_interact?.trim().toLowerCase();
+            if (answer?.startsWith("yes")) return m.branch.current;
+          })
+
+          // If "no", loop
           .until((m) => {
             // Stop if we got a yes (current was returned) or no more elements.
             const current = m.branch.current;
