@@ -109,6 +109,14 @@ const GET_PAGE_CODE = `JSON.stringify({
 // truncates long text to keep the list readable.
 const SKIP_TAGS = new Set(['body', 'html', 'head', 'script', 'style', 'meta', 'link', 'noscript']);
 
+const RATE_ELEMENT_PROMPT = `
+Does this element likely lead to a page with a business address?
+Element: <{tag}> "{text}"{href}
+Selector: {selector}
+Answer only: likely, maybe, or unlikely
+`;
+
+
 // ─── THE TREE ────────────────────────────────────────────────────────────────
 //
 // The tree definition. Pass it to `grandma.knit(pattern, runtime)`.
@@ -122,13 +130,6 @@ const SKIP_TAGS = new Set(['body', 'html', 'head', 'script', 'style', 'meta', 'l
 // 4. Filter to only "likely" candidates
 // 5. Ask the AI to pick from the filtered list and act on it
 // 6. Loop until the address is found or we've tried 3 times
-
-const RATE_ELEMENT_PROMPT = `
-  |Does this element likely lead to a page with a business address?
-  |Element: <{tag}> "{text}"{href}
-  |Selector: {selector}
-  |Answer only: likely, maybe, or unlikely
-`.replace(/^ *\|/gm, '').trim();
 
 export const pattern = Tree.name('find-address')
   .model('default')
