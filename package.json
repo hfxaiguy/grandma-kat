@@ -7,8 +7,33 @@
   "exports": {
     ".": "./src/index.mjs"
   },
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE.md"
+  ],
   "scripts": {
     "test": "node --test 'tests/**/*.test.mjs'"
+  },
+  "keywords": [
+    "llm",
+    "agent",
+    "tree",
+    "workflow",
+    "prompt",
+    "chains",
+    "memory",
+    "tools"
+  ],
+  "author": "HFX Ai Guy",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hfxaiguy/grandma-kat.git"
+  },
+  "homepage": "https://github.com/hfxaiguy/grandma-kat#readme",
+  "bugs": {
+    "url": "https://github.com/hfxaiguy/grandma-kat/issues"
   },
   "engines": {
     "node": ">=22.5"
