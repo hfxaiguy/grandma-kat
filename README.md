@@ -386,5 +386,4 @@ This repo's own suite runs this way: `npm test` (61 tests, no network).
 
 ## License
 
-See [LISENCE.md](LISENCE.md). (The filename typo is grandma's. She knitted
-it, we're not unraveling it.)
+See [LICENSE.md](LICENSE.md).
