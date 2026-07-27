@@ -1,6 +1,16 @@
-# Grandma KAT
+<p align="center">
+  <img src="images/gramdma-header.png" alt="Grandma KAT" width="100%">
+</p>
 
-**Grandma Knits Agent Trees.**
+<p align="center">
+  <img src="images/gramdma-logo.png" alt="Grandma KAT Logo" width="200">
+</p>
+
+<h1 align="center">Grandma KAT</h1>
+
+<p align="center">
+  <strong>Grandma Knits Agent Trees.</strong>
+</p>
 
 Yes, really. The name is absurd, and also just… accurate: you write a
 *pattern*, hand it to grandma, and she knits it into a finished thing —
