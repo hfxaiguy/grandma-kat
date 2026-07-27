@@ -92,5 +92,10 @@ function makeToolRegistry(client) {
       },
       execute: async (args) => callTool(client, 'wait_for_load', args),
     },
+    snapshot: {
+      description: 'Return page URL, title, scroll position, and text preview.',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => callTool(client, 'snapshot', {}),
+    },
   };
 }

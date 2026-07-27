@@ -71,36 +71,9 @@ Your task: Does this page contain a business address? A business address has a s
 If YES: Write the full address on one line.
 If NO: Respond with exactly one word: no`;
 
-// When the address isn't on the current page, we scan for things to click.
-// This prompt shows the AI the list of clickable elements and asks it to
-// pick the best one. We also show what we've already tried (so it doesn't
-// repeat mistakes) and any feedback from previous failed attempts.
-const PICK_ACTION_PROMPT = `Clickable elements on this page:
-
-{candidates}
-
-Already tried (skip these): {tried}
-
-{feedback}
-
-Pick the best element and call a tool:
-- "navigate" with the URL when the element has a URL
-- "click" with a CSS selector when the element has no URL
-
-If there are no good candidates, respond: no candidates`;
-
 // A simple helper that checks if the AI's answer means "no address found."
 // It handles variations like "No", "NO", "no " (with extra spaces), etc.
 const isNo = (v) => typeof v === 'string' && v.trim().toLowerCase() === 'no';
-
-// JavaScript code that runs in the browser to extract page information.
-// This reads the page's text, the current URL, and the page title —
-// everything the AI needs to understand what page it's looking at.
-const GET_PAGE_CODE = `JSON.stringify({
-  text: document.body ? document.body.innerText : '',
-  url: location.href,
-  title: document.title
-})`;
 
 // Formats a list of clickable elements into a human-readable string.
 // Each line shows the element type, its text, where it links to, and
@@ -109,13 +82,15 @@ const GET_PAGE_CODE = `JSON.stringify({
 // truncates long text to keep the list readable.
 const SKIP_TAGS = new Set(['body', 'html', 'head', 'script', 'style', 'meta', 'link', 'noscript']);
 
-const RATE_ELEMENT_PROMPT = `
-Does this element likely lead to a page with a business address?
-Element: <{tag}> "{text}"{href}
-Selector: {selector}
-Answer only: likely, maybe, or unlikely
-`;
+const ASK_ELEMENT_PROMPT = `
+You are looking for the business address of {company}.
 
+Would clicking this element be your first choice to find the address?
+Element: <{tag}> "{text}" {href}
+Selector: {selector}
+
+Answer: yes or no
+`
 
 // ─── THE TREE ────────────────────────────────────────────────────────────────
 //
@@ -125,68 +100,96 @@ Answer only: likely, maybe, or unlikely
 //
 // The approach:
 // 1. Check if the current page has an address
-// 2. If not, scan for clickable elements
-// 3. Rate each element individually (likely/unlikely to lead to an address)
-// 4. Filter to only "likely" candidates
-// 5. Ask the AI to pick from the filtered list and act on it
+// 2. If not, extract the company name from the page
+// 3. Scan for clickable elements
+// 4. Try each element one at a time: "Would clicking this find the address?"
+// 5. On "yes" → act on that element. On "no" → try the next one.
 // 6. Loop until the address is found or we've tried 3 times
 
-export const pattern = Tree.name('find-address')
-  .model('default')
+export const pattern = Tree.name("find-address")
+  .model("default")
 
   // STEP 1: Navigate to the starting URL (if one was provided).
-  // This is gated — it only runs if `m.url` exists and is non-empty.
-  // If no URL was given (already on a page), this step is skipped.
-  .call(when(m => typeof m.url === 'string' && m.url.length > 0),
-    'navigate',
-    m => ({ url: m.url }))
+  .call(
+    when((m) => typeof m.url === "string" && m.url.length > 0),
+    "navigate",
+    (m) => ({ url: m.url }),
+  )
 
-  // STEP 2: Grab the page content. This runs a small piece of JavaScript
-  // in the browser that reads the page text, URL, and title. The result
-  // is stored in memory as `get_page` so later steps can read it.
-  .call('get_page', 'exec_js', () => ({ code: GET_PAGE_CODE }))
+  // STEP 2: Grab the page content (text, URL, title) using the snapshot tool.
+  .call("get_page", "snapshot", () => ({}))
 
   // STEP 3: Ask the AI "Is there an address on this page?"
-  // The AI sees the page text and responds with either the address (yes)
-  // or the word "no". The response is stored as `check_address`.
-  .branch(Tree.name('check_address')
-    .prompt(m => [
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: `Page text:\n\n${m.branch.get_page?.text ?? ''}` },
-        { role: 'user', content: CHECK_ADDRESS_PROMPT },
-    ]))
+  .branch(
+    Tree.name("check_address").prompt((m) => [
+      { role: "system", content: SYSTEM_PROMPT },
+      {
+        role: "user",
+        content: `Page text:\n\n${m.branch.get_page?.textPreview ?? ""}`,
+      },
+      { role: "user", content: CHECK_ADDRESS_PROMPT },
+    ]),
+  )
+
+  .branch(
+    when((m) => isNo(m.branch.check_address)),
+    Tree.name("get_company_start").prompt((m) => [
+      { role: "system", content: SYSTEM_PROMPT },
+      {
+        role: "user",
+        content: `Page title: ${m.branch.get_page?.title ?? ""}\nPage text: ${(m.branch.get_page?.textPreview ?? "").slice(0, 1000)}\n\nWhat is the name of the company or organization on this page? Answer with ONLY the name, nothing else.`,
+      },
+    ]),
+  )
 
   // STEP 4: If the address wasn't found, try to find it by clicking around.
-  // This entire branch only runs when check_address said "no". Inside it,
-  // we scan the page for clickable things, rate each one, filter to the
-  // promising candidates, pick one, click it, and loop.
-  .branch(when(m => isNo(m.branch.check_address)),
-    Tree.name('try_find')
+  .branch(
+    when((m) => isNo(m.branch.check_address)),
+    Tree.name("try_find")
+      // Initialize the tried list for tracking visited elements.
+      .memory('tried_elements', (m, current) => current || [])
 
-      // 4a: Scan the page for clickable elements (links, buttons, etc.).
-      // Returns an array of { tag, text, href, listeners } objects.
-      .call('scan_clickables', 'scan_clickables', () => ({}))
+      // 4b: Scan the page for clickable elements.
+      .call("scan_clickables", "scan_clickables", () => ({}))
 
-      // 4b: Filter out non-useful elements (body, script, etc.).
+      // 4c: Filter out non-useful elements (body, script, etc.).
       .memory('filtered', m =>
         (m.branch.scan_clickables ?? [])
-          .filter(el => !SKIP_TAGS.has(String(el.tag || '').toLowerCase())))
+          .filter(el => !SKIP_TAGS.has(String(el.tag || '').toLowerCase()))
+        )
 
-      // 4c: Rate each element individually. One LLM call per element.
-      // The AI sees a single element and answers "likely", "maybe", or "unlikely".
-      .map('ratings', m => m.branch.filtered ?? [],
-        Tree.name('rate_element')
-          .prompt(m => {
-            const el = m.item;
-            const tag = String(el.tag || '?').toLowerCase();
-            const text = String(el.text || '').replace(/\n/g, ' ').trim().slice(0, 80);
-            const href = el.href ? ` (${el.href})` : '';
+      // 4d: Try elements one at a time. Pick the next untried element,
+      // ask the AI if it would lead to the address. On "yes" → return it.
+      // On "no" → add to tried, loop to the next element.
+      .branch(
+        Tree.name("try_element")
+          // Pick the first element not yet tried.
+          .memory("current", (m) => {
+            const tried = m.branch.tried_elements ?? [];
+            return (
+              (m.branch.filtered ?? []).find(
+                (el) => !tried.includes(el.selector),
+              ) ?? null
+            );
+          })
+          // Ask the AI: would clicking this find the address?
+          .prompt((m) => {
+            const el = m.branch.current;
+            if (!el)
+              return [{ role: "user", content: "No more elements to try." }];
+            const tag = String(el.tag || "?").toLowerCase();
+            const text = String(el.text || "")
+              .replace(/\n/g, " ")
+              .trim()
+              .slice(0, 80);
+            const href = el.href ? ` (${el.href})` : "";
             const selector = el.selector || tag;
+            const company = m.branch.get_company_start ?? "this company";
             return [
               { role: "system", content: SYSTEM_PROMPT },
               {
                 role: "user",
-                content: RATE_ELEMENT_PROMPT
+                content: ASK_ELEMENT_PROMPT.replace("{company}", company)
                   .replace("{tag}", tag)
                   .replace("{text}", text)
                   .replace("{href}", href)
@@ -194,97 +197,109 @@ export const pattern = Tree.name('find-address')
               },
             ];
           })
+          // If the answer is "yes", return the element. Tree stops.
+          .return((m) => {
+            const answer = m.prev[0]?.trim().toLowerCase();
+            if (answer?.startsWith("yes")) return m.branch.current;
+          })
+          // "no" → add this element to the tried list, loop.
+          .memoryUpdate("tried_elements", (m, cur) => {
+            const el = m.branch.current;
+            return [...(cur ?? []), el?.selector].filter(Boolean);
+          })
+          .until((m) => {
+            // Stop if we got a yes (current was returned) or no more elements.
+            const current = m.branch.current;
+            return current == null;
+          }, max(10)),
+      )
+
+      // 4e: Act on the chosen element. Navigate to its URL or click it.
+      .branch(
+        Tree.name("pick_action")
+          .tools("navigate", "click")
+          .prompt((m) => {
+            const el = m.branch.try_element;
+            if (!el)
+              return [
+                {
+                  role: "user",
+                  content: 'No suitable element found. Say "no candidates".',
+                },
+              ];
+            const tag = String(el.tag || "?").toLowerCase();
+            const text = String(el.text || "")
+              .replace(/\n/g, " ")
+              .trim()
+              .slice(0, 80);
+            const href = el.href || "";
+            const selector = el.selector || tag;
+            return [
+              { role: "system", content: SYSTEM_PROMPT },
+              {
+                role: "user",
+                content: `The best element to find the address is:\n<${tag}> "${text}" (${href})\nSelector: ${selector}\n\nCall "navigate" with the URL, or "click" with the selector. If neither makes sense, say "no candidates".`,
+              },
+            ];
+          })
           .check(
-            m => {
-              const answer = m.prev[0]?.trim().toLowerCase();
-              if (answer.startsWith('likely') || answer.startsWith('maybe') || answer.startsWith('unlikely')) return true;
-              return 'Answer only: likely, maybe, or unlikely';
+            (m) => {
+              const tc = m.raw.prev[0]?.toolCalls?.[0];
+              const tr = m.raw.prev[0]?.toolResults?.[0];
+              if (!tc) {
+                const text = String(m.prev[0] ?? "")
+                  .trim()
+                  .toLowerCase();
+                if (!text)
+                  return 'Empty response. Call navigate/click or say "no candidates".';
+                if (text.length < 80 && /\bno\b/.test(text)) return true;
+                return 'Did not call a tool. Call navigate/click, or respond with "no candidates".';
+              }
+              if (tr?.isError)
+                return `Tool '${tc.name}' failed: ${tr.result}. Try a different element or use navigate instead of click.`;
+              try {
+                JSON.parse(tc.arguments);
+                return true;
+              } catch {
+                return "Invalid JSON in tool call arguments.";
+              }
             },
-            goback(1, max(2))
-          ))
+            goback(
+              1,
+              max(3, (m) => `pick_action gave up: ${m.error}`),
+            ),
+          ),
+      )
 
-      // 4d: Build the filtered candidate list. Pair each element
-      // with its rating, keep only "likely" ones.
-      .memory('candidates', m => {
-        const ratings = m.branch.ratings ?? [];
-        const filtered = m.branch.filtered ?? [];
-        return filtered
-          .map((el, i) => ({ element: el, rating: ratings[i] }))
-          .filter(r => r.rating?.trim().toLowerCase().startsWith('likely'))
-          .map(r => r.element);
-      })
-
-      // 4e: Ask the AI to pick the best candidate and act on it.
-      // The AI sees only the "likely" elements, what we've already tried,
-      // and any feedback from previous failures.
-      .branch(Tree.name('pick_action')
-        .tools('navigate', 'click')
-        .prompt(m => [
-          { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: PICK_ACTION_PROMPT
-            .replace('{candidates}', (m.branch.candidates ?? []).map(el => {
-              const tag = String(el.tag || '?').toLowerCase();
-              const text = String(el.text || '').replace(/\n/g, ' ').trim().slice(0, 80);
-              const href = el.href ? ` (${el.href})` : '';
-              const selector = el.selector || tag;
-              return `<${tag}> "${text}"${href} [selector: ${selector}]`;
-            }).join('\n') || '(none)')
-            .replace('{tried}', JSON.stringify(m.branch.tried ?? []))
-            .replace('{feedback}', m.error ? `\nPrevious attempt: ${m.error}\n` : '') },
-        ])
-
-        // Validate the AI's choice. The AI must either:
-        //   - Call a tool (navigate or click) that succeeds, OR
-        //   - Say "no candidates" (a short text response containing "no")
-        //
-        // If the AI gives a long rambling answer, calls a tool that fails,
-        // or provides invalid tool arguments, the check fails and the AI
-        // is asked to try again (up to 3 times).
-        .check(
-          m => {
-            const tc = m.raw.prev[0]?.toolCalls?.[0];
-            const tr = m.raw.prev[0]?.toolResults?.[0];
-            if (!tc) {
-              const text = String(m.prev[0] ?? '').trim().toLowerCase();
-              if (!text) return 'Empty response. Call navigate/click or say "no candidates".';
-              if (text.length < 80 && /\bno\b/.test(text)) return true;
-              return 'Did not call a tool. Call navigate/click, or respond with "no candidates".';
-            }
-            if (tr?.isError) return `Tool '${tc.name}' failed: ${tr.result}. Try a different element or use navigate instead of click.`;
-            try { JSON.parse(tc.arguments); return true; }
-            catch { return 'Invalid JSON in tool call arguments.'; }
-          },
-          goback(1, max(3, m => `pick_action gave up: ${m.error}`))
-        ))
-
-      // 4f: Remember what we just tried. This adds the tool call arguments
-      // (e.g., the URL we navigated to, or the selector we clicked) to a
-      // running list in memory. Next time through the loop, this list is
-      // shown to the AI so it doesn't pick the same thing again.
-      //
-      // This runs at the try_find level (not inside pick_action) so the
-      // memory slot persists across loop iterations.
-      .memory(when(m => {
+      // 4f: Remember what we just tried for the outer loop.
+      .memory(
+        when((m) => {
           const tc = m.raw.branch.pick_action?.toolCalls?.[0];
           return Boolean(tc && tc.name);
         }),
-        'tried',
+        "tried",
         (m, cur) => {
           const tc = m.raw.branch.pick_action?.toolCalls?.[0];
           return [...(cur ?? []), tc.arguments];
-        })
+        },
+      )
 
-      // 4g: Wait for the page to load after clicking. This only runs if
-      // pick_action actually called a tool (navigated or clicked). If the
-      // AI said "no candidates" instead, there's nothing to wait for.
-      .call(when(m => m.branch.tried != null),
-        'wait_for_load', 'wait_for_load', () => ({ timeoutMs: 10000 })))
+      // 4g: Wait for the page to load after clicking.
+      .call(
+        when((m) => m.branch.tried != null),
+        "wait_for_load",
+        "wait_for_load",
+        () => ({ timeoutMs: 10000 }),
+      ),
+  )
 
   // THE LOOP: Keep going until the address is found, or give up after
-  // 3 full attempts. Each attempt = check the page, scan for clicks,
-  // rate each, pick one, click it, check the new page. If we exhaust
-  // all attempts, the tree throws an error with a descriptive message.
+  // 3 full attempts.
   .until(
-    m => !isNo(m.branch.check_address),
-    max(3, m => `find-address: gave up after 3 iterations: ${m.error ?? 'address not found'}`)
+    (m) => !isNo(m.branch.check_address),
+    max(
+      3,
+      (m) =>
+        `find-address: gave up after 3 iterations: ${m.error ?? "address not found"}`,
+    ),
   );

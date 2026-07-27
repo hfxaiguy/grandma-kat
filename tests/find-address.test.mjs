@@ -8,15 +8,18 @@ import grandma from '../src/index.mjs';
 import { tool } from './helpers.mjs';
 import { pattern } from '../prototyping/find-address/find-address.mjs';
 
-// Tool registry that mimics browser-mcp over an in-memory page. The exec_js
-// tool runs a small interpreter for the get_page pattern used by find-address.
+// Tool registry that mimics browser-mcp over an in-memory page. The snapshot
+// tool returns page text, URL, and title matching the MCP server's response.
 function makeBrowserTools(page) {
-  const execJs = tool(async ({ code }) => {
-    if (code.includes('document.body ? document.body.innerText')) {
-      return { text: page.text, url: page.url, title: page.title };
-    }
-    return null;
-  });
+  const snapshot = tool(async () => ({
+    url: page.url,
+    title: page.title,
+    textPreview: page.text,
+    readyState: 'complete',
+    scrollY: 0,
+    scrollHeight: 0,
+    clientHeight: 800,
+  }));
 
   return {
     navigate: tool(async (args) => {
@@ -27,7 +30,7 @@ function makeBrowserTools(page) {
       page.clicked.push(args.selector);
       return 'clicked';
     }),
-    exec_js: execJs,
+    snapshot: snapshot,
     scan_clickables: tool(async () => page.clickables),
     wait_for_load: tool(async () => ({ loaded: true })),
   };
@@ -123,8 +126,16 @@ test('find-address: loops, picks a clickable, then finds the address', async () 
   const handler = async (messages) => {
     const n = i++;
     const last = messages[messages.length - 1];
-    if (last.content.startsWith('Below is the text content')) return { content: n === 0 ? 'no' : '500 Elm St, Portland, OR 97201' };
-    if (last.content.includes('Answer only: likely, maybe, or unlikely')) return { content: 'likely' };
+    // check_address: first call says no, second says address found
+    if (last.content.startsWith('Below is the text content'))
+      return { content: n === 0 ? 'no' : '500 Elm St, Portland, OR 97201' };
+    // get_company
+    if (last.content.includes('What is the name of the company'))
+      return { content: 'AC-ADA' };
+    // try_element: answer yes on first element
+    if (last.content.includes('Would clicking this element'))
+      return { content: 'yes' };
+    // pick_action: navigate
     return { tool_calls: [{ id: 'tc1', function: { name: 'navigate', arguments: '{"url":"https://example.com/locations"}' } }] };
   };
 
@@ -136,57 +147,47 @@ test('find-address: loops, picks a clickable, then finds the address', async () 
   assert.equal(result, '500 Elm St, Portland, OR 97201');
 });
 
-test('find-address: passes tried list into the next pick_action prompt', async () => {
+test('find-address: tries multiple elements before finding one', async () => {
   const page = freshPage();
   page.clickables = [
-    { tag: 'a', text: 'Locations', href: 'https://example.com/locations' },
-    { tag: 'a', text: 'About',    href: 'https://example.com/about' },
+    { tag: 'a', text: 'About', href: 'https://example.com/about', selector: 'a[href="https://example.com/about"]' },
+    { tag: 'a', text: 'Contact', href: 'https://example.com/contact', selector: 'a[href="https://example.com/contact"]' },
   ];
   const tools = {
     ...makeBrowserTools(page),
     navigate: tool(async (args) => { page.url = args.url; return 'n'; }),
   };
 
-  const pickCalls = [];
+  const askCalls = [];
+  let checkCount = 0;
   let i = 0;
-  // max(3) → 4 passes. Each pass = check + 2 ratings + pick = 4 calls.
-  // 4 passes × 4 = 16 calls total.
   const handler = async (messages) => {
     const n = i++;
     const last = messages[messages.length - 1];
-    if (last.content.startsWith('Below is the text content')) return { content: 'no' };
-    if (last.content.includes('Answer only: likely, maybe, or unlikely')) return { content: 'likely' };
-    // pick_action — record the messages for assertion
-    pickCalls.push(messages.map((m) => ({ ...m })));
-    if (pickCalls.length <= 3) {
-      const url = pickCalls.length === 1
-        ? 'https://example.com/locations'
-        : pickCalls.length === 2
-          ? 'https://example.com/about'
-          : 'https://example.com/third';
-      return { tool_calls: [{ id: `tc${pickCalls.length}`, function: { name: 'navigate', arguments: JSON.stringify({ url }) } }] };
+    if (last.content.startsWith('Below is the text content')) {
+      checkCount++;
+      // First check: no address. Second check: address found.
+      return { content: checkCount === 1 ? 'no' : '123 Main St, Springfield, USA' };
     }
-    return { content: 'no' }; // pass 4 pick (exhausts)
+    if (last.content.includes('What is the name of the company')) return { content: 'Test Corp' };
+    if (last.content.includes('Would clicking this element')) {
+      askCalls.push(last.content);
+      // First element: no. Second element: yes.
+      return { content: askCalls.length === 1 ? 'no' : 'yes' };
+    }
+    // pick_action
+    return { tool_calls: [{ id: 'tc1', function: { name: 'navigate', arguments: '{"url":"https://example.com/contact"}' } }] };
   };
 
-  await assert.rejects(
-    grandma.knit(pattern, {
-      models: { default: { model: 'mock', handler } },
-      tools,
-    }),
-    /gave up/i
-  );
+  const { result } = await grandma.knit(pattern, {
+    models: { default: { model: 'mock', handler } },
+    tools,
+  });
 
-  // pick_action on pass 2 saw the tried list from pass 1.
-  const iter2Pick = pickCalls[1].find((m) => m.content.includes('Already tried'));
-  assert.ok(iter2Pick, 'iter 2 pick_action prompt must include the tried list');
-  assert.ok(iter2Pick.content.includes('https://example.com/locations'));
-
-  // pick_action on pass 3 saw the tried list from passes 1+2.
-  const iter3Pick = pickCalls[2].find((m) => m.content.includes('Already tried'));
-  assert.ok(iter3Pick, 'iter 3 pick_action prompt must include the tried list');
-  assert.ok(iter3Pick.content.includes('https://example.com/locations'));
-  assert.ok(iter3Pick.content.includes('https://example.com/about'));
+  assert.equal(result, '123 Main St, Springfield, USA');
+  // First ask was about "About", second was about "Contact"
+  assert.ok(askCalls[0].includes('About'));
+  assert.ok(askCalls[1].includes('Contact'));
 });
 
 test('find-address: retries pick_action when the LLM emits no tool call', async () => {
@@ -197,22 +198,21 @@ test('find-address: retries pick_action when the LLM emits no tool call', async 
     navigate: tool(async (args) => { page.url = args.url; page.text = '1 Acme Way, NYC'; return 'n'; }),
   };
 
+  let pickCount = 0;
   let i = 0;
-  // LLM first responds with a long, off-topic ramble — check rejects it.
-  // Then a tool call succeeds. The check accepts tool calls with valid args.
   const handler = async (messages) => {
     const n = i++;
     const last = messages[messages.length - 1];
-    if (last.content.startsWith('Below is the text content')) return { content: n === 0 ? 'no' : '1 Acme Way, NYC' };
-    if (last.content.includes('Answer only: likely, maybe, or unlikely')) return { content: 'likely' };
-    // pick_action first time: ramble. Second time: tool call.
-    if (last.content.includes('Clickable elements')) {
-      if (last.content.includes('Previous attempt')) {
-        return { tool_calls: [{ id: 'tc1', function: { name: 'navigate', arguments: '{"url":"https://example.com/c"}' } }] };
-      }
+    if (last.content.startsWith('Below is the text content'))
+      return { content: n === 0 ? 'no' : '1 Acme Way, NYC' };
+    if (last.content.includes('What is the name of the company')) return { content: 'Acme' };
+    if (last.content.includes('Would clicking this element')) return { content: 'yes' };
+    // pick_action: first time ramble, second time tool call
+    pickCount++;
+    if (pickCount === 1) {
       return { content: 'I am thinking very hard about the situation and considering all of the various elements on the page that might be relevant. There are several candidates to evaluate and I want to be thorough in my analysis.' };
     }
-    throw new Error('unexpected call ' + n);
+    return { tool_calls: [{ id: 'tc1', function: { name: 'navigate', arguments: '{"url":"https://example.com/c"}' } }] };
   };
 
   const { result } = await grandma.knit(pattern, {
@@ -229,14 +229,15 @@ test('find-address: until loop exhausts after max iterations', async () => {
   const tools = makeBrowserTools(page);
 
   let i = 0;
-  // max(3) → 4 passes. Each pass = check + 1 rating + pick = 3 calls.
-  // 4 passes × 3 = 12 calls total.
+  // Each pass = check + company + try_element ask + pick = 4 calls.
+  // 4 passes × 4 = 16 calls total.
   const handler = async (messages) => {
     const n = i++;
     const last = messages[messages.length - 1];
     if (last.content.startsWith('Below is the text content')) return { content: 'no' };
-    if (last.content.includes('Answer only: likely, maybe, or unlikely')) return { content: 'likely' };
-    return { tool_calls: [{ id: `tc${n}`, function: { name: 'navigate', arguments: `{"url":"https://p${Math.floor(n/3)}"}` } }] };
+    if (last.content.includes('What is the name of the company')) return { content: 'X Corp' };
+    if (last.content.includes('Would clicking this element')) return { content: 'yes' };
+    return { tool_calls: [{ id: `tc${n}`, function: { name: 'navigate', arguments: `{"url":"https://p${Math.floor(n/4)}"}` } }] };
   };
 
   await assert.rejects(
@@ -250,20 +251,23 @@ test('find-address: until loop exhausts after max iterations', async () => {
     }
   );
 
-  assert.equal(i, 12); // 4 passes × 3 calls
+  assert.equal(i, 16); // 4 passes × 4 calls
 });
 
 test('find-address: pick_action passes through with "no candidates" text', async () => {
   const page = freshPage();
-  page.clickables = []; // empty candidates list
+  page.clickables = []; // empty — no elements to try
 
   let i = 0;
-  // max(3) → 4 passes. No clickables → no rating calls. Each pass = check + pick = 2 calls.
-  // 4 passes × 2 = 8 calls total.
+  // Each pass = check + company + try_element (no elements, prompt still runs) + pick = 4 calls.
+  // 4 passes × 4 = 16 calls total.
   const handler = async (messages) => {
     const n = i++;
     const last = messages[messages.length - 1];
     if (last.content.startsWith('Below is the text content')) return { content: 'no' };
+    if (last.content.includes('What is the name of the company')) return { content: 'Empty Corp' };
+    if (last.content.includes('Would clicking this element') || last.content.includes('No more elements'))
+      return { content: 'no' };
     return { content: 'no candidates' };
   };
 
@@ -275,7 +279,7 @@ test('find-address: pick_action passes through with "no candidates" text', async
     /gave up after 3 iterations/
   );
 
-  assert.equal(i, 8); // 4 passes × 2 calls
+  assert.equal(i, 16); // 4 passes × 4 calls
 });
 
 test('find-address: pattern validates at knit() time (all tools exist)', async () => {
