@@ -61,6 +61,9 @@ import { Tree, when, goback, max } from '../../src/index.mjs';
 // always uses tools to interact with pages.
 const SYSTEM_PROMPT = 'You are a web navigation assistant. You find business addresses on websites. Always use the provided tools to navigate or click elements. Never answer without calling a tool when tools are available.';
 
+// System prompt for steps that don't have tools (like yes/no questions).
+const SYSTEM_PROMPT_NO_TOOLS = 'You are a web navigation assistant. You find business addresses on websites. Answer with ONLY the requested format.';
+
 // This is the question we ask the AI when looking at a page. We show it
 // the page's text and ask: "Is there a business address here?" The AI
 // either writes out the address (if found) or says "no" (if not found).
@@ -122,7 +125,7 @@ export const pattern = Tree.name("find-address")
   // STEP 3: Ask the AI "Is there an address on this page?"
   .branch(
     Tree.name("check_address").prompt((m) => [
-      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: SYSTEM_PROMPT_NO_TOOLS },
       {
         role: "user",
         content: `Page text:\n\n${m.branch.get_page?.textPreview ?? ""}`,
@@ -134,7 +137,7 @@ export const pattern = Tree.name("find-address")
   .branch(
     when((m) => isNo(m.branch.check_address)),
     Tree.name("get_company_start").prompt((m) => [
-      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: SYSTEM_PROMPT_NO_TOOLS },
       {
         role: "user",
         content: `Page title: ${m.branch.get_page?.title ?? ""}\nPage text: ${(m.branch.get_page?.textPreview ?? "").slice(0, 1000)}\n\nWhat is the name of the company or organization on this page? Answer with ONLY the name, nothing else.`,
@@ -186,7 +189,7 @@ export const pattern = Tree.name("find-address")
             const selector = el.selector || tag;
             const company = m.branch.get_company_start ?? "this company";
             return [
-              { role: "system", content: SYSTEM_PROMPT },
+              { role: "system", content: SYSTEM_PROMPT_NO_TOOLS },
               {
                 role: "user",
                 content: ASK_ELEMENT_PROMPT.replace("{company}", company)
