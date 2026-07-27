@@ -1,6 +1,6 @@
 <p align="center">
-  <img src="images/gramdma-logo.png" alt="Grandma KAT Logo" width="200">
-  <img src="images/gramdma-header.png" alt="Grandma KAT" width="600">
+  <img src="images/gramdma-logo.png" alt="Grandma KAT Logo" width="150">
+  <img src="images/gramdma-header.png" alt="Grandma KAT" width="400">
 </p>
 
 <h1 align="center">Grandma KAT</h1>
