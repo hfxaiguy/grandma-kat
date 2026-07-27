@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import grandma from '../src/index.mjs';
 import { tool } from './helpers.mjs';
-import { pattern } from '../prototyping/find-address/find-address.mjs';
+import { pattern } from '../examples/find-address/find-address.mjs';
 
 // Tool registry that mimics browser-mcp over an in-memory page. The snapshot
 // tool returns page text, URL, and title matching the MCP server's response.
