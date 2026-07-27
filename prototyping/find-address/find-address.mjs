@@ -123,13 +123,6 @@ const SKIP_TAGS = new Set(['body', 'html', 'head', 'script', 'style', 'meta', 'l
 // 5. Ask the AI to pick from the filtered list and act on it
 // 6. Loop until the address is found or we've tried 3 times
 
-const RATE_ELEMENT_PROMPT = `Does this element likely lead to a page with a business address?
-
-Element: <{tag}> "{text}"{href}
-Selector: {selector}
-
-Answer only: likely, maybe, or unlikely`;
-
 export const pattern = Tree.name('find-address')
   .model('default')
 
@@ -182,12 +175,18 @@ export const pattern = Tree.name('find-address')
             const href = el.href ? ` (${el.href})` : '';
             const selector = el.selector || tag;
             return [
-              { role: 'system', content: SYSTEM_PROMPT },
-              { role: 'user', content: RATE_ELEMENT_PROMPT
-                .replace('{tag}', tag)
-                .replace('{text}', text)
-                .replace('{href}', href)
-                .replace('{selector}', selector) },
+              { role: "system", content: SYSTEM_PROMPT },
+              {
+                role: "user",
+                content: `Does this element likely lead to a page with a business address?
+                    Element: <{tag}> "{text}"{href}
+                    Selector: {selector}
+                    Answer only: likely, maybe, or unlikely`
+                    .replace("{tag}", tag)
+                    .replace("{text}", text)
+                    .replace("{href}", href)
+                    .replace("{selector}", selector),
+              },
             ];
           })
           .check(
