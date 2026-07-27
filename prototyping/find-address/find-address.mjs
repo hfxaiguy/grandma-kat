@@ -179,9 +179,9 @@ export const pattern = Tree.name('find-address')
               {
                 role: "user",
                 content: `Does this element likely lead to a page with a business address?
-                    Element: <{tag}> "{text}"{href}
-                    Selector: {selector}
-                    Answer only: likely, maybe, or unlikely`
+Element: <{tag}> "{text}"{href}
+Selector: {selector}
+Answer only: likely, maybe, or unlikely`
                     .replace("{tag}", tag)
                     .replace("{text}", text)
                     .replace("{href}", href)
