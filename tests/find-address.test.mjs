@@ -229,8 +229,9 @@ test('find-address: until loop exhausts after max iterations', async () => {
   const tools = makeBrowserTools(page);
 
   let i = 0;
-  // Each pass = check + company + try_element ask + pick = 4 calls.
-  // 4 passes × 4 = 16 calls total.
+  // Pass 1: check + company + try_element ask + pick = 4 calls.
+  // Passes 2-4: check + try_element ask + pick = 3 calls each (company skipped).
+  // 4 + (3 × 3) = 13 calls total.
   const handler = async (messages) => {
     const n = i++;
     const last = messages[messages.length - 1];
@@ -251,7 +252,7 @@ test('find-address: until loop exhausts after max iterations', async () => {
     }
   );
 
-  assert.equal(i, 16); // 4 passes × 4 calls
+  assert.equal(i, 13); // 4 + (3 × 3) = 13
 });
 
 test('find-address: pick_action passes through with "no candidates" text', async () => {
@@ -259,8 +260,9 @@ test('find-address: pick_action passes through with "no candidates" text', async
   page.clickables = []; // empty — no elements to try
 
   let i = 0;
-  // Each pass = check + company + try_element (no elements, prompt still runs) + pick = 4 calls.
-  // 4 passes × 4 = 16 calls total.
+  // Pass 1: check + company + try_element (no elements) + pick = 4 calls.
+  // Passes 2-4: check + try_element (no elements) + pick = 3 calls each.
+  // 4 + (3 × 3) = 13 calls total.
   const handler = async (messages) => {
     const n = i++;
     const last = messages[messages.length - 1];
@@ -279,7 +281,7 @@ test('find-address: pick_action passes through with "no candidates" text', async
     /gave up after 3 iterations/
   );
 
-  assert.equal(i, 16); // 4 passes × 4 calls
+  assert.equal(i, 13); // 4 + (3 × 3) = 13
 });
 
 test('find-address: pattern validates at knit() time (all tools exist)', async () => {

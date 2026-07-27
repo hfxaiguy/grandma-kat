@@ -145,13 +145,13 @@ export const pattern = Tree.name("find-address")
     ]),
   )
 
+  // Track which elements we've already tried (persists across loop iterations).
+  .memory(when((m) => isNo(m.branch.check_address)), "tried_elements", (m, current) => current || [])
+
   // STEP 4: If the address wasn't found, try to find it by clicking around.
   .branch(
     when((m) => isNo(m.branch.check_address)),
     Tree.name("try_find")
-      // Initialize the tried list for tracking visited elements.
-      .memory("tried_elements", (m, current) => current || [])
-
       // 4b: Scan the page for clickable elements.
       .call("scan_clickables", "scan_clickables", () => ({}))
 
