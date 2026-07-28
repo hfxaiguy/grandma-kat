@@ -14,6 +14,8 @@ Yes, really. The name is absurd, and also just… accurate: you write a
 `grandma.knit(pattern)`. What comes off the needles is a tree of LLM steps:
 prompts, tool calls, checks, and loops, all woven together with memory.
 
+<sub>[inspired by immediac](https://immediac.com/)</sub>
+
 > **See it in action:** [`examples/`](examples/README.md) has a fully
 > commented, runnable tree — a web-browsing agent that finds a business's
 > street address — plus the imperative prototypes it was converted from.
