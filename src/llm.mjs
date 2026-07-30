@@ -72,6 +72,24 @@ export async function callLlm(model, messages, { tools } = {}) {
     if (tool_calls) content = '';
   }
 
+  // Per-model response transform. Runs after all built-in handling
+  // (thinking-model extraction, text-to-tool-call recovery) so the
+  // transform sees the final content, reasoning, and tool_calls.
+  // Typical use: strip model-specific tag formats the library doesn't
+  // handle natively (e.g. Gemma 4's <|channel>thought…<channel|>),
+  // or populate reasoning from inline thinking blocks.
+  if (typeof model.transform === 'function') {
+    const r = await model.transform(
+      { content, reasoning, tool_calls, raw: data },
+      { messages, tools, model: model.model },
+    );
+    if (r) {
+      content = r.content ?? content;
+      reasoning = r.reasoning ?? reasoning;
+      tool_calls = r.tool_calls ?? tool_calls;
+    }
+  }
+
   return { content, reasoning, tool_calls, raw: data };
 }
 
