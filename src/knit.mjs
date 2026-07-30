@@ -278,7 +278,7 @@ async function execMemoryUpdate(exec, child, scope) {
   const value = await callFn(child.fn, view, `memoryUpdate fn of '${child.name}'`, current);
   target.slots[child.name] = value;
   logEvent(exec, 'memory', { child: child.name, value, update: true });
-  return { value, record: { content: value } };
+  return { value, record: { content: value }, _slotScope: target };
 }
 
 // Runs a subtree per element of an array. Each invocation gets `m.item`
@@ -311,7 +311,8 @@ async function execMap(exec, child, scope) {
 // --- memory helpers ---
 
 function record(scope, childIndex, name, outcome) {
-  scope.slots[name] = outcome.value;
+  const slotScope = outcome._slotScope ?? scope;
+  slotScope.slots[name] = outcome.value;
   scope.raw[name] = outcome.record;
   scope.prev.unshift({ childIndex, name, value: outcome.value });
   scope.prevRaw.unshift({ childIndex, name, record: outcome.record });
