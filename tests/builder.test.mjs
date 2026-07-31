@@ -208,3 +208,23 @@ test('.map() validates arguments', () => {
   assert.throws(() => Tree.name('a').map('x', m => [], unnamed), /named/);
   assert.throws(() => Tree.name('a').map('has#hash', m => [], sub), /reserved/);
 });
+
+test('.emit() parses fn', () => {
+  const t = Tree.name('a').emit(m => ({ text: 'hi' }));
+  const e = t.def.children[0];
+  assert.equal(e.kind, 'emit');
+  assert.equal(typeof e.fn, 'function');
+  assert.equal(e.gate, null);
+});
+
+test('.emit() supports when() gate', () => {
+  const t = Tree.name('a').emit(when(m => true), m => 'hi');
+  const e = t.def.children[0];
+  assert.equal(e.kind, 'emit');
+  assert.equal(typeof e.gate, 'function');
+});
+
+test('.emit() validates arguments', () => {
+  assert.throws(() => Tree.name('a').emit(), /function/);
+  assert.throws(() => Tree.name('a').emit('not a fn'), /function/);
+});

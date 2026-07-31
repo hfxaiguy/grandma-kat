@@ -228,6 +228,20 @@ function makeBuilder(def) {
       return next(def, (d) => { d.children.push(child); });
     },
 
+    // Accumulative: append an emit leaf (non-blocking output).
+    //   .emit(fn)              — fn(m) → value; calls runtime.onEmit(value), continues
+    //   .emit(when(cond), fn)  — gated
+    emit(...rawArgs) {
+      const { gate, args } = takeGate(rawArgs, '.emit()');
+      const fn = args.shift();
+      if (typeof fn !== 'function') {
+        throw new TypeError('.emit(): first argument must be a function, e.g. .emit(m => ({ text: "hi" }))');
+      }
+      if (args.length !== 0) throw new TypeError('.emit(): too many arguments');
+      const child = { kind: 'emit', name: null, fn, gate };
+      return next(def, (d) => { d.children.push(child); });
+    },
+
     // Selective: model rules, last match wins.
     model(...rawArgs) {
       const { gate, args } = takeGate(rawArgs, '.model()');

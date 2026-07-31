@@ -383,6 +383,10 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         const checkpointId = `${exec.runId}:${exec.seq}`;
         exec.logger.saveCheckpoint(checkpointId, exec.runId, exec.seq, resumePositions);
         throw new PauseSignal(checkpointId, child.name, context);
+      } else if (child.kind === 'emit') {
+        await execEmit(exec, child, scope);
+        i++;
+        continue;
       } else {
         outcome = await execCall(exec, child, scope);
       }
@@ -497,6 +501,16 @@ async function execCall(exec, child, scope) {
   const result = await tool.execute(args);
   logEvent(exec, 'tool_call', { child: child.name, tool: child.tool, args, result }, scope);
   return { value: result, record: { content: result, tool: child.tool, args, toolResults: [result] } };
+}
+
+// Calls runtime.onEmit(value) then continues. No state mutation.
+async function execEmit(exec, child, scope) {
+  const view = makeView(scope);
+  const value = await callFn(child.fn, view, `emit fn of '${child.name}'`);
+  logEvent(exec, 'emit', { child: child.name, value }, scope);
+  if (typeof exec.runtime.onEmit === 'function') {
+    await exec.runtime.onEmit(value);
+  }
 }
 
 // Writes to a named memory slot AND produces m.prev output (like a prompt).

@@ -41,7 +41,7 @@ the model fills in the judgment calls, and every judgment call is checked,
 bounded, and logged.
 
 ```js
-import grandma, { Tree, goback, max } from 'grandma-kat';
+import grandma, { Tree, when, goback, max } from 'grandma-kat';
 
 const pattern = Tree.name('draft-and-verify')
   .prompt(m => `Write one paragraph about ${m.task}.`)
@@ -95,11 +95,12 @@ SQLite logging, and mock-model testing, for one import and no dependencies.
 
 **Alpha** (v0.1.0). Implemented and tested: builder, markers, runner,
 memory scope chain, single-round tool calls, gates, checks/goback/until,
-`.memory()`/`.memoryUpdate()`, `.return()`, `.map()`, validation, SQLite +
+`.memory()`/`.memoryUpdate()`, `.return()`, `.emit()`, `.human()`
+(pause/resume with DB-backed checkpoints), `.map()`, validation, SQLite +
 console logging.
 
 Deferred (designed, not built): tool-call pause mode, escalation promotion,
-YAML authoring layer, mid-run resume, `grandma.compile()`.
+YAML authoring layer, `grandma.compile()`.
 
 ## Requirements & install
 
@@ -123,7 +124,7 @@ A tree that asks a small model to judge a yes/no question, and retries with
 feedback until the model actually answers in the required format:
 
 ```js
-import grandma, { Tree, goback, max } from 'grandma-kat';
+import grandma, { Tree, when, goback, max } from 'grandma-kat';
 
 const pattern = Tree.name('judge')
   .prompt(m => `Is ${m.topic} a good first programming language? Answer ONLY "yes" or "no".`)
@@ -181,6 +182,8 @@ runs both. `.model('x').model('y')` resolves to `'y'` (last match wins).
 | `.memory(name, fn)` | memory write | the written value (also stored under `name`) |
 | `.memoryUpdate(name, fn)` | memory update (slot must already exist) | the updated value |
 | `.return(fn)` | early exit | stops the tree if `fn` returns non-null |
+| `.emit(fn)` | non-blocking output | calls `runtime.onEmit(value)`, continues |
+| `.human(name, contextFn?)` | human-in-the-loop | pauses execution, waits for input |
 | `.map(name, arrayFn, tree)` | run a subtree per element | array of results, stored under `name` |
 
 All of them accept an optional `when(cond)` gate as the first argument:
@@ -326,14 +329,16 @@ const b = Tree.name('b').branch(Tree.from('navigate'));
 
 ```js
 await grandma.knit(pattern, {
-  models:   { /* name → { baseURL, apiKey, model } or { model, handler } */ },
-  tools:    { /* name → { description, parameters, execute } */ },
-  memory:   { /* initial root scope: plain JSON values */ },
-  logger:   true,          // SQLite at ./logs/grandma-kat.db
-            // 'path/to.db' | { path } | { log, close } | false (off, default)
-  logLevel: 'none',        // 'none' (default) | 'info' | 'debug' (console)
+  models:    { /* name → { baseURL, apiKey, model } or { model, handler } */ },
+  tools:     { /* name → { description, parameters, execute } */ },
+  memory:    { /* initial root scope: plain JSON values */ },
+  logger:    true,          // SQLite at ./logs/grandma-kat.db
+             // 'path/to.db' | { path } | { log, close } | false (off, default)
+  logLevel:  'none',        // 'none' (default) | 'info' | 'debug' (console)
+  onEmit:    (value) => {}, // called by .emit() — non-blocking output channel
 });
 // → { result, memory, runId }
+// or { status: 'waiting', humanSlot, context, continuation } if .human() paused
 ```
 
 Model entries are either an OpenAI-compatible endpoint
@@ -394,7 +399,7 @@ test('retries until the answer is valid', async () => {
 });
 ```
 
-This repo's own suite runs this way: `npm test` (69 tests, no network).
+This repo's own suite runs this way: `npm test` (86 tests, no network).
 
 ## Examples in this repo
 
@@ -415,7 +420,6 @@ setup instructions.
 - Tool-call pause mode (pause the run around side-effecting tools)
 - Escalation promotion (a failed retry escalating to a bigger rewind)
 - YAML authoring layer
-- Mid-run resume (runs are atomic; the log tells you how far a dead run got)
 - `grandma.compile()` (hand a compiled subtree to another system as a tool)
 
 ## License
@@ -438,7 +442,7 @@ Everything below is exact behavior, as implemented. The short version:
 - **Two flavors of methods.**
   - *Accumulative (doing)* — every matching rule applies, in declared order:
     `.branch()`, `.prompt()`, `.call()`, `.check()`, `.memory()`,
-    `.memoryUpdate()`, `.return()`, `.map()`.
+    `.memoryUpdate()`, `.return()`, `.emit()`, `.human()`, `.map()`.
   - *Selective (config)* — one value is chosen; the **last matching rule
     wins**: `.model()`, `.tools()`, `.until()`. Put defaults first, gated
     overrides later. An unconditional rule after conditional ones shadows
@@ -588,6 +592,59 @@ use `.memory()` for that.
 .return(when(m => m.branch.rated.length === 0), m => 'nothing to do')
 ```
 
+### `.emit([when], fn)` — accumulative
+
+Appends a non-blocking output leaf. `fn(memory)` returns a value, which is
+passed to `runtime.onEmit(value)` if provided. The tree continues
+immediately — emit does **not** pause execution, does **not** write to
+`m.prev` or any named slot. It's a pure side-channel output.
+
+```js
+.emit(m => ({ text: 'Thinking...' }))
+.emit(m => ({ text: `Result: ${m.branch.answer}` }))
+.emit(when(m => m.branch.needsReview), m => ({ text: 'Needs review' }))
+```
+
+Multiple emits per turn are fine. If `onEmit` is not provided in the
+runtime, emit is a no-op (no error). This gives grandma-kat a clean
+two-channel output model: **emit** (non-blocking, tree continues) and
+**human** (blocking, tree pauses).
+
+### `.human([when], name, [contextFn])` — accumulative
+
+Appends a human-in-the-loop leaf. When reached, execution **pauses**:
+`knit()` returns `{ status: 'waiting', humanSlot, context, continuation }`.
+The caller provides human input by calling `grandma.resume(continuation,
+runtime)` with `humanInput: { [name]: value }` in the runtime. The human
+input is injected into the scope chain and readable as `m.branch.<name>`.
+
+```js
+const pattern = Tree.name('chat')
+  .prompt(m => `Draft a response to: ${m.user_input}`)
+  .human('approve', m => ({ draft: m.prev[0] }))
+  .prompt(m => `Finalize: ${m.branch.approve}`);
+
+// First run — pauses at .human()
+const step1 = await grandma.knit(pattern, runtime);
+// step1.status === 'waiting'
+// step1.context === { draft: '...' }
+
+// Resume with human input
+const step2 = await grandma.resume(step1.continuation, {
+  ...runtime,
+  humanInput: { approve: 'approved' },
+});
+```
+
+`contextFn(memory)` is optional — if provided, its return value is included
+in the pause result as `context`, so the caller can show the human what
+they're responding to.
+
+Checkpoints are stored in the SQLite database (the same one used for
+logging). The continuation is a checkpoint ID string, not serialized state.
+State is reconstructed from the event log on resume. Checkpoints are
+single-use — deleted after resume.
+
 ### `.map([when], name, arrayFn, tree)` — accumulative
 
 Appends a per-element iteration leaf. `arrayFn(memory)` returns an array;
@@ -686,3 +743,26 @@ in declared order, and resolves to
 `{ result, memory, runId }` — where `result` is the root tree's last
 executed child's value and `memory` is the root scope (JSON-serializable,
 threadable into the next run).
+
+If the tree contains `.human()` and execution reaches one, `knit()` resolves
+to `{ status: 'waiting', humanSlot, context, continuation }` instead.
+
+### `grandma.resume(continuation, runtime)`
+
+Resumes a paused tree from a checkpoint. `continuation` is the string
+returned from `knit()` when it paused. The runtime must include the same
+`logger` path (to read the checkpoint and event log) and may include
+`humanInput`:
+
+```js
+const step2 = await grandma.resume(step1.continuation, {
+  ...runtime,
+  humanInput: { approve: 'yes' },
+});
+// → { result, memory, runId } or { status: 'waiting', ... } if it paused again
+```
+
+State is reconstructed from the event log — no serialized state travels
+through the continuation token. The checkpoint is deleted after resume
+(single-use). Multiple sequential pauses/resumes are supported (each pause
+creates a new checkpoint).

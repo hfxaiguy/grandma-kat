@@ -41,6 +41,7 @@ const KIND_LABELS = {
   human: 'human',
   scope_init: 'scope',
   record: 'record',
+  emit: 'emit',
 };
 
 class ConsoleLogger {
@@ -100,6 +101,9 @@ class ConsoleLogger {
         break;
       case 'record':
         if (this.level === 'debug') console.error(`  ${label}${path}: ${c.child} (idx=${c.childIndex}) → ${truncate(JSON.stringify(c.value), 60)}`);
+        break;
+      case 'emit':
+        if (this.level === 'debug') console.error(`  ${label}${path}: ${truncate(JSON.stringify(c.value), 60)}`);
         break;
       default:
         if (this.level === 'debug') console.error(`  ${label}${path}: ${JSON.stringify(c)}`);

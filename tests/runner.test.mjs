@@ -688,3 +688,84 @@ test('.human() runId is preserved across pause/resume', async () => {
     fs.rmSync(dbPath, { force: true });
   }
 });
+
+// --- emit (non-blocking output) ---
+
+test('.emit() calls onEmit with computed value and continues', async () => {
+  const emitted = [];
+  const handler = scripted(['hello']);
+  const pattern = Tree.name('agent')
+    .emit(m => ({ text: 'thinking...' }))
+    .prompt(m => 'hello')
+    .emit(m => ({ text: `result: ${m.prev[0]}` }));
+
+  const { result } = await grandma.knit(pattern, {
+    ...mockRuntime(handler),
+    onEmit: (v) => emitted.push(v),
+  });
+  assert.deepEqual(emitted, [{ text: 'thinking...' }, { text: 'result: hello' }]);
+  assert.equal(result, 'hello');
+});
+
+test('.emit() does NOT write to m.prev', async () => {
+  const emitted = [];
+  const prevs = [];
+  const handler = scripted(['a', 'b']);
+  const pattern = Tree.name('agent')
+    .prompt(m => 'a')
+    .emit(m => { emitted.push('emit1'); return 'e1'; })
+    .prompt(m => { prevs.push(m.prev.length); return 'b'; });
+
+  await grandma.knit(pattern, {
+    ...mockRuntime(handler),
+    onEmit: () => {},
+  });
+  assert.equal(prevs[0], 1);
+  assert.equal(emitted.length, 1);
+});
+
+test('.emit() with gate skips when false', async () => {
+  const emitted = [];
+  const handler = scripted(['a', 'b']);
+  const pattern = Tree.name('agent')
+    .prompt(m => 'a')
+    .emit(when(m => false), m => 'should not emit')
+    .prompt(m => 'b');
+
+  const { result } = await grandma.knit(pattern, {
+    ...mockRuntime(handler),
+    onEmit: (v) => emitted.push(v),
+  });
+  assert.equal(emitted.length, 0);
+  assert.equal(result, 'b');
+});
+
+test('.emit() works without onEmit (no-op)', async () => {
+  const handler = scripted(['x']);
+  const pattern = Tree.name('agent')
+    .emit(m => 'ignored')
+    .prompt(m => 'x');
+
+  const { result } = await grandma.knit(pattern, mockRuntime(handler));
+  assert.equal(result, 'x');
+});
+
+test('.emit() inside .until() loop fires each iteration', async () => {
+  const emitted = [];
+  let i = 0;
+  const handler = async () => {
+    if (i++ < 2) return { content: 'no' };
+    return { content: 'yes' };
+  };
+  const pattern = Tree.name('loop')
+    .prompt(m => 'ask')
+    .emit(m => ({ attempt: i }))
+    .until(m => m.prev[0] === 'yes', max(5));
+
+  const { result } = await grandma.knit(pattern, {
+    ...mockRuntime(handler),
+    onEmit: (v) => emitted.push(v),
+  });
+  assert.equal(result, 'yes');
+  assert.equal(emitted.length, 3);
+});
