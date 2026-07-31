@@ -608,7 +608,8 @@ immediately — emit does **not** pause execution, does **not** write to
 Multiple emits per turn are fine. If `onEmit` is not provided in the
 runtime, emit is a no-op (no error). This gives grandma-kat a clean
 two-channel output model: **emit** (non-blocking, tree continues) and
-**human** (blocking, tree pauses).
+**human** (blocking, tree pauses). Both flow through `onEmit`, so bots
+only need one callback to talk to the user.
 
 ### `.human([when], name, [contextFn])` — accumulative
 
@@ -638,7 +639,9 @@ const step2 = await grandma.resume(step1.continuation, {
 
 `contextFn(memory)` is optional — if provided, its return value is included
 in the pause result as `context`, so the caller can show the human what
-they're responding to.
+they're responding to. The context is also passed to `runtime.onEmit`
+before pausing (if `onEmit` is provided), so bots only need `onEmit` to
+talk to the user — no need to inspect the return shape.
 
 Checkpoints are stored in the SQLite database (the same one used for
 logging). The continuation is a checkpoint ID string, not serialized state.

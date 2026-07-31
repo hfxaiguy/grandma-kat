@@ -371,6 +371,10 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
           ? await callFn(child.contextFn, view, `human context of '${child.name}'`)
           : {};
         logEvent(exec, 'human', { child: child.name, context }, scope);
+        // Emit context before pausing — bots only need onEmit to talk.
+        if (Object.keys(context).length > 0 && typeof exec.runtime.onEmit === 'function') {
+          await exec.runtime.onEmit(context);
+        }
         // Compute per-entry resume positions. Each stack entry resumes at
         // the child that led to this tree level. The innermost entry
         // (current tree) resumes at i + 1 (past the .human() child).

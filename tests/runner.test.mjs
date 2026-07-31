@@ -507,6 +507,48 @@ test('.human() with contextFn provides context in pause result', async () => {
   }
 });
 
+test('.human() emits context via onEmit before pausing', async () => {
+  const handler = scripted(['my draft']);
+  const dbPath = tmpLogger();
+  try {
+    const emitted = [];
+    const pattern = Tree.name('review')
+      .prompt(m => 'write')
+      .human('approve', m => ({ draft: m.prev[0] }));
+
+    const result = await grandma.knit(pattern, {
+      ...mockRuntime(handler, { logger: dbPath }),
+      onEmit: (v) => emitted.push(v),
+    });
+    assert.equal(result.status, 'waiting');
+    assert.deepEqual(result.context, { draft: 'my draft' });
+    // onEmit was called with the context before pausing
+    assert.deepEqual(emitted, [{ draft: 'my draft' }]);
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
+test('.human() without contextFn does not call onEmit', async () => {
+  const handler = scripted(['draft']);
+  const dbPath = tmpLogger();
+  try {
+    const emitted = [];
+    const pattern = Tree.name('review')
+      .prompt(m => 'write')
+      .human('approve');
+
+    const result = await grandma.knit(pattern, {
+      ...mockRuntime(handler, { logger: dbPath }),
+      onEmit: (v) => emitted.push(v),
+    });
+    assert.equal(result.status, 'waiting');
+    assert.equal(emitted.length, 0); // no context, no emit
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
 test('.human() resumes with human input and continues execution', async () => {
   const handler = scripted(['draft', 'final']);
   const dbPath = tmpLogger();
