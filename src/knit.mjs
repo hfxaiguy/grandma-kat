@@ -2,10 +2,21 @@
 // runtime, then executes the tree with an injected runtime (models, tools,
 // memory, logger).
 
-import { Scope, makeView, lookupChain } from './memory.mjs';
+import { Scope, makeView, lookupChain, serializeScopeChain, deserializeScopeChain, resetScopeIdCounter } from './memory.mjs';
 import { callLlm, normalizeMessages } from './llm.mjs';
 import { createLogger, createRunId, definitionId } from './logger.mjs';
-import { unwrap } from './tree.mjs';
+import { unwrap, Tree } from './tree.mjs';
+
+export class PauseSignal {
+  constructor(humanSlot, context, scopes, stack, scopeId, maxScopeId) {
+    this.humanSlot = humanSlot;
+    this.context = context;
+    this.scopes = scopes; // serialized scope chain [current, ..., root]
+    this.stack = stack;   // serialized stack entries (with per-entry resumeChildStart)
+    this.scopeId = scopeId;
+    this.maxScopeId = maxScopeId;
+  }
+}
 
 export class KnitError extends Error {
   constructor(message, details) {
@@ -27,17 +38,57 @@ export async function knit(rootInput, runtime = {}) {
     logger,
     runId: createRunId(),
     defId: definitionId(def),
-    stack: [], // [{ name, tree, pass, edgeCounters: Map }]
+    stack: [], // [{ name, tree, childIndex, pass, edgeCounters: Map }]
   };
 
-  const rootScope = new Scope(null);
-  for (const [k, v] of Object.entries(runtime.memory ?? {})) {
-    rootScope.slots[k] = v;
+  let rootScope;
+  let resumeState = null;
+
+  if (runtime._continuation) {
+    const cont = runtime._continuation;
+    exec.runId = cont.runId;
+    const { scopes, current } = deserializeScopeChain(cont.scopes);
+    // Set counter past all existing scope IDs to avoid collisions.
+    resetScopeIdCounter(cont.maxScopeId + 1);
+    rootScope = scopes.get(0);
+    resumeState = {
+      scopes,
+      current,
+      stack: cont.stack.map((e) => ({
+        ...e,
+        tree: registryGet(e.treeName),
+        edgeCounters: new Map(e.edgeCounters),
+      })),
+      stackIdx: 0, // tracks which stack entry to use per tree level
+    };
+  } else {
+    resetScopeIdCounter(0);
+    rootScope = new Scope(null);
+    for (const [k, v] of Object.entries(runtime.memory ?? {})) {
+      rootScope.slots[k] = v;
+    }
   }
 
   try {
-    const outcome = await execTree(exec, def, rootScope, rootScope);
+    const outcome = await execTree(exec, def, rootScope, rootScope, resumeState);
     return { result: outcome.value, memory: rootScope.slots, runId: exec.runId };
+  } catch (err) {
+    if (err instanceof PauseSignal) {
+      return {
+        status: 'waiting',
+        humanSlot: err.humanSlot,
+        context: err.context,
+        continuation: {
+          _grandmaKatContinuation: true,
+          runId: exec.runId,
+          scopes: err.scopes,
+          currentScopeId: err.scopeId,
+          maxScopeId: err.maxScopeId,
+          stack: err.stack,
+        },
+      };
+    }
+    throw err;
   } finally {
     logger.close();
   }
@@ -45,118 +96,215 @@ export async function knit(rootInput, runtime = {}) {
 
 // --- execution ---
 
-async function execTree(exec, tree, scope, parentScope) {
-  // Declared inputs must resolve via the scope chain (ancestors may satisfy
-  // them even when a sibling producer was skipped).
-  for (const need of tree.needs) {
-    if (lookupChain(parentScope, need) === undefined) {
-      throw new KnitError(`tree '${tree.name}' needs '${need}', but it does not resolve in scope`);
+async function execTree(exec, tree, scope, parentScope, resumeState = null) {
+  if (resumeState) {
+    // Resume path: reconstruct scope, then continue execution.
+    const restoredScope = resumeState.current;
+    if (restoredScope && restoredScope !== scope) {
+      Object.assign(scope.slots, restoredScope.slots);
+      Object.assign(scope.raw, restoredScope.raw);
+      scope.prev = restoredScope.prev;
+      scope.prevRaw = restoredScope.prevRaw;
+      scope.error = restoredScope.error;
+    }
+    // Inject human input into ALL scopes in the continuation.
+    const humanInput = exec.runtime.humanInput ?? {};
+    if (Object.keys(humanInput).length > 0) {
+      for (const [, s] of resumeState.scopes) {
+        for (const [k, v] of Object.entries(humanInput)) {
+          s.slots[k] = v;
+          s.raw[k] = { content: v };
+        }
+      }
+      for (const [k, v] of Object.entries(humanInput)) {
+        scope.slots[k] = v;
+        scope.raw[k] = { content: v };
+      }
+    }
+    // Push the stack entry for THIS tree level (using stackIdx).
+    const entry = resumeState.stack[resumeState.stackIdx];
+    resumeState.stackIdx++;
+    exec.stack.push(entry);
+    try {
+      return await execTreeInner(exec, tree, scope, parentScope, resumeState);
+    } finally {
+      exec.stack.pop();
     }
   }
 
-  const state = { name: tree.name, tree, pass: 0, edgeCounters: new Map() };
+  // Initial run path.
+  const state = { name: tree.name, tree, childIndex: 0, pass: 0, edgeCounters: new Map() };
   exec.stack.push(state);
   try {
-    const view = makeView(scope);
+    return await execTreeInner(exec, tree, scope, parentScope, null);
+  } finally {
+    exec.stack.pop();
+  }
+}
 
-    for (;;) {
+async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
+  // Declared inputs must resolve via the scope chain (ancestors may satisfy
+  // them even when a sibling producer was skipped).
+  if (!resumeState) {
+    for (const need of tree.needs) {
+      if (lookupChain(parentScope, need) === undefined) {
+        throw new KnitError(`tree '${tree.name}' needs '${need}', but it does not resolve in scope`);
+      }
+    }
+  }
+
+  const state = exec.stack[exec.stack.length - 1];
+  const view = makeView(scope);
+  const resumeStart = state.resumeChildStart; // saved before consumed
+  const savedResume = resumeState; // kept for passing to branch children
+
+  for (;;) {
+    if (!resumeState) {
       state.pass++;
       // .until() rewinds m.prev at the start of each pass (current-path log).
       scope.prev = [];
       scope.prevRaw = [];
-
-      let i = 0;
-      while (i < tree.children.length) {
-        const child = tree.children[i];
-
-        // Gates re-evaluate lazily whenever the child is reached.
-        if (child.gate && !(await callFn(child.gate, view, `gate of '${child.name}'`))) {
-          logEvent(exec, 'gate', { child: child.name, result: 'skipped' });
-          i++;
-          continue;
-        }
-
-        if (child.kind === 'check') {
-          const r = await callFn(child.check, view, `check '${child.name}'`);
-          if (r === true) {
-            scope.error = undefined; // cleared when a check passes
-            logEvent(exec, 'check', { child: child.name, pass: true });
-            i++;
-            continue;
-          }
-          scope.error = typeof r === 'string' ? r : 'check failed';
-          logEvent(exec, 'check', { child: child.name, pass: false, feedback: scope.error });
-
-          const key = `check:${i}`;
-          const used = (state.edgeCounters.get(key) ?? 0) + 1;
-          state.edgeCounters.set(key, used);
-          if (used > child.flow.max.count) {
-            logEvent(exec, 'flow', { type: 'exhausted', child: child.name, used });
-            throw new KnitError(await exhaustionMessage(child.flow.max, view,
-              `check '${child.name}' failed after ${child.flow.max.count} retries: ${scope.error}`));
-          }
-          const cut = i - child.flow.n;
-          if (cut < 0) {
-            throw new KnitError(`goback(${child.flow.n}) from '${child.name}' rewinds past the first child`);
-          }
-          logEvent(exec, 'flow', { type: 'goback', n: child.flow.n, from: child.name, used });
-          rewind(scope, cut);
-          i = cut;
-          continue;
-        }
-
-        let outcome;
-        if (child.kind === 'branch') {
-          const childScope = new Scope(scope);
-          const out = await execTree(exec, child.tree, childScope, scope);
-          outcome = {
-            value: out.value,
-            record: { content: out.value ?? null, children: { ...childScope.raw } },
-          };
-        } else if (child.kind === 'prompt') {
-          outcome = await execPrompt(exec, child, scope);
-        } else if (child.kind === 'memory') {
-          outcome = await execMemory(exec, child, scope);
-        } else if (child.kind === 'memoryUpdate') {
-          outcome = await execMemoryUpdate(exec, child, scope);
-        } else if (child.kind === 'return') {
-          const view = makeView(scope);
-          const val = await callFn(child.fn, view, `return fn of '${child.name}'`);
-          if (val !== undefined && val !== null) {
-            const outcome = { value: val, record: { content: val } };
-            record(scope, i, child.name, outcome);
-            logEvent(exec, 'return', { child: child.name, value: val });
-            return exportOutcome(scope);
-          }
-          i++;
-          continue;
-        } else if (child.kind === 'map') {
-          outcome = await execMap(exec, child, scope);
-        } else {
-          outcome = await execCall(exec, child, scope);
-        }
-        record(scope, i, child.name, outcome);
-        i++;
-      }
-
-      const until = await selectRule(tree.untils, view, 'until condition');
-      if (!until) return exportOutcome(scope);
-      if (await callFn(until.check, view, `until check of '${tree.name}'`)) {
-        return exportOutcome(scope);
-      }
-
-      const used = (state.edgeCounters.get('until') ?? 0) + 1;
-      state.edgeCounters.set('until', used);
-      if (used > until.max.count) {
-        logEvent(exec, 'flow', { type: 'exhausted', child: 'until', used });
-        throw new KnitError(await exhaustionMessage(until.max, view,
-          `until loop of '${tree.name}' exhausted after ${until.max.count} rewinds`));
-      }
-      logEvent(exec, 'flow', { type: 'until-rewind', used });
-      // next pass: prev is reset at the top of the loop
     }
-  } finally {
-    exec.stack.pop();
+
+    // On resume, start from the saved position (per stack entry).
+    // After the first iteration, resumeChildStart is cleared so
+    // subsequent loop passes start from 0.
+    let i = state.resumeChildStart ?? 0;
+    if (state.resumeChildStart != null) {
+      state.resumeChildStart = undefined;
+      resumeState = null; // consumed
+    }
+
+    while (i < tree.children.length) {
+      state.childIndex = i;
+      const child = tree.children[i];
+
+      // Gates re-evaluate lazily whenever the child is reached.
+      if (child.gate && !(await callFn(child.gate, view, `gate of '${child.name}'`))) {
+        logEvent(exec, 'gate', { child: child.name, result: 'skipped' });
+        i++;
+        continue;
+      }
+
+      if (child.kind === 'check') {
+        const r = await callFn(child.check, view, `check '${child.name}'`);
+        if (r === true) {
+          scope.error = undefined; // cleared when a check passes
+          logEvent(exec, 'check', { child: child.name, pass: true });
+          i++;
+          continue;
+        }
+        scope.error = typeof r === 'string' ? r : 'check failed';
+        logEvent(exec, 'check', { child: child.name, pass: false, feedback: scope.error });
+
+        const key = `check:${i}`;
+        const used = (state.edgeCounters.get(key) ?? 0) + 1;
+        state.edgeCounters.set(key, used);
+        if (used > child.flow.max.count) {
+          logEvent(exec, 'flow', { type: 'exhausted', child: child.name, used });
+          throw new KnitError(await exhaustionMessage(child.flow.max, view,
+            `check '${child.name}' failed after ${child.flow.max.count} retries: ${scope.error}`));
+        }
+        const cut = i - child.flow.n;
+        if (cut < 0) {
+          throw new KnitError(`goback(${child.flow.n}) from '${child.name}' rewinds past the first child`);
+        }
+        logEvent(exec, 'flow', { type: 'goback', n: child.flow.n, from: child.name, used });
+        rewind(scope, cut);
+        i = cut;
+        continue;
+      }
+
+      let outcome;
+      if (child.kind === 'branch') {
+        const childScope = new Scope(scope);
+        // On resume, pass the resume state to the branch child that's
+        // at the resume position so the inner tree can continue from its
+        // saved position. stackIdx ensures each tree level reads the
+        // right entry from the continuation.
+        const branchResume = (resumeStart != null && i === resumeStart) ? savedResume : null;
+        const out = await execTree(exec, child.tree, childScope, scope, branchResume);
+        outcome = {
+          value: out.value,
+          record: { content: out.value ?? null, children: { ...childScope.raw } },
+        };
+      } else if (child.kind === 'prompt') {
+        outcome = await execPrompt(exec, child, scope);
+      } else if (child.kind === 'memory') {
+        outcome = await execMemory(exec, child, scope);
+      } else if (child.kind === 'memoryUpdate') {
+        outcome = await execMemoryUpdate(exec, child, scope);
+      } else if (child.kind === 'return') {
+        const view = makeView(scope);
+        const val = await callFn(child.fn, view, `return fn of '${child.name}'`);
+        if (val !== undefined && val !== null) {
+          const outcome = { value: val, record: { content: val } };
+          record(scope, i, child.name, outcome);
+          logEvent(exec, 'return', { child: child.name, value: val });
+          return exportOutcome(scope);
+        }
+        i++;
+        continue;
+      } else if (child.kind === 'map') {
+        outcome = await execMap(exec, child, scope);
+      } else if (child.kind === 'human') {
+        const context = child.contextFn
+          ? await callFn(child.contextFn, view, `human context of '${child.name}'`)
+          : {};
+        logEvent(exec, 'human', { child: child.name, context });
+        // Find the max scope ID across all scopes in the chain.
+        let maxId = scope.id;
+        for (let s = scope.parent; s; s = s.parent) {
+          if (s.id > maxId) maxId = s.id;
+        }
+        // Build per-entry resume positions. Each stack entry resumes at
+        // the child that led to this tree level. The innermost entry
+        // (current tree) resumes at i + 1 (past the .human() child).
+        // Outer entries resume at the branch/map child's index so the
+        // branch re-runs and records its outcome.
+        const serializedStack = exec.stack.map((s, idx) => {
+          let resumeChildStart;
+          if (idx === exec.stack.length - 1) {
+            // Innermost: resume right after the .human() child.
+            resumeChildStart = i + 1;
+          } else {
+            // Outer: resume at the branch/map child that led to the
+            // next level. This ensures the branch re-runs on resume.
+            const nextEntry = exec.stack[idx + 1];
+            resumeChildStart = nextEntry.childIndex;
+          }
+          return serializeStackEntry(s, resumeChildStart);
+        });
+        throw new PauseSignal(
+          child.name,
+          context,
+          serializeScopeChain(scope),
+          serializedStack,
+          scope.id,
+          maxId,
+        );
+      } else {
+        outcome = await execCall(exec, child, scope);
+      }
+      record(scope, i, child.name, outcome);
+      i++;
+    }
+
+    const until = await selectRule(tree.untils, view, 'until condition');
+    if (!until) return exportOutcome(scope);
+    if (await callFn(until.check, view, `until check of '${tree.name}'`)) {
+      return exportOutcome(scope);
+    }
+
+    const used = (state.edgeCounters.get('until') ?? 0) + 1;
+    state.edgeCounters.set('until', used);
+    if (used > until.max.count) {
+      logEvent(exec, 'flow', { type: 'exhausted', child: 'until', used });
+      throw new KnitError(await exhaustionMessage(until.max, view,
+        `until loop of '${tree.name}' exhausted after ${until.max.count} rewinds`));
+    }
+    logEvent(exec, 'flow', { type: 'until-rewind', used });
+    // next pass: prev is reset at the top of the loop
   }
 }
 
@@ -323,6 +471,26 @@ function record(scope, childIndex, name, outcome) {
 function rewind(scope, cut) {
   scope.prev = scope.prev.filter((e) => e.childIndex < cut);
   scope.prevRaw = scope.prevRaw.filter((e) => e.childIndex < cut);
+}
+
+// Serialize a stack entry for pause/resume (strip non-serializable tree ref).
+function serializeStackEntry(entry, resumeChildStart) {
+  return {
+    name: entry.name,
+    treeName: entry.name,
+    childIndex: entry.childIndex,
+    pass: entry.pass,
+    edgeCounters: [...entry.edgeCounters.entries()],
+    resumeChildStart,
+  };
+}
+
+// Look up a registered tree by name (from the builder's global registry).
+function registryGet(name) {
+  if (!Tree.has(name)) {
+    throw new KnitError(`cannot resume: tree '${name}' is not registered (call .name() to register)`);
+  }
+  return Tree.from(name).def;
 }
 
 // A container's value = its last executed child's result.

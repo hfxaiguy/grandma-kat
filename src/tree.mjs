@@ -208,6 +208,26 @@ function makeBuilder(def) {
       return next(def, (d) => { d.children.push(child); });
     },
 
+    // Accumulative: append a human-in-the-loop leaf (pauses execution).
+    //   .human(name)                    — pauses, stores human input in m.branch.name
+    //   .human(name, contextFn)         — contextFn(m) → data shown to the human
+    //   .human(when(cond), name, ...)   — gated
+    human(...rawArgs) {
+      const { gate, args } = takeGate(rawArgs, '.human()');
+      const name = args.shift();
+      if (typeof name !== 'string' || name.length === 0) {
+        throw new TypeError(".human(): first argument must be the slot name (string), e.g. .human('approve')");
+      }
+      assertValidName(name, '.human()');
+      const contextFn = args.shift() ?? null;
+      if (contextFn !== null && typeof contextFn !== 'function') {
+        throw new TypeError('.human(): second argument (contextFn) must be a function if provided');
+      }
+      if (args.length !== 0) throw new TypeError('.human(): too many arguments');
+      const child = { kind: 'human', name, contextFn, gate };
+      return next(def, (d) => { d.children.push(child); });
+    },
+
     // Selective: model rules, last match wins.
     model(...rawArgs) {
       const { gate, args } = takeGate(rawArgs, '.model()');

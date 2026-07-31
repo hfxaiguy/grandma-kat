@@ -37,6 +37,7 @@ const KIND_LABELS = {
   flow: 'flow',
   memory: 'memory',
   skip: 'skip',
+  human: 'human',
 };
 
 class ConsoleLogger {
@@ -87,6 +88,9 @@ class ConsoleLogger {
         break;
       case 'gate':
         if (this.level === 'debug') console.error(`  ${label}${path}: ${c.child ?? '?'} → ${c.result}`);
+        break;
+      case 'human':
+        console.error(`  ${label}${path}: ${c.child ?? '?'} (paused)`);
         break;
       default:
         if (this.level === 'debug') console.error(`  ${label}${path}: ${JSON.stringify(c)}`);

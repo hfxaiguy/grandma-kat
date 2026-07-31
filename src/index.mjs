@@ -13,11 +13,11 @@
 //     tools: {},
 //   });
 
-import { knit, KnitError } from './knit.mjs';
+import { knit, KnitError, PauseSignal } from './knit.mjs';
 
 export { Tree } from './tree.mjs';
 export { when, goback, max, isWhen, isGoback, isMax, DEFAULT_MAX } from './markers.mjs';
-export { knit, KnitError } from './knit.mjs';
+export { knit, KnitError, PauseSignal } from './knit.mjs';
 
 export const grandma = { knit };
 export default grandma;
