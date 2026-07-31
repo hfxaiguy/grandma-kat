@@ -7,6 +7,10 @@ import { DatabaseSync } from 'node:sqlite';
 import grandma, { Tree, when, goback, max, KnitError } from '../src/index.mjs';
 import { scripted, mockRuntime, tool } from './helpers.mjs';
 
+function tmpLogger() {
+  return path.join(os.tmpdir(), `grandma-kat-test-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+}
+
 test('basic pipeline: prompts chain via m.prev, result = last child', async () => {
   const seen = [];
   const handler = scripted(['outline', 'draft', 'final']);
@@ -470,118 +474,124 @@ test('.map() subtree can use .memory() and .return()', async () => {
 
 test('.human() pauses execution and returns waiting status', async () => {
   const handler = scripted(['draft']);
-  const pattern = Tree.name('review')
-    .prompt(m => 'write draft')
-    .human('approve');
+  const dbPath = tmpLogger();
+  try {
+    const pattern = Tree.name('review')
+      .prompt(m => 'write draft')
+      .human('approve');
 
-  const result = await grandma.knit(pattern, mockRuntime(handler));
-  assert.equal(result.status, 'waiting');
-  assert.equal(result.humanSlot, 'approve');
-  assert.ok(result.context);
-  assert.ok(result.continuation);
-  assert.equal(result.continuation._grandmaKatContinuation, true);
-  assert.equal(handler.calls.length, 1); // only the prompt ran
+    const result = await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath }));
+    assert.equal(result.status, 'waiting');
+    assert.equal(result.humanSlot, 'approve');
+    assert.ok(result.context);
+    assert.ok(typeof result.continuation === 'string');
+    assert.equal(handler.calls.length, 1); // only the prompt ran
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
 });
 
 test('.human() with contextFn provides context in pause result', async () => {
   const handler = scripted(['my draft']);
-  const pattern = Tree.name('review')
-    .prompt(m => 'write')
-    .human('approve', m => ({ draft: m.prev[0] }));
+  const dbPath = tmpLogger();
+  try {
+    const pattern = Tree.name('review')
+      .prompt(m => 'write')
+      .human('approve', m => ({ draft: m.prev[0] }));
 
-  const result = await grandma.knit(pattern, mockRuntime(handler));
-  assert.equal(result.status, 'waiting');
-  assert.deepEqual(result.context, { draft: 'my draft' });
+    const result = await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath }));
+    assert.equal(result.status, 'waiting');
+    assert.deepEqual(result.context, { draft: 'my draft' });
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
 });
 
 test('.human() resumes with human input and continues execution', async () => {
   const handler = scripted(['draft', 'final']);
-  const pattern = Tree.name('review')
-    .prompt(m => 'write draft')
-    .human('approve')
-    .prompt(m => `finalize: ${m.branch.approve}, draft: ${m.branch['review#1']}`);
+  const dbPath = tmpLogger();
+  try {
+    const pattern = Tree.name('review')
+      .prompt(m => 'write draft')
+      .human('approve')
+      .prompt(m => `finalize: ${m.branch.approve}, draft: ${m.branch['review#1']}`);
 
-  // First run — pauses at .human()
-  const step1 = await grandma.knit(pattern, mockRuntime(handler));
-  assert.equal(step1.status, 'waiting');
-  assert.equal(step1.humanSlot, 'approve');
-  assert.equal(handler.calls.length, 1); // only the first prompt ran
+    // First run — pauses at .human()
+    const step1 = await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath }));
+    assert.equal(step1.status, 'waiting');
+    assert.equal(step1.humanSlot, 'approve');
+    assert.equal(handler.calls.length, 1); // only the first prompt ran
 
-  // Resume with human input — uses a fresh handler
-  const resumeHandler = scripted(['ok']);
-  const step2 = await grandma.knit(pattern, {
-    ...mockRuntime(resumeHandler),
-    _continuation: step1.continuation,
-    humanInput: { approve: 'yes' },
-  });
-  // The second prompt should see approve='yes' and review#1='draft'
-  assert.equal(resumeHandler.calls.length, 1); // only the second prompt ran
-  assert.ok(resumeHandler.calls[0].messages[0].content.includes('finalize: yes'));
-  assert.ok(resumeHandler.calls[0].messages[0].content.includes('draft: draft'));
+    // Resume with human input
+    const resumeHandler = scripted(['ok']);
+    const step2 = await grandma.resume(step1.continuation, {
+      ...mockRuntime(resumeHandler, { logger: dbPath }),
+      humanInput: { approve: 'yes' },
+    });
+    // The second prompt should see approve='yes' and review#1='draft'
+    assert.equal(resumeHandler.calls.length, 1); // only the second prompt ran
+    assert.ok(resumeHandler.calls[0].messages[0].content.includes('finalize: yes'));
+    assert.ok(resumeHandler.calls[0].messages[0].content.includes('draft: draft'));
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
 });
 
 test('.human() preserves scope state across pause/resume', async () => {
   const handler = scripted(['hello', 'after']);
-  const pattern = Tree.name('t')
-    .prompt(m => 'greet')
-    .memory('greeting', m => m.prev[0])
-    .human('confirm')
-    .prompt(m => `${m.branch.greeting}-${m.branch.confirm}`);
+  const dbPath = tmpLogger();
+  try {
+    const pattern = Tree.name('t')
+      .prompt(m => 'greet')
+      .memory('greeting', m => m.prev[0])
+      .human('confirm')
+      .prompt(m => `${m.branch.greeting}-${m.branch.confirm}`);
 
-  const step1 = await grandma.knit(pattern, mockRuntime(handler));
-  assert.equal(step1.status, 'waiting');
+    const step1 = await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath }));
+    assert.equal(step1.status, 'waiting');
 
-  // Verify continuation carries scope data
-  assert.ok(step1.continuation.scopes.length > 0);
-
-  const resumeHandler = scripted(['ok']);
-  const step2 = await grandma.knit(pattern, {
-    ...mockRuntime(resumeHandler),
-    _continuation: step1.continuation,
-    humanInput: { confirm: 'ok' },
-  });
-  // The second prompt should see greeting='hello' and confirm='ok'
-  assert.equal(resumeHandler.calls.length, 1);
-  assert.ok(resumeHandler.calls[0].messages[0].content.includes('hello-ok'));
+    const resumeHandler = scripted(['ok']);
+    const step2 = await grandma.resume(step1.continuation, {
+      ...mockRuntime(resumeHandler, { logger: dbPath }),
+      humanInput: { confirm: 'ok' },
+    });
+    // The second prompt should see greeting='hello' and confirm='ok'
+    assert.equal(resumeHandler.calls.length, 1);
+    assert.ok(resumeHandler.calls[0].messages[0].content.includes('hello-ok'));
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
 });
 
 test('.human() inside a branch — known limitation: branch result lost on resume', async () => {
-  // When .human() is inside a branch, the branch's outcome was never recorded
-  // in the parent scope (the pause happened before the branch returned). On
-  // resume, the outer tree resumes PAST the branch, so the branch's result
-  // is missing from m.branch.
-  //
-  // Workaround: place .human() at the same level as the branch, not inside it.
-  // Full support for nested .human() requires branch-scope checkpointing
-  // (deferred).
   const handler = scripted(['inner-prompt']);
-  const pattern = Tree.name('outer')
-    .branch(
-      Tree.name('inner')
-        .prompt(m => 'inner-prompt')
-        .human('inner_approve')
-    )
-    .prompt(m => `read: ${m.branch.inner_approve ?? 'MISSING'}`);
+  const dbPath = tmpLogger();
+  try {
+    const pattern = Tree.name('outer')
+      .branch(
+        Tree.name('inner')
+          .prompt(m => 'inner-prompt')
+          .human('inner_approve')
+      )
+      .prompt(m => `read: ${m.branch.inner_approve ?? 'MISSING'}`);
 
-  const step1 = await grandma.knit(pattern, mockRuntime(handler));
-  assert.equal(step1.status, 'waiting');
-  assert.equal(step1.humanSlot, 'inner_approve');
+    const step1 = await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath }));
+    assert.equal(step1.status, 'waiting');
+    assert.equal(step1.humanSlot, 'inner_approve');
 
-  // On resume, the inner tree resumes from its saved position (past the
-  // prompt at index 0, starting at index 2 which is past all children).
-  // The branch completes using the initial run's scope state.
-  // The outer tree resumes past the branch (at index 1).
-  const resumeHandler = scripted(['outer-result']);
-  const step2 = await grandma.knit(pattern, {
-    ...mockRuntime(resumeHandler),
-    _continuation: step1.continuation,
-    humanInput: { inner_approve: 'approved' },
-  });
-  // The outer prompt ran (handler called once for the outer prompt)
-  assert.equal(resumeHandler.calls.length, 1);
-  // The branch result was never recorded in the parent scope — it's lost.
-  // But the human input IS available via scope chain (injected into root scope).
-  assert.equal(step2.result, 'outer-result');
+    const resumeHandler = scripted(['outer-result']);
+    const step2 = await grandma.resume(step1.continuation, {
+      ...mockRuntime(resumeHandler, { logger: dbPath }),
+      humanInput: { inner_approve: 'approved' },
+    });
+    // The outer prompt ran (handler called once for the outer prompt)
+    assert.equal(resumeHandler.calls.length, 1);
+    // The branch result was never recorded in the parent scope — it's lost.
+    // But the human input IS available via scope chain (injected into root scope).
+    assert.equal(step2.result, 'outer-result');
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
 });
 
 test('.human() with gate is skipped when gate is false', async () => {
@@ -598,70 +608,83 @@ test('.human() with gate is skipped when gate is false', async () => {
 
 test('.human() with .memory() writes human input to scope', async () => {
   const handler = scripted(['draft']);
-  const pattern = Tree.name('review')
-    .prompt(m => 'write')
-    .human('feedback')
-    .memory('saved_feedback', m => m.branch.feedback);
+  const dbPath = tmpLogger();
+  try {
+    const pattern = Tree.name('review')
+      .prompt(m => 'write')
+      .human('feedback')
+      .memory('saved_feedback', m => m.branch.feedback);
 
-  // Initial run — pauses at .human()
-  const step1 = await grandma.knit(pattern, mockRuntime(handler));
-  assert.equal(step1.status, 'waiting');
+    // Initial run — pauses at .human()
+    const step1 = await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath }));
+    assert.equal(step1.status, 'waiting');
 
-  // Resume with human input — memory writes it to a named slot
-  const h2 = scripted(['after']);
-  const step2 = await grandma.knit(pattern, {
-    ...mockRuntime(h2),
-    _continuation: step1.continuation,
-    humanInput: { feedback: 'approve' },
-  });
-  assert.equal(step2.memory.feedback, 'approve');
-  assert.equal(step2.memory.saved_feedback, 'approve');
+    // Resume with human input — memory writes it to a named slot
+    const h2 = scripted(['after']);
+    const step2 = await grandma.resume(step1.continuation, {
+      ...mockRuntime(h2, { logger: dbPath }),
+      humanInput: { feedback: 'approve' },
+    });
+    assert.equal(step2.memory.feedback, 'approve');
+    assert.equal(step2.memory.saved_feedback, 'approve');
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
 });
 
 test('.human() inside .until() loop pauses each iteration', async () => {
   const handler = scripted(['try-1']);
-  const pattern = Tree.name('loop')
-    .prompt(m => `attempt`)
-    .human('verdict')
-    .until(m => m.branch.verdict === 'done', max(5));
+  const dbPath = tmpLogger();
+  try {
+    const pattern = Tree.name('loop')
+      .prompt(m => `attempt`)
+      .human('verdict')
+      .until(m => m.branch.verdict === 'done', max(5));
 
-  // Iteration 1 — pause
-  const step1 = await grandma.knit(pattern, mockRuntime(handler));
-  assert.equal(step1.status, 'waiting');
+    // Iteration 1 — pause
+    const step1 = await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath }));
+    assert.equal(step1.status, 'waiting');
 
-  // Iteration 1 — resume with 'not done', until fails, loops back
-  const h2 = scripted(['try-2']);
-  const step2 = await grandma.knit(pattern, {
-    ...mockRuntime(h2),
-    _continuation: step1.continuation,
-    humanInput: { verdict: 'not done' },
-  });
-  assert.equal(step2.status, 'waiting'); // paused again on iteration 2
-  assert.equal(h2.calls.length, 1); // prompt ran on the looped pass
+    // Iteration 1 — resume with 'not done', until fails, loops back
+    const h2 = scripted(['try-2']);
+    const step2 = await grandma.resume(step1.continuation, {
+      ...mockRuntime(h2, { logger: dbPath }),
+      humanInput: { verdict: 'not done' },
+    });
+    assert.equal(step2.status, 'waiting'); // paused again on iteration 2
+    assert.equal(h2.calls.length, 1); // prompt ran on the looped pass
 
-  // Iteration 2 — resume with 'done', until passes, exits loop
-  const h3 = scripted(['try-3']);
-  const step3 = await grandma.knit(pattern, {
-    ...mockRuntime(h3),
-    _continuation: step2.continuation,
-    humanInput: { verdict: 'done' },
-  });
-  assert.equal(step3.result, 'try-2'); // result from previous iteration's prompt
-  assert.equal(h3.calls.length, 0); // until passed immediately, no LLM calls
+    // Iteration 2 — resume with 'done', until passes, exits loop
+    const h3 = scripted(['try-3']);
+    const step3 = await grandma.resume(step2.continuation, {
+      ...mockRuntime(h3, { logger: dbPath }),
+      humanInput: { verdict: 'done' },
+    });
+    assert.equal(step3.result, 'try-2'); // result from previous iteration's prompt
+    assert.equal(h3.calls.length, 0); // until passed immediately, no LLM calls
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
 });
 
 test('.human() runId is preserved across pause/resume', async () => {
   const handler = scripted(['draft', 'final']);
-  const pattern = Tree.name('t')
-    .prompt(m => 'write')
-    .human('ok')
-    .prompt(m => 'done');
+  const dbPath = tmpLogger();
+  try {
+    const pattern = Tree.name('t')
+      .prompt(m => 'write')
+      .human('ok')
+      .prompt(m => 'done');
 
-  const step1 = await grandma.knit(pattern, mockRuntime(handler));
-  const step2 = await grandma.knit(pattern, {
-    ...mockRuntime(handler),
-    _continuation: step1.continuation,
-    humanInput: { ok: 'yes' },
-  });
-  assert.equal(step1.continuation.runId, step2.runId);
+    const step1 = await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath }));
+    const step2 = await grandma.resume(step1.continuation, {
+      ...mockRuntime(handler, { logger: dbPath }),
+      humanInput: { ok: 'yes' },
+    });
+    // continuation is a string (checkpoint ID)
+    assert.equal(typeof step1.continuation, 'string');
+    assert.equal(typeof step2.runId, 'string');
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
 });

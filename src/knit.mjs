@@ -2,19 +2,16 @@
 // runtime, then executes the tree with an injected runtime (models, tools,
 // memory, logger).
 
-import { Scope, makeView, lookupChain, serializeScopeChain, deserializeScopeChain, resetScopeIdCounter } from './memory.mjs';
+import { Scope, makeView, lookupChain, resetScopeIdCounter } from './memory.mjs';
 import { callLlm, normalizeMessages } from './llm.mjs';
 import { createLogger, createRunId, definitionId } from './logger.mjs';
 import { unwrap, Tree } from './tree.mjs';
 
 export class PauseSignal {
-  constructor(humanSlot, context, scopes, stack, scopeId, maxScopeId) {
+  constructor(checkpointId, humanSlot, context) {
+    this.checkpointId = checkpointId;
     this.humanSlot = humanSlot;
     this.context = context;
-    this.scopes = scopes; // serialized scope chain [current, ..., root]
-    this.stack = stack;   // serialized stack entries (with per-entry resumeChildStart)
-    this.scopeId = scopeId;
-    this.maxScopeId = maxScopeId;
   }
 }
 
@@ -39,31 +36,20 @@ export async function knit(rootInput, runtime = {}) {
     runId: createRunId(),
     defId: definitionId(def),
     stack: [], // [{ name, tree, childIndex, pass, edgeCounters: Map }]
+    seq: 0,
   };
 
   let rootScope;
   let resumeState = null;
 
   if (runtime._continuation) {
-    const cont = runtime._continuation;
-    exec.runId = cont.runId;
-    const { scopes, current } = deserializeScopeChain(cont.scopes);
-    // Set counter past all existing scope IDs to avoid collisions.
-    resetScopeIdCounter(cont.maxScopeId + 1);
-    rootScope = scopes.get(0);
-    resumeState = {
-      scopes,
-      current,
-      stack: cont.stack.map((e) => ({
-        ...e,
-        tree: registryGet(e.treeName),
-        edgeCounters: new Map(e.edgeCounters),
-      })),
-      stackIdx: 0, // tracks which stack entry to use per tree level
-    };
+    // Resume from checkpoint: reconstruct state from event log.
+    const result = await resume(runtime._continuation, runtime);
+    return result;
   } else {
     resetScopeIdCounter(0);
     rootScope = new Scope(null);
+    logEvent(exec, 'scope_init', { scopeId: rootScope.id, parentScopeId: null }, rootScope);
     for (const [k, v] of Object.entries(runtime.memory ?? {})) {
       rootScope.slots[k] = v;
     }
@@ -78,17 +64,149 @@ export async function knit(rootInput, runtime = {}) {
         status: 'waiting',
         humanSlot: err.humanSlot,
         context: err.context,
-        continuation: {
-          _grandmaKatContinuation: true,
-          runId: exec.runId,
-          scopes: err.scopes,
-          currentScopeId: err.scopeId,
-          maxScopeId: err.maxScopeId,
-          stack: err.stack,
-        },
+        continuation: err.checkpointId,
       };
     }
     throw err;
+  } finally {
+    logger.close();
+  }
+}
+
+// --- resume from checkpoint ---
+
+export async function resume(checkpointId, runtime) {
+  const logger = createLogger(runtime.logger ?? false, runtime.logLevel ?? 'none');
+  try {
+    const cp = logger.getCheckpoint(checkpointId);
+    if (!cp) throw new KnitError(`checkpoint '${checkpointId}' not found`);
+    const cpRunId = cp.run_id;
+    const events = logger.getEvents(cpRunId);
+    const resumePositions = JSON.parse(cp.resume_positions);
+
+    // Reconstruct scope chain from events.
+    const scopes = new Map();
+    let rootScope = null;
+    let humanScopeId = null;
+
+    for (const ev of events) {
+      if (ev.seq > cp.seq) break;
+      const c = ev.content;
+
+      if (ev.kind === 'scope_init') {
+        const scope = new Scope(null);
+        scope.id = c.scopeId;
+        if (c.parentScopeId != null && scopes.has(c.parentScopeId)) {
+          scope.parent = scopes.get(c.parentScopeId);
+        }
+        scopes.set(c.scopeId, scope);
+        if (!rootScope && c.parentScopeId === null) rootScope = scope;
+      }
+
+      const scope = scopes.get(ev.scope_id);
+      if (!scope) continue;
+
+      if (ev.kind === 'record') {
+        scope.slots[c.child] = c.value;
+        scope.prev.unshift({ childIndex: c.childIndex, name: c.child, value: c.value });
+      } else if (ev.kind === 'check') {
+        scope.error = c.pass ? undefined : c.feedback;
+      } else if (ev.kind === 'memory' && !c.update) {
+        scope.slots[c.child] = c.value;
+      } else if (ev.kind === 'human') {
+        humanScopeId = ev.scope_id;
+      }
+    }
+
+    // Detect iteration boundaries: when iteration increments, reset prev.
+    let lastIteration = new Map();
+    for (const ev of events) {
+      if (ev.seq > cp.seq) break;
+      if (!ev.scope_id) continue;
+      const prev = lastIteration.get(ev.scope_id);
+      if (prev !== undefined && ev.iteration > prev) {
+        const scope = scopes.get(ev.scope_id);
+        if (scope) { scope.prev = []; scope.prevRaw = []; }
+      }
+      lastIteration.set(ev.scope_id, ev.iteration);
+    }
+
+    // Detect goback: filter prev by cut index.
+    for (const ev of events) {
+      if (ev.seq > cp.seq) break;
+      if (ev.kind === 'flow' && ev.content.type === 'goback') {
+        const scope = scopes.get(ev.scope_id);
+        if (scope) {
+          const checkIdx = scope.prev.findIndex(e => e.name === ev.content.from);
+          const cut = (checkIdx >= 0 ? checkIdx : scope.prev.length) - ev.content.n;
+          scope.prev = scope.prev.filter(e => e.childIndex < cut);
+        }
+      }
+    }
+
+    // Reconstruct execution stack from branch_path of the human event.
+    const humanEvent = events.find(e => e.seq === cp.seq && e.kind === 'human');
+    const treeNames = humanEvent.branch_path.split('/');
+
+    // Find max scope ID for counter reset.
+    let maxScopeId = 0;
+    for (const id of scopes.keys()) {
+      if (id > maxScopeId) maxScopeId = id;
+    }
+    resetScopeIdCounter(maxScopeId + 1);
+
+    // Inject human input into ALL scopes.
+    const humanInput = runtime.humanInput ?? {};
+    for (const [, s] of scopes) {
+      for (const [k, v] of Object.entries(humanInput)) {
+        s.slots[k] = v;
+        s.raw[k] = { content: v };
+      }
+    }
+
+    // Build the resume stack.
+    const stack = treeNames.map((name, idx) => ({
+      name,
+      tree: registryGet(name),
+      childIndex: 0,
+      pass: 0,
+      edgeCounters: new Map(),
+      resumeChildStart: resumePositions[idx],
+    }));
+
+    const resumeState = {
+      scopes,
+      current: scopes.get(humanScopeId),
+      stack,
+      stackIdx: 0,
+    };
+
+    const exec = {
+      runtime,
+      logger,
+      runId: cp.run_id,
+      defId: definitionId(rootScope ? registryGet(treeNames[0]) : null),
+      stack: [],
+      seq: cp.seq,
+    };
+    try {
+      const outcome = await execTree(exec, registryGet(treeNames[0]), rootScope, rootScope, resumeState);
+      logger.deleteCheckpoint(checkpointId);
+      return { result: outcome.value, memory: rootScope.slots, runId: exec.runId };
+    } catch (err) {
+      if (err instanceof PauseSignal) {
+        // Delete the OLD checkpoint we resumed from (new one was saved by execTreeInner).
+        logger.deleteCheckpoint(checkpointId);
+        return {
+          status: 'waiting',
+          humanSlot: err.humanSlot,
+          context: err.context,
+          continuation: err.checkpointId,
+        };
+      }
+      logger.deleteCheckpoint(checkpointId);
+      throw err;
+    }
   } finally {
     logger.close();
   }
@@ -181,7 +299,7 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
 
       // Gates re-evaluate lazily whenever the child is reached.
       if (child.gate && !(await callFn(child.gate, view, `gate of '${child.name}'`))) {
-        logEvent(exec, 'gate', { child: child.name, result: 'skipped' });
+        logEvent(exec, 'gate', { child: child.name, result: 'skipped' }, scope);
         i++;
         continue;
       }
@@ -190,18 +308,18 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         const r = await callFn(child.check, view, `check '${child.name}'`);
         if (r === true) {
           scope.error = undefined; // cleared when a check passes
-          logEvent(exec, 'check', { child: child.name, pass: true });
+          logEvent(exec, 'check', { child: child.name, pass: true }, scope);
           i++;
           continue;
         }
         scope.error = typeof r === 'string' ? r : 'check failed';
-        logEvent(exec, 'check', { child: child.name, pass: false, feedback: scope.error });
+        logEvent(exec, 'check', { child: child.name, pass: false, feedback: scope.error }, scope);
 
         const key = `check:${i}`;
         const used = (state.edgeCounters.get(key) ?? 0) + 1;
         state.edgeCounters.set(key, used);
         if (used > child.flow.max.count) {
-          logEvent(exec, 'flow', { type: 'exhausted', child: child.name, used });
+          logEvent(exec, 'flow', { type: 'exhausted', child: child.name, used }, scope);
           throw new KnitError(await exhaustionMessage(child.flow.max, view,
             `check '${child.name}' failed after ${child.flow.max.count} retries: ${scope.error}`));
         }
@@ -209,7 +327,7 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         if (cut < 0) {
           throw new KnitError(`goback(${child.flow.n}) from '${child.name}' rewinds past the first child`);
         }
-        logEvent(exec, 'flow', { type: 'goback', n: child.flow.n, from: child.name, used });
+        logEvent(exec, 'flow', { type: 'goback', n: child.flow.n, from: child.name, used }, scope);
         rewind(scope, cut);
         i = cut;
         continue;
@@ -218,6 +336,7 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
       let outcome;
       if (child.kind === 'branch') {
         const childScope = new Scope(scope);
+        logEvent(exec, 'scope_init', { scopeId: childScope.id, parentScopeId: scope.id }, childScope);
         // On resume, pass the resume state to the branch child that's
         // at the resume position so the inner tree can continue from its
         // saved position. stackIdx ensures each tree level reads the
@@ -239,8 +358,8 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         const val = await callFn(child.fn, view, `return fn of '${child.name}'`);
         if (val !== undefined && val !== null) {
           const outcome = { value: val, record: { content: val } };
-          record(scope, i, child.name, outcome);
-          logEvent(exec, 'return', { child: child.name, value: val });
+          record(exec, scope, i, child.name, outcome);
+          logEvent(exec, 'return', { child: child.name, value: val }, scope);
           return exportOutcome(scope);
         }
         i++;
@@ -251,42 +370,23 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         const context = child.contextFn
           ? await callFn(child.contextFn, view, `human context of '${child.name}'`)
           : {};
-        logEvent(exec, 'human', { child: child.name, context });
-        // Find the max scope ID across all scopes in the chain.
-        let maxId = scope.id;
-        for (let s = scope.parent; s; s = s.parent) {
-          if (s.id > maxId) maxId = s.id;
-        }
-        // Build per-entry resume positions. Each stack entry resumes at
+        logEvent(exec, 'human', { child: child.name, context }, scope);
+        // Compute per-entry resume positions. Each stack entry resumes at
         // the child that led to this tree level. The innermost entry
         // (current tree) resumes at i + 1 (past the .human() child).
-        // Outer entries resume at the branch/map child's index so the
-        // branch re-runs and records its outcome.
-        const serializedStack = exec.stack.map((s, idx) => {
-          let resumeChildStart;
-          if (idx === exec.stack.length - 1) {
-            // Innermost: resume right after the .human() child.
-            resumeChildStart = i + 1;
-          } else {
-            // Outer: resume at the branch/map child that led to the
-            // next level. This ensures the branch re-runs on resume.
-            const nextEntry = exec.stack[idx + 1];
-            resumeChildStart = nextEntry.childIndex;
-          }
-          return serializeStackEntry(s, resumeChildStart);
+        // Outer entries resume at the branch/map child's index.
+        const resumePositions = exec.stack.map((s, idx) => {
+          if (idx === exec.stack.length - 1) return i + 1;
+          return exec.stack[idx + 1].childIndex;
         });
-        throw new PauseSignal(
-          child.name,
-          context,
-          serializeScopeChain(scope),
-          serializedStack,
-          scope.id,
-          maxId,
-        );
+        // Save checkpoint with a unique ID.
+        const checkpointId = `${exec.runId}:${exec.seq}`;
+        exec.logger.saveCheckpoint(checkpointId, exec.runId, exec.seq, resumePositions);
+        throw new PauseSignal(checkpointId, child.name, context);
       } else {
         outcome = await execCall(exec, child, scope);
       }
-      record(scope, i, child.name, outcome);
+      record(exec, scope, i, child.name, outcome);
       i++;
     }
 
@@ -299,11 +399,11 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
     const used = (state.edgeCounters.get('until') ?? 0) + 1;
     state.edgeCounters.set('until', used);
     if (used > until.max.count) {
-      logEvent(exec, 'flow', { type: 'exhausted', child: 'until', used });
+      logEvent(exec, 'flow', { type: 'exhausted', child: 'until', used }, scope);
       throw new KnitError(await exhaustionMessage(until.max, view,
         `until loop of '${tree.name}' exhausted after ${until.max.count} rewinds`));
     }
-    logEvent(exec, 'flow', { type: 'until-rewind', used });
+    logEvent(exec, 'flow', { type: 'until-rewind', used }, scope);
     // next pass: prev is reset at the top of the loop
   }
 }
@@ -345,7 +445,7 @@ async function execPrompt(exec, child, scope) {
     child: child.name, round: 1, model: modelName,
     messages,
     content: response.content, reasoning: response.reasoning, toolCalls: response.tool_calls ?? null,
-  });
+  }, scope);
 
   if (!response.tool_calls?.length) {
     // No tool calls — text-only response.
@@ -376,7 +476,7 @@ async function execPrompt(exec, child, scope) {
       result = `error: ${err.message}`;
     }
     record.toolResults.push({ name, result, isError });
-    logEvent(exec, 'tool_result', { child: child.name, tool: name, args, result, isError });
+    logEvent(exec, 'tool_result', { child: child.name, tool: name, args, result, isError }, scope);
   }
 
   // The value is the text the model returned alongside the tool calls,
@@ -395,7 +495,7 @@ async function execCall(exec, child, scope) {
   const tool = exec.runtime.tools?.[child.tool];
   if (!tool) throw new KnitError(`unknown tool '${child.tool}' (called from '${child.name}')`);
   const result = await tool.execute(args);
-  logEvent(exec, 'tool_call', { child: child.name, tool: child.tool, args, result });
+  logEvent(exec, 'tool_call', { child: child.name, tool: child.tool, args, result }, scope);
   return { value: result, record: { content: result, tool: child.tool, args, toolResults: [result] } };
 }
 
@@ -404,8 +504,7 @@ async function execMemory(exec, child, scope) {
   const view = makeView(scope);
   const current = scope.slots[child.name]; // read before write (may be undefined)
   const value = await callFn(child.fn, view, `memory fn of '${child.name}'`, current);
-  scope.slots[child.name] = value;
-  logEvent(exec, 'memory', { child: child.name, value });
+  logEvent(exec, 'memory', { child: child.name, value }, scope);
   return { value, record: { content: value } };
 }
 
@@ -424,8 +523,7 @@ async function execMemoryUpdate(exec, child, scope) {
   }
   const current = target.slots[child.name];
   const value = await callFn(child.fn, view, `memoryUpdate fn of '${child.name}'`, current);
-  target.slots[child.name] = value;
-  logEvent(exec, 'memory', { child: child.name, value, update: true });
+  logEvent(exec, 'memory', { child: child.name, value, update: true }, target);
   return { value, record: { content: value }, _slotScope: target };
 }
 
@@ -437,33 +535,33 @@ async function execMap(exec, child, scope) {
 
   if (!Array.isArray(items) || items.length === 0) {
     const empty = [];
-    scope.slots[child.name] = empty;
-    logEvent(exec, 'map', { child: child.name, count: 0 });
+    logEvent(exec, 'map', { child: child.name, count: 0 }, scope);
     return { value: empty, record: { content: empty } };
   }
 
   const results = [];
   for (let idx = 0; idx < items.length; idx++) {
     const itemScope = new Scope(scope);
+    logEvent(exec, 'scope_init', { scopeId: itemScope.id, parentScopeId: scope.id }, itemScope);
     itemScope.slots.item = items[idx];
     const out = await execTree(exec, child.tree, itemScope, scope);
     results.push(out.value);
-    logEvent(exec, 'map_item', { child: child.name, index: idx, value: out.value });
+    logEvent(exec, 'map_item', { child: child.name, index: idx, value: out.value }, scope);
   }
 
-  scope.slots[child.name] = results;
-  logEvent(exec, 'map', { child: child.name, count: results.length });
+  logEvent(exec, 'map', { child: child.name, count: results.length }, scope);
   return { value: results, record: { content: results } };
 }
 
 // --- memory helpers ---
 
-function record(scope, childIndex, name, outcome) {
+function record(exec, scope, childIndex, name, outcome) {
   const slotScope = outcome._slotScope ?? scope;
   slotScope.slots[name] = outcome.value;
   scope.raw[name] = outcome.record;
   scope.prev.unshift({ childIndex, name, value: outcome.value });
   scope.prevRaw.unshift({ childIndex, name, record: outcome.record });
+  logEvent(exec, 'record', { child: name, childIndex, value: outcome.value }, slotScope);
 }
 
 // goback rewinds m.prev to the jump point; named slots are NOT rewound
@@ -542,12 +640,14 @@ async function exhaustionMessage(maxRule, view, fallback) {
   return String(await callFn(maxRule.errFn, view, 'max errFn'));
 }
 
-function logEvent(exec, kind, content) {
+function logEvent(exec, kind, content, scope) {
+  exec.seq++;
   exec.logger.log({
     run_id: exec.runId,
     definition_id: exec.defId,
     branch_path: exec.stack.map((s) => s.name).join('/'),
     iteration: exec.stack[exec.stack.length - 1]?.pass ?? 0,
+    scope_id: scope?.id ?? null,
     kind,
     content,
   });

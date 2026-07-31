@@ -11,8 +11,9 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 
+let runCounter = 0;
 export function createRunId() {
-  return new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
+  return new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19) + '-' + (++runCounter);
 }
 
 // Which version of the definition ran: root name + content hash. Functions
@@ -24,7 +25,7 @@ export function definitionId(rootDef) {
   return `${rootDef.name ?? 'unnamed'}:${hash}`;
 }
 
-const nullLogger = { log() {}, close() {} };
+const nullLogger = { log() {}, close() {}, saveCheckpoint() {}, getCheckpoint() { return null; }, deleteCheckpoint() {}, getEvents() { return []; } };
 
 const INFO_KINDS = new Set(['llm_call', 'tool_call', 'tool_result', 'flow', 'memory']);
 
@@ -38,6 +39,8 @@ const KIND_LABELS = {
   memory: 'memory',
   skip: 'skip',
   human: 'human',
+  scope_init: 'scope',
+  record: 'record',
 };
 
 class ConsoleLogger {
@@ -92,12 +95,23 @@ class ConsoleLogger {
       case 'human':
         console.error(`  ${label}${path}: ${c.child ?? '?'} (paused)`);
         break;
+      case 'scope_init':
+        if (this.level === 'debug') console.error(`  ${label}: #${c.scopeId} parent=${c.parentScopeId ?? 'root'}`);
+        break;
+      case 'record':
+        if (this.level === 'debug') console.error(`  ${label}${path}: ${c.child} (idx=${c.childIndex}) → ${truncate(JSON.stringify(c.value), 60)}`);
+        break;
       default:
         if (this.level === 'debug') console.error(`  ${label}${path}: ${JSON.stringify(c)}`);
     }
   }
 
   close() {}
+
+  saveCheckpoint() {}
+  getCheckpoint() { return null; }
+  deleteCheckpoint() {}
+  getEvents() { return []; }
 }
 
 function truncate(s, max) {
@@ -106,24 +120,39 @@ function truncate(s, max) {
   return s.length > max ? s.slice(0, max) + '…' : s;
 }
 
-const CREATE_TABLE = `
+const CREATE_TABLES = `
 CREATE TABLE IF NOT EXISTS calls (
   run_id TEXT NOT NULL,
   definition_id TEXT NOT NULL,
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   branch_path TEXT,
   iteration INTEGER,
+  scope_id INTEGER,
   kind TEXT NOT NULL,
   content TEXT
+);
+CREATE TABLE IF NOT EXISTS checkpoints (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  resume_positions TEXT NOT NULL
 )`;
 
 class SqliteLogger {
   constructor(dbPath) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     this.db = new DatabaseSync(dbPath);
-    this.db.exec(CREATE_TABLE);
+    this.db.exec(CREATE_TABLES);
     this.insert = this.db.prepare(
-      'INSERT INTO calls (run_id, definition_id, branch_path, iteration, kind, content) VALUES (?, ?, ?, ?, ?, ?)');
+      'INSERT INTO calls (run_id, definition_id, branch_path, iteration, scope_id, kind, content) VALUES (?, ?, ?, ?, ?, ?, ?)');
+    this.insertCp = this.db.prepare(
+      'INSERT INTO checkpoints (id, run_id, seq, resume_positions) VALUES (?, ?, ?, ?)');
+    this.selectCp = this.db.prepare(
+      'SELECT * FROM checkpoints WHERE id = ?');
+    this.deleteCp = this.db.prepare(
+      'DELETE FROM checkpoints WHERE id = ?');
+    this.selectEvents = this.db.prepare(
+      'SELECT * FROM calls WHERE run_id = ? ORDER BY seq');
   }
 
   log(event) {
@@ -132,8 +161,28 @@ class SqliteLogger {
       event.definition_id,
       event.branch_path,
       event.iteration,
+      event.scope_id ?? null,
       event.kind,
       JSON.stringify(event.content ?? null));
+  }
+
+  saveCheckpoint(id, runId, seq, resumePositions) {
+    this.insertCp.run(id, runId, seq, JSON.stringify(resumePositions));
+  }
+
+  getCheckpoint(runId) {
+    return this.selectCp.get(runId) ?? null;
+  }
+
+  deleteCheckpoint(runId) {
+    this.deleteCp.run(runId);
+  }
+
+  getEvents(runId) {
+    return this.selectEvents.all(runId).map((r) => ({
+      ...r,
+      content: JSON.parse(r.content),
+    }));
   }
 
   close() {
@@ -144,6 +193,8 @@ class SqliteLogger {
 class CompositeLogger {
   constructor(loggers) {
     this.loggers = loggers;
+    // Find the first logger with read methods (SqliteLogger).
+    this.reader = loggers.find((l) => typeof l.getCheckpoint === 'function' && l !== nullLogger) ?? nullLogger;
   }
   log(event) {
     for (const l of this.loggers) l.log(event);
@@ -151,6 +202,10 @@ class CompositeLogger {
   close() {
     for (const l of this.loggers) l.close?.();
   }
+  saveCheckpoint(id, runId, seq, resumePositions) { this.reader.saveCheckpoint(id, runId, seq, resumePositions); }
+  getCheckpoint(runId) { return this.reader.getCheckpoint(runId); }
+  deleteCheckpoint(runId) { this.reader.deleteCheckpoint(runId); }
+  getEvents(runId) { return this.reader.getEvents(runId); }
 }
 
 export function createLogger(opt, logLevel = 'none') {
