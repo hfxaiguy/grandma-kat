@@ -217,7 +217,7 @@ export function createLogger(opt, logLevel = 'none') {
 
   if (opt !== false) {
     if (opt && typeof opt.log === 'function') {
-      loggers.push({ log: (e) => opt.log(e), close: () => opt.close?.() });
+      loggers.push(opt);
     } else {
       const dbPath = typeof opt === 'string'
         ? opt
