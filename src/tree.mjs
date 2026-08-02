@@ -1,7 +1,7 @@
 // Tree factory: chained builder methods accumulate an immutable definition
 // (plain data). Execution happens separately, via grandma.knit().
 
-import { isWhen, isGoback, isMax, goback, resolveMax } from './markers.mjs';
+import { isWhen, isGoback, isGoto, isMax, goback, goto, resolveMax } from './markers.mjs';
 
 const BUILDER = Symbol('grandma-kat/builder');
 const registry = new Map();
@@ -101,7 +101,7 @@ function makeBuilder(def) {
       return next(def, (d) => { d.children.push(child); });
     },
 
-    // Accumulative: append a check leaf with a flow (goback) on failure.
+    // Accumulative: append a check leaf with a flow (goback or goto) on failure.
     check(...rawArgs) {
       const { gate, args } = takeGate(rawArgs, '.check()');
       const checkFn = args.shift();
@@ -110,16 +110,19 @@ function makeBuilder(def) {
       }
       let flow = args.shift();
       if (flow === undefined) flow = goback(1);
-      if (!isGoback(flow)) {
-        throw new TypeError('.check(): flow must be goback(n, max?)');
+      if (!isGoback(flow) && !isGoto(flow)) {
+        throw new TypeError('.check(): flow must be goback(n, max?) or goto(target, max?)');
       }
       const options = takeOptions(args, '.check()');
       if (args.length !== 0) throw new TypeError('.check(): too many arguments');
+      const flowDef = isGoback(flow)
+        ? { type: 'goback', n: flow.n, max: resolveMax(flow.max) }
+        : { type: 'goto', target: flow.target, max: resolveMax(flow.max) };
       const child = {
         kind: 'check',
         name: null,
         check: checkFn,
-        flow: { n: flow.n, max: resolveMax(flow.max) },
+        flow: flowDef,
         gate,
         options,
       };
@@ -272,20 +275,64 @@ function makeBuilder(def) {
       });
     },
 
-    // Selective: loop-until rules, last match wins.
+    // Accumulative: append an until leaf (mid-sequence loop guard).
+    //   .until(checkFn, max?)                     — loop back to top
+    //   .until(goto('name'), checkFn, max?)       — loop back to named child
+    //   .until(goback(n), checkFn, max?)          — loop back by n children
+    // Evaluates at its position in the child sequence. If checkFn returns
+    // true, execution continues to the next child. If false, jumps back.
     until(...rawArgs) {
       const { gate, args } = takeGate(rawArgs, '.until()');
+      let jumpTarget = null;
+      let jumpType = null;
+      // Optional first arg: goto() or goback() marker
+      if (args.length > 1 && (isGoto(args[0]) || isGoback(args[0]))) {
+        const marker = args.shift();
+        if (isGoto(marker)) {
+          jumpType = 'goto';
+          jumpTarget = marker.target;
+        } else {
+          jumpType = 'goback';
+          jumpTarget = marker.n;
+        }
+      }
       const checkFn = args.shift();
       if (typeof checkFn !== 'function') {
-        throw new TypeError('.until(): first argument must be the condition function');
+        throw new TypeError('.until(): first argument must be the condition function (or a goto/goback marker followed by the condition)');
       }
       const maxMarker = args.shift();
       if (maxMarker !== undefined && !isMax(maxMarker)) {
         throw new TypeError('.until(): second argument must be max(count[, errFn])');
       }
       if (args.length !== 0) throw new TypeError('.until(): too many arguments');
-      const rule = { cond: gate, check: checkFn, max: resolveMax(maxMarker) };
-      return next(def, (d) => { d.untils.push(rule); });
+      const child = {
+        kind: 'until',
+        name: null,
+        check: checkFn,
+        max: resolveMax(maxMarker),
+        jumpType,
+        jumpTarget,
+        gate,
+      };
+      return next(def, (d) => { d.children.push(child); });
+    },
+
+    // Accumulative: unconditional jump to a named child (used with .check()).
+    //   .goto('name')              — jump to child 'name'
+    //   .goto('name', max(n))      — with retry limit
+    goto(...rawArgs) {
+      const { gate, args } = takeGate(rawArgs, '.goto()');
+      if (gate) throw new TypeError('.goto() does not support when() — use it inside .check() or .until()');
+      const target = args.shift();
+      if (typeof target !== 'string' || target.length === 0) {
+        throw new TypeError(".goto(): first argument must be the target child name (string)");
+      }
+      const maxMarker = args.shift() ?? null;
+      if (maxMarker !== null && !isMax(maxMarker)) {
+        throw new TypeError('.goto(): second argument must be max(count[, errFn])');
+      }
+      if (args.length !== 0) throw new TypeError('.goto(): too many arguments');
+      return goto(target, maxMarker);
     },
   };
   return api;

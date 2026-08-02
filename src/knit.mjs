@@ -326,13 +326,24 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
           throw new KnitError(await exhaustionMessage(child.flow.max, view,
             `check '${child.name}' failed after ${child.flow.max.count} retries: ${scope.error}`));
         }
-        const cut = i - child.flow.n;
-        if (cut < 0) {
-          throw new KnitError(`goback(${child.flow.n}) from '${child.name}' rewinds past the first child`);
+        if (child.flow.type === 'goto') {
+          const targetIdx = tree.children.findIndex(c => c.name === child.flow.target);
+          if (targetIdx === -1) {
+            throw new KnitError(`check goto('${child.flow.target}'): no child with that name in tree '${tree.name}'`);
+          }
+          logEvent(exec, 'flow', { type: 'goto', target: child.flow.target, from: child.name, childIndex: targetIdx, used }, scope);
+          rewind(scope, targetIdx);
+          i = targetIdx;
+        } else {
+          // goback (default)
+          const cut = i - child.flow.n;
+          if (cut < 0) {
+            throw new KnitError(`goback(${child.flow.n}) from '${child.name}' rewinds past the first child`);
+          }
+          logEvent(exec, 'flow', { type: 'goback', n: child.flow.n, from: child.name, used }, scope);
+          rewind(scope, cut);
+          i = cut;
         }
-        logEvent(exec, 'flow', { type: 'goback', n: child.flow.n, from: child.name, used }, scope);
-        rewind(scope, cut);
-        i = cut;
         continue;
       }
 
@@ -394,6 +405,51 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         await execEmit(exec, child, scope);
         i++;
         continue;
+      } else if (child.kind === 'until') {
+        const view = makeView(scope);
+        const passed = await callFn(child.check, view, `until check '${child.name}'`);
+        if (passed) {
+          scope.error = undefined;
+          logEvent(exec, 'until', { child: child.name, pass: true }, scope);
+          i++;
+          continue;
+        }
+        scope.error = typeof passed === 'string' ? passed : 'until condition not met';
+        logEvent(exec, 'until', { child: child.name, pass: false, feedback: scope.error }, scope);
+
+        const key = `until:${i}`;
+        const used = (state.edgeCounters.get(key) ?? 0) + 1;
+        state.edgeCounters.set(key, used);
+        if (used > child.max.count) {
+          logEvent(exec, 'flow', { type: 'exhausted', child: child.name, used }, scope);
+          throw new KnitError(await exhaustionMessage(child.max, view,
+            `until '${child.name}' exhausted after ${child.max.count} iterations: ${scope.error}`));
+        }
+
+        // Compute jump target.
+        if (child.jumpType === 'goto') {
+          const targetIdx = tree.children.findIndex(c => c.name === child.jumpTarget);
+          if (targetIdx === -1) {
+            throw new KnitError(`until goto('${child.jumpTarget}'): no child with that name in tree '${tree.name}'`);
+          }
+          logEvent(exec, 'flow', { type: 'until-goto', target: child.jumpTarget, from: child.name, childIndex: targetIdx, used }, scope);
+          rewind(scope, targetIdx);
+          i = targetIdx;
+        } else if (child.jumpType === 'goback') {
+          const cut = i - child.jumpTarget;
+          if (cut < 0) {
+            throw new KnitError(`until goback(${child.jumpTarget}) from '${child.name}' rewinds past the first child`);
+          }
+          logEvent(exec, 'flow', { type: 'until-goback', n: child.jumpTarget, from: child.name, used }, scope);
+          rewind(scope, cut);
+          i = cut;
+        } else {
+          // Default: loop to top.
+          logEvent(exec, 'flow', { type: 'until-rewind', from: child.name, used }, scope);
+          rewind(scope, 0);
+          i = 0;
+        }
+        continue;
       } else {
         outcome = await execCall(exec, child, scope);
       }
@@ -401,21 +457,8 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
       i++;
     }
 
-    const until = await selectRule(tree.untils, view, 'until condition');
-    if (!until) return exportOutcome(scope);
-    if (await callFn(until.check, view, `until check of '${tree.name}'`)) {
-      return exportOutcome(scope);
-    }
-
-    const used = (state.edgeCounters.get('until') ?? 0) + 1;
-    state.edgeCounters.set('until', used);
-    if (used > until.max.count) {
-      logEvent(exec, 'flow', { type: 'exhausted', child: 'until', used }, scope);
-      throw new KnitError(await exhaustionMessage(until.max, view,
-        `until loop of '${tree.name}' exhausted after ${until.max.count} rewinds`));
-    }
-    logEvent(exec, 'flow', { type: 'until-rewind', used }, scope);
-    // next pass: prev is reset at the top of the loop
+    // All children processed — no until looped back. Exit the tree.
+    return exportOutcome(scope);
   }
 }
 
@@ -714,7 +757,7 @@ function validateTree(tree, warnings) {
     if (child.kind === 'map') validateTree(child.tree, warnings);
   }
 
-  for (const kind of ['models', 'tools', 'untils']) {
+  for (const kind of ['models', 'tools']) {
     warnShadowedRules(tree, kind, warnings);
   }
 }

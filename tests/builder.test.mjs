@@ -65,7 +65,9 @@ test('.check() defaults to goback(1) with default max', () => {
 
 test('.until() parses condition and max', () => {
   const t = Tree.name('a').prompt(m => 'x').until(m => true, max(5));
-  assert.equal(t.def.untils[0].max.count, 5);
+  const untilChild = t.def.children[1];
+  assert.equal(untilChild.kind, 'until');
+  assert.equal(untilChild.max.count, 5);
   assert.throws(() => Tree.name('a').prompt(m => 'x').until('nope'), /function/);
 });
 
