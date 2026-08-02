@@ -30,6 +30,7 @@ export async function knit(rootInput, runtime = {}) {
   validateRuntime(def, runtime);
 
   const logger = createLogger(runtime.logger ?? false, runtime.logLevel ?? 'none');
+  const callerOwnsLogger = typeof runtime.logger === 'object' && runtime.logger !== null && typeof runtime.logger.log === 'function';
   const exec = {
     runtime,
     logger,
@@ -69,7 +70,7 @@ export async function knit(rootInput, runtime = {}) {
     }
     throw err;
   } finally {
-    logger.close();
+    if (!callerOwnsLogger) logger.close();
   }
 }
 
@@ -77,6 +78,7 @@ export async function knit(rootInput, runtime = {}) {
 
 export async function resume(checkpointId, runtime) {
   const logger = createLogger(runtime.logger ?? false, runtime.logLevel ?? 'none');
+  const callerOwnsLogger = typeof runtime.logger === 'object' && runtime.logger !== null && typeof runtime.logger.log === 'function';
   try {
     const cp = logger.getCheckpoint(checkpointId);
     if (!cp) throw new KnitError(`checkpoint '${checkpointId}' not found`);
@@ -208,7 +210,7 @@ export async function resume(checkpointId, runtime) {
       throw err;
     }
   } finally {
-    logger.close();
+    if (!callerOwnsLogger) logger.close();
   }
 }
 
