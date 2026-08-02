@@ -131,7 +131,24 @@ export async function callLlm(model, messages, { tools } = {}) {
 //   - Tool IDs:  absent — we generate them
 async function callOllama(model, messages, { tools } = {}) {
   const baseURL = model.baseURL.replace(/\/$/, '');
-  const body = { model: model.model, messages, stream: false };
+  // Ollama expects tool_calls.arguments as objects, not JSON strings.
+  // Convert any string arguments back to objects before sending.
+  const ollamaMessages = messages.map(m => {
+    if (!m.tool_calls) return m;
+    return {
+      ...m,
+      tool_calls: m.tool_calls.map(tc => ({
+        ...tc,
+        function: {
+          ...tc.function,
+          arguments: typeof tc.function?.arguments === 'string'
+            ? (() => { try { return JSON.parse(tc.function.arguments); } catch { return tc.function.arguments; } })()
+            : tc.function?.arguments ?? {},
+        },
+      })),
+    };
+  });
+  const body = { model: model.model, messages: ollamaMessages, stream: false };
   if (tools?.length) body.tools = tools;
 
   const headers = { 'Content-Type': 'application/json' };
