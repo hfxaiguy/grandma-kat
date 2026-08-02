@@ -91,15 +91,8 @@ export async function resume(checkpointId, runtime) {
     let rootScope = null;
     let humanScopeId = null;
 
-    // Find the human event first — its seq marks the checkpoint boundary.
-    // cp.seq is exec.seq (runner counter) which may not match the
-    // auto-incremented seq in the database after previous runs.
-    const humanEvent = events.find(e => e.kind === 'human');
-    if (!humanEvent) throw new KnitError(`checkpoint '${checkpointId}': no human event found in run '${cpRunId}'`);
-    const checkpointSeq = humanEvent.seq;
-
     for (const ev of events) {
-      if (ev.seq > checkpointSeq) break;
+      if (ev.seq > cp.seq) break;
       const c = ev.content;
 
       if (ev.kind === 'scope_init') {
@@ -130,7 +123,7 @@ export async function resume(checkpointId, runtime) {
     // Detect iteration boundaries: when iteration increments, reset prev.
     let lastIteration = new Map();
     for (const ev of events) {
-      if (ev.seq > checkpointSeq) break;
+      if (ev.seq > cp.seq) break;
       if (!ev.scope_id) continue;
       const prev = lastIteration.get(ev.scope_id);
       if (prev !== undefined && ev.iteration > prev) {
@@ -142,7 +135,7 @@ export async function resume(checkpointId, runtime) {
 
     // Detect goback: filter prev by cut index.
     for (const ev of events) {
-      if (ev.seq > checkpointSeq) break;
+      if (ev.seq > cp.seq) break;
       if (ev.kind === 'flow' && ev.content.type === 'goback') {
         const scope = scopes.get(ev.scope_id);
         if (scope) {
@@ -154,6 +147,8 @@ export async function resume(checkpointId, runtime) {
     }
 
     // Reconstruct execution stack from branch_path of the human event.
+    const humanEvent = events.find(e => e.seq === cp.seq && e.kind === 'human');
+    if (!humanEvent) throw new KnitError(`checkpoint '${checkpointId}': no human event found at seq ${cp.seq}`);
     const treeNames = humanEvent.branch_path.split('/');
 
     // Find max scope ID for counter reset.
@@ -378,7 +373,7 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         const context = child.contextFn
           ? await callFn(child.contextFn, view, `human context of '${child.name}'`)
           : {};
-        logEvent(exec, 'human', { child: child.name, context }, scope);
+        const humanSeq = logEvent(exec, 'human', { child: child.name, context }, scope);
         // Emit context before pausing — bots only need onEmit to talk.
         if (Object.keys(context).length > 0 && typeof exec.runtime.onEmit === 'function') {
           await exec.runtime.onEmit(context);
@@ -392,8 +387,8 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
           return exec.stack[idx + 1].childIndex;
         });
         // Save checkpoint with a unique ID.
-        const checkpointId = `${exec.runId}:${exec.seq}`;
-        exec.logger.saveCheckpoint(checkpointId, exec.runId, exec.seq, resumePositions);
+        const checkpointId = `${exec.runId}:${humanSeq}`;
+        exec.logger.saveCheckpoint(checkpointId, exec.runId, humanSeq, resumePositions);
         throw new PauseSignal(checkpointId, child.name, context);
       } else if (child.kind === 'emit') {
         await execEmit(exec, child, scope);
@@ -668,7 +663,7 @@ async function exhaustionMessage(maxRule, view, fallback) {
 
 function logEvent(exec, kind, content, scope) {
   exec.seq++;
-  exec.logger.log({
+  return exec.logger.log({
     run_id: exec.runId,
     definition_id: exec.defId,
     branch_path: exec.stack.map((s) => s.name).join('/'),

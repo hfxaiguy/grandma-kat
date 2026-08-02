@@ -160,7 +160,7 @@ class SqliteLogger {
   }
 
   log(event) {
-    this.insert.run(
+    const { lastInsertRowid } = this.insert.run(
       event.run_id,
       event.definition_id,
       event.branch_path,
@@ -168,6 +168,7 @@ class SqliteLogger {
       event.scope_id ?? null,
       event.kind,
       JSON.stringify(event.content ?? null));
+    return Number(lastInsertRowid);
   }
 
   saveCheckpoint(id, runId, seq, resumePositions) {
@@ -201,7 +202,12 @@ class CompositeLogger {
     this.reader = loggers.find((l) => typeof l.getCheckpoint === 'function' && l !== nullLogger) ?? nullLogger;
   }
   log(event) {
-    for (const l of this.loggers) l.log(event);
+    let seq;
+    for (const l of this.loggers) {
+      const r = l.log(event);
+      if (r !== undefined) seq = r;
+    }
+    return seq;
   }
   close() {
     for (const l of this.loggers) l.close?.();
