@@ -393,6 +393,15 @@ value appears in `m.prev` like a prompt's output. The sibling after it sees
 `m.prev[0]` as the memory value. This makes `.memory()` usable as the final
 step in a `.map()` subtree, where the collected value is the memory output.
 
+**Known false positive (note):** `.memory('x', fn)` immediately followed by
+`.memoryUpdate('x', fn)` (same slot name, seed-then-append) trips the
+"duplicate child name 'x' — the second overwrites the first's memory slot"
+validation warning. That pairing is an intentional, supported idiom — the
+duplicate-name check can't tell it apart from a real collision. Potential
+fix (deferred): when the duplicate pair is a `.memory()` directly followed by
+a `.memoryUpdate()` of the same name, suppress the warning. Tracked in
+`src/knit.mjs` next to `validateTree`.
+
 ### `.return()`: early exit (chosen)
 
 `.return(fn)` is a leaf child that can stop tree execution early. If `fn`

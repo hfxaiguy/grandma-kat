@@ -749,6 +749,13 @@ function validateTree(tree, warnings) {
     throw new KnitError(`tree '${tree.name}' has zero children — a named tree with no children is a build error`);
   }
 
+  // KNOWN FALSE POSITIVE (potential fix, not yet done): a `.memory("messages", ...)`
+  // followed by `.memoryUpdate("messages", ...)` in the same tree triggers this
+  // warning, but that pairing is idiomatic (`.memory()` seeds the slot,
+  // `.memoryUpdate()` appends to it). See tests/runner.test.mjs (memoryUpdate
+  // idiom) and AGENTS.md. Potential fix: when the duplicate pair is a
+  // `.memory()` immediately followed by a `.memoryUpdate()` of the same name,
+  // skip the warning instead of pushing it.
   const seen = new Set();
   for (const child of tree.children) {
     if (seen.has(child.name)) {
