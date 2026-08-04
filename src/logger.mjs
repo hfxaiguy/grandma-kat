@@ -27,11 +27,13 @@ export function definitionId(rootDef) {
 
 const nullLogger = { log() {}, close() {}, saveCheckpoint() {}, getCheckpoint() { return null; }, deleteCheckpoint() {}, getEvents() { return []; } };
 
-const INFO_KINDS = new Set(['llm_call', 'tool_call', 'tool_result', 'flow', 'memory']);
+const INFO_KINDS = new Set(['llm_call', 'llm_error', 'tool_call', 'tool_error', 'tool_result', 'flow', 'memory']);
 
 const KIND_LABELS = {
   llm_call: 'LLM',
+  llm_error: 'LLM-ERR',
   tool_call: 'tool',
+  tool_error: 'tool-ERR',
   tool_result: 'result',
   check: 'check',
   gate: 'gate',
@@ -80,6 +82,18 @@ class ConsoleLogger {
         break;
       case 'tool_result':
         console.error(`  ${label}${path}: ${c.tool ?? '?'}${c.args ? `(${truncate(JSON.stringify(c.args), 80)})` : ''} → ${truncate(JSON.stringify(c.result), 80)}`);
+        break;
+      case 'llm_error':
+        console.error(`  ${label}${path}: ${c.model ?? '?'} round ${c.round} FAILED: ${truncate(c.error, 200)}`);
+        if (this.level === 'debug') {
+          for (const m of c.messages ?? []) {
+            const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+            console.error(`      [${m.role}] ${truncate(content, 200)}`);
+          }
+        }
+        break;
+      case 'tool_error':
+        console.error(`  ${label}${path}: ${c.tool ?? '?'}${c.args ? `(${truncate(JSON.stringify(c.args), 80)})` : ''} FAILED: ${truncate(c.error, 200)}`);
         break;
       case 'flow':
         console.error(`  ${label}${path}: ${c.type}${c.n ? ` goback(${c.n})` : ''}${c.child ? ` from '${c.child}'` : ''}${c.used ? ` (${c.used}/${c.max ?? '?'})` : ''}`);

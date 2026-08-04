@@ -525,7 +525,22 @@ async function execPrompt(exec, child, scope) {
 
   // One LLM call. If the model returns tool calls, execute them — but do
   // NOT loop. The tree controls retries via .check() + goback().
-  const response = await callLlm(modelEntry, messages, { tools });
+  let response;
+  try {
+    response = await callLlm(modelEntry, messages, { tools });
+  } catch (err) {
+    // Record failed calls so they are diagnosable from the log DB — a
+    // thrown LLM error otherwise leaves no trace. Rethrow; the tree still
+    // decides how to recover.
+    logEvent(exec, 'llm_error', {
+      child: child.name,
+      round: 1,
+      model: modelName,
+      messages,
+      error: err instanceof Error ? err.message : String(err),
+    }, scope);
+    throw err;
+  }
   record.calls.push({
     round: 1,
     messages: messages.map((m) => ({ ...m })),
@@ -590,7 +605,19 @@ async function execCall(exec, child, scope) {
   if (!tool) throw new KnitError(`unknown tool '${child.tool}' (called from '${child.name}')`);
   // Result may be a string or a plain JSON object; either is stored in the
   // branch slot verbatim so patterns can consume structured output directly.
-  const result = await tool.execute(args);
+  let result;
+  try {
+    result = await tool.execute(args);
+  } catch (err) {
+    // A thrown tool error leaves no value to route — log it for diagnosis.
+    logEvent(exec, 'tool_error', {
+      child: child.name,
+      tool: child.tool,
+      args,
+      error: err instanceof Error ? err.message : String(err),
+    }, scope);
+    throw err;
+  }
   logEvent(exec, 'tool_call', { child: child.name, tool: child.tool, args, result }, scope);
   return { value: result, record: { content: result, tool: child.tool, args, toolResults: [result] } };
 }
