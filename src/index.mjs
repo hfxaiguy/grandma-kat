@@ -10,7 +10,11 @@
 //
 //   const { result, memory } = await grandma.knit(pattern, {
 //     models: { default: { baseURL, apiKey, model } },
-//     tools: {},
+//   // A tool's execute(args) may resolve to a string or a plain JSON
+//   // object (structured output). Both are stored in branch slots / tool
+//   // results verbatim; an object with an "error" key (or a string
+//   // starting with "error") is treated as a tool error.
+//   tools: {},
 //   });
 
 import { knit, resume, KnitError, PauseSignal } from './knit.mjs';

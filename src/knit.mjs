@@ -554,6 +554,10 @@ async function execPrompt(exec, child, scope) {
     try {
       const tool = exec.runtime.tools?.[name];
       if (!tool) throw new KnitError(`unknown tool '${name}'`);
+      // Tools return either a string or a plain JSON object (structured
+      // output). Objects flow through verbatim — patterns read them via
+      // m.raw.prev[0].toolResults / branch slots — so tools can hand back
+      // structured data without JSON-encoding it into a string.
       result = await tool.execute(args);
       // Tools may return error-shaped results instead of throwing.
       if (result && typeof result === 'object' && 'error' in result) {
@@ -584,6 +588,8 @@ async function execCall(exec, child, scope) {
     : child.argsFn;
   const tool = exec.runtime.tools?.[child.tool];
   if (!tool) throw new KnitError(`unknown tool '${child.tool}' (called from '${child.name}')`);
+  // Result may be a string or a plain JSON object; either is stored in the
+  // branch slot verbatim so patterns can consume structured output directly.
   const result = await tool.execute(args);
   logEvent(exec, 'tool_call', { child: child.name, tool: child.tool, args, result }, scope);
   return { value: result, record: { content: result, tool: child.tool, args, toolResults: [result] } };
