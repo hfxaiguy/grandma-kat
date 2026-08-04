@@ -158,14 +158,10 @@ export async function resume(checkpointId, runtime) {
     }
     resetScopeIdCounter(maxScopeId + 1);
 
-    // Inject human input into ALL scopes.
-    const humanInput = runtime.humanInput ?? {};
-    for (const [, s] of scopes) {
-      for (const [k, v] of Object.entries(humanInput)) {
-        s.slots[k] = v;
-        s.raw[k] = { content: v };
-      }
-    }
+    // Route the human's reply into the scopes. Keyed objects keep the
+    // legacy per-slot API; a raw reply is filled into the paused slot that
+    // the checkpoint's human event already named (see injectHumanInput).
+    injectHumanInput(runtime.humanInput, scopes, humanEvent.content?.child ?? "main_input");
 
     // Build the resume stack.
     const stack = treeNames.map((name, idx) => ({
@@ -180,8 +176,27 @@ export async function resume(checkpointId, runtime) {
     const resumeState = {
       scopes,
       current: scopes.get(humanScopeId),
+      // One reconstructed scope per tree level (agent → knowledge → … →
+      // the paused branch). Each keeps ITS OWN slots — ancestor scopes
+      // (e.g. a parent loop's .memory() state) must survive the resume.
+      // Fallback: a fresh scope when the chain doesn't match.
+      levelScopes: (() => {
+        const levels = [rootScope];
+        for (let i = 1; i < treeNames.length; i++) {
+          const parent = levels[i - 1];
+          let match = null;
+          for (const s of scopes.values()) {
+            if (s.parent === parent) { match = s; break; }
+          }
+          levels.push(match ?? new Scope(parent));
+        }
+        return levels;
+      })(),
       stack,
       stackIdx: 0,
+      // Which slot is paused — carried so execTree's resume path can route
+      // a raw human reply without the caller naming it.
+      humanSlot: humanEvent.content?.child ?? "main_input",
     };
 
     const exec = {
@@ -215,33 +230,45 @@ export async function resume(checkpointId, runtime) {
   }
 }
 
+// Route a human reply into the scope chain of a resumed run.
+//
+// Two forms:
+//   keyed — an object like { approve: "yes" } (legacy API): every entry is
+//           injected into every scope, so any slot name resolves.
+//   raw   — a string or message array (preferred for new code): the reply
+//           is filled into the single paused slot. The checkpoint's human
+//           event already names that slot, so the caller never needs to
+//           say which slot is waiting.
+// `currentScope`, when given, receives the same injection directly (the
+// restored tree root may not be in the scopes map yet).
+function injectHumanInput(humanInput, scopes, pausedSlot, currentScope = null) {
+  const keyed = humanInput !== null && typeof humanInput === "object" && !Array.isArray(humanInput);
+  const targets = [...scopes.values()];
+  if (currentScope) targets.push(currentScope);
+  for (const s of targets) {
+    if (keyed) {
+      for (const [k, v] of Object.entries(humanInput)) {
+        s.slots[k] = v;
+        s.raw[k] = { content: v };
+      }
+    } else {
+      s.slots[pausedSlot] = humanInput;
+      s.raw[pausedSlot] = { content: humanInput };
+    }
+  }
+}
+
 // --- execution ---
 
 async function execTree(exec, tree, scope, parentScope, resumeState = null) {
   if (resumeState) {
-    // Resume path: reconstruct scope, then continue execution.
-    const restoredScope = resumeState.current;
-    if (restoredScope && restoredScope !== scope) {
-      Object.assign(scope.slots, restoredScope.slots);
-      Object.assign(scope.raw, restoredScope.raw);
-      scope.prev = restoredScope.prev;
-      scope.prevRaw = restoredScope.prevRaw;
-      scope.error = restoredScope.error;
-    }
-    // Inject human input into ALL scopes in the continuation.
-    const humanInput = exec.runtime.humanInput ?? {};
-    if (Object.keys(humanInput).length > 0) {
-      for (const [, s] of resumeState.scopes) {
-        for (const [k, v] of Object.entries(humanInput)) {
-          s.slots[k] = v;
-          s.raw[k] = { content: v };
-        }
-      }
-      for (const [k, v] of Object.entries(humanInput)) {
-        scope.slots[k] = v;
-        scope.raw[k] = { content: v };
-      }
-    }
+    // Resume path: resume() already reconstructed a scope per tree level
+    // with that level's own slots, so the scope passed in is correct —
+    // no merging of the paused scope's slots into every level (that lost
+    // ancestor scopes' state on deep-nested resumes).
+    // Route the human's reply into the scopes in the continuation (same
+    // semantics as resume(); the paused slot comes via resumeState).
+    injectHumanInput(exec.runtime.humanInput, resumeState.scopes, resumeState.humanSlot, scope);
     // Push the stack entry for THIS tree level (using stackIdx).
     const entry = resumeState.stack[resumeState.stackIdx];
     resumeState.stackIdx++;
@@ -349,13 +376,20 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
 
       let outcome;
       if (child.kind === 'branch') {
-        const childScope = new Scope(scope);
-        logEvent(exec, 'scope_init', { scopeId: childScope.id, parentScopeId: scope.id }, childScope);
         // On resume, pass the resume state to the branch child that's
         // at the resume position so the inner tree can continue from its
         // saved position. stackIdx ensures each tree level reads the
         // right entry from the continuation.
         const branchResume = (resumeStart != null && i === resumeStart) ? savedResume : null;
+        // The resumed level runs in its OWN reconstructed scope (with its
+        // slots intact) — see resumeState.levelScopes. Only fresh branches
+        // get a brand-new scope.
+        const childScope = branchResume
+          ? (branchResume.levelScopes[branchResume.stackIdx] ?? new Scope(scope))
+          : new Scope(scope);
+        if (!branchResume || childScope.parent !== scope) {
+          logEvent(exec, 'scope_init', { scopeId: childScope.id, parentScopeId: scope.id }, childScope);
+        }
         const out = await execTree(exec, child.tree, childScope, scope, branchResume);
         outcome = {
           value: out.value,
