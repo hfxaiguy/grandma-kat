@@ -156,8 +156,13 @@ async function callOllama(model, messages, { tools } = {}) {
     headers.Authorization = `Bearer ${model.apiKey}`;
   }
 
+  // Per-model timeout (ms); default 10 min. Ollama can be slow on large
+  // prompts or deep-reasoning queries, so the default is generous.
+  const timeoutMs = typeof model.timeout === 'number' && model.timeout > 0
+    ? model.timeout
+    : 600_000;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 120_000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   let res;
   try {
@@ -170,7 +175,7 @@ async function callOllama(model, messages, { tools } = {}) {
   } catch (err) {
     clearTimeout(timeout);
     if (err.name === 'AbortError') {
-      throw new Error(`Ollama request timed out after 120s (${baseURL})`);
+      throw new Error(`Ollama request timed out after ${timeoutMs / 1000}s (${baseURL})`);
     }
     throw err;
   }
