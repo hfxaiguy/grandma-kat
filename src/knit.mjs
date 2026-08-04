@@ -392,10 +392,12 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         // Compute per-entry resume positions. Each stack entry resumes at
         // the child that led to this tree level. The innermost entry
         // (current tree) resumes at i + 1 (past the .human() child).
-        // Outer entries resume at the branch/map child's index.
+        // Outer entries resume at the branch/map child's index within
+        // THEIR OWN tree (exec.stack[idx].childIndex), so the branch
+        // that led here is re-entered with the saved resume state.
         const resumePositions = exec.stack.map((s, idx) => {
           if (idx === exec.stack.length - 1) return i + 1;
-          return exec.stack[idx + 1].childIndex;
+          return exec.stack[idx].childIndex;
         });
         // Save checkpoint with a unique ID.
         const checkpointId = `${exec.runId}:${humanSeq}`;
