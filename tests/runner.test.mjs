@@ -605,7 +605,7 @@ test('.human() preserves scope state across pause/resume', async () => {
   }
 });
 
-test('.human() inside a branch — known limitation: branch result lost on resume', async () => {
+test('.human() inside a branch — branch result is preserved on resume', async () => {
   const handler = scripted(['inner-prompt']);
   const dbPath = tmpLogger();
   try {
@@ -614,23 +614,96 @@ test('.human() inside a branch — known limitation: branch result lost on resum
         Tree.name('inner')
           .prompt(m => 'inner-prompt')
           .human('inner_approve')
+          .prompt(m => `after:${m.branch.inner_approve}`)
       )
-      .prompt(m => `read: ${m.branch.inner_approve ?? 'MISSING'}`);
+      .prompt(m => {
+        // Runs after resume; must see the branch's exported value — which is
+        // the post-human prompt's result ('post-human-result'), not stale.
+        assert.equal(m.branch.inner, 'post-human-result');
+        return `read: ${m.branch.inner_approve}`;
+      });
 
     const step1 = await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath }));
     assert.equal(step1.status, 'waiting');
     assert.equal(step1.humanSlot, 'inner_approve');
 
-    const resumeHandler = scripted(['outer-result']);
+    // On resume the branch finishes: its post-human prompt runs first, then
+    // the outer prompt.
+    const resumeHandler = scripted(['post-human-result', 'outer-result']);
     const step2 = await grandma.resume(step1.continuation, {
       ...mockRuntime(resumeHandler, { logger: dbPath }),
       humanInput: { inner_approve: 'approved' },
     });
-    // The outer prompt ran (handler called once for the outer prompt)
-    assert.equal(resumeHandler.calls.length, 1);
-    // The branch result was never recorded in the parent scope — it's lost.
-    // But the human input IS available via scope chain (injected into root scope).
+    assert.equal(resumeHandler.calls.length, 2); // post-human + outer
     assert.equal(step2.result, 'outer-result');
+    assert.equal(step2.memory.inner, 'post-human-result');
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
+test('.human() as a leaf followed by a .branch() resumes cleanly', async () => {
+  // Regression: a root-level .human() whose NEXT sibling is a .branch() used
+  // to crash resume (resume re-descended into the branch with an
+  // already-consumed stack entry). The branch must run fresh after resume.
+  const handler = scripted([]);
+  const dbPath = tmpLogger();
+  try {
+    const pattern = Tree.name('outer')
+      .human('input_1')
+      .branch(
+        Tree.name('scan')
+          .prompt(m => `scan:${m.branch.input_1}`)
+      );
+
+    const step1 = await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath }));
+    assert.equal(step1.status, 'waiting');
+
+    const resumeHandler = scripted(['scan-result']);
+    const step2 = await grandma.resume(step1.continuation, {
+      ...mockRuntime(resumeHandler, { logger: dbPath }),
+      humanInput: 'hello',
+    });
+    assert.equal(resumeHandler.calls.length, 1); // the gated branch ran once
+    assert.equal(step2.result, 'scan-result');
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
+test('.human() inside a .map() resumes from the paused item', async () => {
+  // Regression: .human() inside a .map() subtree used to lose the whole map
+  // result on resume (returned undefined). The paused item must resume from
+  // its saved position and the remaining items must run, producing the full
+  // result array.
+  const handler = scripted(['pre-1']);
+  const dbPath = tmpLogger();
+  try {
+    const pattern = Tree.name('outer')
+      .map('r', m => [1, 2],
+        Tree.name('item')
+          .prompt('pre', m => `pre-${m.item}`)
+          .human(when(m => m.item === 1), 'approve')
+          .prompt('post', m => `post-${m.item}`)
+      );
+
+    const step1 = await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath }));
+    assert.equal(step1.status, 'waiting');
+    assert.equal(step1.humanSlot, 'approve');
+
+    // On resume: item 1 finishes (post-1), item 2 runs fresh (pre-2, post-2).
+    const resumeHandler = scripted(['post-1-result', 'pre-2-result', 'post-2-result']);
+    const step2 = await grandma.resume(step1.continuation, {
+      ...mockRuntime(resumeHandler, { logger: dbPath }),
+      humanInput: { approve: 'yes' },
+    });
+    // Both items completed: the paused item resumed past its human, and the
+    // remaining item ran fully. The result array has both values (each is
+    // the item's last child).
+    assert.ok(Array.isArray(step2.result));
+    assert.equal(step2.result.length, 2);
+    assert.equal(step2.result[0], 'post-1-result');
+    assert.equal(step2.result[1], 'post-2-result');
   } finally {
     fs.rmSync(dbPath, { force: true });
   }

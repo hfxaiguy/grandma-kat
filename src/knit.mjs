@@ -151,6 +151,20 @@ export async function resume(checkpointId, runtime) {
     if (!humanEvent) throw new KnitError(`checkpoint '${checkpointId}': no human event found at seq ${cp.seq}`);
     const treeNames = humanEvent.branch_path.split('/');
 
+    // Reconstruct completed .map() item results (keyed by the map's location
+    // so a paused map can resume from the right item index with its prior
+    // results intact). Each completed item logs a `map_item` event with its
+    // index + value in the map child's parent scope.
+    const mapItemResults = new Map();
+    for (const ev of events) {
+      if (ev.seq > cp.seq) break;
+      if (ev.kind === 'map_item' && ev.content?.child != null) {
+        const key = `${ev.branch_path ?? ''}/${ev.content.child}`;
+        if (!mapItemResults.has(key)) mapItemResults.set(key, []);
+        mapItemResults.get(key).push({ index: ev.content.index, value: ev.content.value });
+      }
+    }
+
     // Find max scope ID for counter reset.
     let maxScopeId = 0;
     for (const id of scopes.keys()) {
@@ -197,6 +211,9 @@ export async function resume(checkpointId, runtime) {
       // Which slot is paused — carried so execTree's resume path can route
       // a raw human reply without the caller naming it.
       humanSlot: humanEvent.content?.child ?? "main_input",
+      // Prior .map() items' results, keyed by `${branch_path}/${child}`.
+      // Lets a paused map resume from the paused item instead of restarting.
+      mapItemResults,
     };
 
     const exec = {
@@ -380,7 +397,20 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         // at the resume position so the inner tree can continue from its
         // saved position. stackIdx ensures each tree level reads the
         // right entry from the continuation.
-        const branchResume = (resumeStart != null && i === resumeStart) ? savedResume : null;
+        //
+        // Guard: only descend with savedResume when there IS a deeper
+        // level to resume into (levelScopes has an entry past stackIdx).
+        // If the paused element was a leaf at THIS level (e.g. .human()
+        // followed by a .branch()), resumeChildStart points at the next
+        // sibling — which must run fresh, not consume a nested resume
+        // entry it never had.
+        const branchResume =
+          resumeStart != null &&
+          i === resumeStart &&
+          savedResume !== null &&
+          savedResume.levelScopes.length > savedResume.stackIdx
+            ? savedResume
+            : null;
         // The resumed level runs in its OWN reconstructed scope (with its
         // slots intact) — see resumeState.levelScopes. Only fresh branches
         // get a brand-new scope.
@@ -413,7 +443,17 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         i++;
         continue;
       } else if (child.kind === 'map') {
-        outcome = await execMap(exec, child, scope);
+        // On resume, a .map() that is (or contains) the paused element must
+        // resume from the paused item rather than restart. Same guard as
+        // branches: only descend with savedResume when a deeper level exists.
+        const mapResume =
+          resumeStart != null &&
+          i === resumeStart &&
+          savedResume !== null &&
+          savedResume.levelScopes.length > savedResume.stackIdx
+            ? savedResume
+            : null;
+        outcome = await execMap(exec, child, scope, mapResume);
       } else if (child.kind === 'human') {
         const context = child.contextFn
           ? await callFn(child.contextFn, view, `human context of '${child.name}'`)
@@ -662,7 +702,12 @@ async function execMemoryUpdate(exec, child, scope) {
 
 // Runs a subtree per element of an array. Each invocation gets `m.item`
 // injected. Results are collected into an array in the parent scope.
-async function execMap(exec, child, scope) {
+//
+// `resume` (non-null when a .human() paused inside one of the item
+// subtrees) carries the mid-execution state so the map resumes at the
+// paused item instead of restarting: prior items' results are replayed from
+// the log, and the paused item continues from its saved child position.
+async function execMap(exec, child, scope, resume = null) {
   const view = makeView(scope);
   const items = await callFn(child.arrayFn, view, `array fn of '${child.name}'`);
 
@@ -672,12 +717,46 @@ async function execMap(exec, child, scope) {
     return { value: empty, record: { content: empty } };
   }
 
+  // Reconstruct prior items and the paused item index from the log when
+  // resuming. The paused item's subtree reaches here with the map tree as
+  // the top stack frame (stackIdx already advanced past this level).
+  // The key mirrors resume(): `${branch_path}/${child}` where branch_path
+  // is this map's parent path.
+  const mapKey = `${exec.stack.map((s) => s.name).join('/')}/${child.name}`;
+  const prior = resume
+    ? (resume.mapItemResults?.get(mapKey) ?? [])
+    : [];
+
+  // Completed prior items' results, in index order (for resuming mid-map).
+  // These subtrees already ran before the pause; replay their values without
+  // re-executing them. The paused item (index === prior.length) is the first
+  // one whose subtree hasn't completed.
+  const completed = new Map();
+  for (const p of prior) completed.set(p.index, p.value);
+
   const results = [];
   for (let idx = 0; idx < items.length; idx++) {
-    const itemScope = new Scope(scope);
-    logEvent(exec, 'scope_init', { scopeId: itemScope.id, parentScopeId: scope.id }, itemScope);
+    const pausedHere = resume != null && idx === prior.length;
+
+    if (resume != null && !pausedHere && completed.has(idx)) {
+      // Already done before the pause — replay its recorded value.
+      results.push(completed.get(idx));
+      continue;
+    }
+
+    // The paused item reuses the scope reconstructed for it (with its slots
+    // and the human reply intact) rather than a brand-new one. Its subtree
+    // then resumes from the saved child position via resumeChildStart.
+    const itemScope = pausedHere
+      ? (resume.levelScopes[resume.stackIdx] ?? new Scope(scope))
+      : new Scope(scope);
     itemScope.slots.item = items[idx];
-    const out = await execTree(exec, child.tree, itemScope, scope);
+    if (!pausedHere) {
+      logEvent(exec, 'scope_init', { scopeId: itemScope.id, parentScopeId: scope.id }, itemScope);
+    }
+    const out = pausedHere
+      ? await execTree(exec, child.tree, itemScope, scope, resume)
+      : await execTree(exec, child.tree, itemScope, scope);
     results.push(out.value);
     logEvent(exec, 'map_item', { child: child.name, index: idx, value: out.value }, scope);
   }
