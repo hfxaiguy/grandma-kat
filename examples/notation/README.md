@@ -75,6 +75,14 @@ too; the body is the `||` lines between the opening
 
 ## Translating this notation (for the translator / LLM author)
 
+When converting a notation `.md` sketch into a `.mjs` tree, leave plenty of
+inline comments in the generated code. Comment each translated chunk or small
+group of chunks with the notation line it came from, what the builder call
+does, and why its placement, memory scope, name, gate, or loop boundary
+matters. The `.mjs` file should be understandable without having to keep the
+`.md` sketch open. Explain control-flow and memory decisions, not obvious
+JavaScript syntax.
+
 - `++ memory: NAME` → seed the **root scope** with `memory: { NAME: value }`
   in the runtime, or (inside a loop that needs to accumulate) a
   `.memory('NAME', ...)` write at the level where the value must persist.
