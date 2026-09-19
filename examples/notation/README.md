@@ -76,6 +76,10 @@ too; the body is the `||` lines between the opening
 
 ## Translating this notation (for the translator / LLM author)
 
+The notation `.md` is the source of truth for a tree's behavior; the `.mjs` is
+its translation. When the spec changes, update the `.md` first and regenerate
+the `.mjs` from it rather than hand-patching the code, so the two stay in sync.
+
 When converting a notation `.md` sketch into a `.mjs` tree, leave plenty of
 inline comments in the generated code. Comment each translated chunk or small
 group of chunks with the notation line it came from, what the builder call
