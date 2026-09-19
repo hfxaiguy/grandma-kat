@@ -195,14 +195,17 @@ export async function resume(checkpointId, runtime) {
       // (e.g. a parent loop's .memory() state) must survive the resume.
       // Fallback: a fresh scope when the chain doesn't match.
       levelScopes: (() => {
-        const levels = [rootScope];
-        for (let i = 1; i < treeNames.length; i++) {
-          const parent = levels[i - 1];
-          let match = null;
-          for (const s of scopes.values()) {
-            if (s.parent === parent) { match = s; break; }
-          }
-          levels.push(match ?? new Scope(parent));
+        // Walk up from the paused scope so each tree level gets the scope it
+        // actually ran in. Matching children by parent order picks the wrong
+        // sibling when several branches share a parent (e.g. a nested tree
+        // under a classify branch), which loses the ancestor slots on resume.
+        const chain = [];
+        for (let s = scopes.get(humanScopeId); s; s = s.parent) chain.push(s);
+        chain.reverse();
+        const levels = chain.length ? chain : [rootScope];
+        // Pad defensively if the event log is missing a level.
+        while (levels.length < treeNames.length) {
+          levels.push(new Scope(levels[levels.length - 1]));
         }
         return levels;
       })(),
