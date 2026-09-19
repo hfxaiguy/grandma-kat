@@ -637,6 +637,31 @@ Why JS over YAML:
 Escape hatch: a YAML authoring layer can compile down to the JS builder
 later, if non-code tooling ever needs to read thread structure.
 
+### Line notation (sketch layer, in `examples/notation/`)
+
+A five-symbol, line-oriented notation for *sketching* a tree before (or
+instead of) writing the builder chain. It is a **plan, not a compiler** — it
+trades the builder's full power for a whole-tree view you can read
+top-to-bottom. Lives entirely under `examples/notation/`:
+
+- `examples/notation/README.md` — the notation spec: the 5 symbols, the 4
+  rules (one line = one chunk; reference-by-name; `"..."` literal vs bare
+  text expanded; `|`-prefix nesting), and the line→builder mapping table.
+- `examples/notation/notation.md` — the worked example, annotated
+  line-by-line (notation → chunk → the `.method()` it becomes and why).
+- `examples/notation/person-scan.mjs` — the translated tree
+  (`export const pattern`), heavily commented per `examples/AGENTS.md`.
+- `examples/notation/person-scan.test.mjs` — mock-model tests (no network)
+  for the translated tree.
+
+Symbols: `++` memory, `<<` emit, `>>` human, `--` prompt, `**` gated branch,
+`||` nesting prefix. It intentionally *forces* the author to face the
+"gated branch needs a clean boolean" issue: since a `** if above is true`
+decision depends on a bare `--` prompt's output, the translator must add a
+strict answer-format instruction to the prompt and a normalizer (e.g.
+`isYes`) to the condition. See README.md for the gotcha and person-scan for
+the concrete fix.
+
 ## Design Discussion (Open)
 
 The following points are under active discussion — proposals and tradeoffs,
