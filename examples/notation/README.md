@@ -20,6 +20,7 @@ without tracking method boundaries.
 | `!!` | `!! input` | require a memory slot (declared input) | `.needs("input")` | name literal; slot must be seeded by the caller |
 | `--` | `-- prompt: does X ...?` | ask the model | a named `.branch()` wrapping `.prompt()` | text **expanded** into a full prompt |
 | `**` | `** branch: if X is true, run:` or `**` | conditional or unconditional subtree | `.branch(when(cond), Tree.name(...))` or `.branch(Tree.name(...))` | condition text **expanded** when present |
+| `##` | `## contacts: app/contacts/tree.mjs` | import and attach another tree | import its factory, build it with the current API, then `.branch(importedTree)` | tree name and module path are literal |
 | `\|\|` | `\|\| prompt: ...` | child of the `**`/`()` block above | whatever the indented kind says | — |
 | `()` | `()` … `()` | loop — repeat the enclosed body | a named `.branch()` whose trailing `.until(cond, max)` rewinds to the branch top | the closing `()` carries the exit condition |
 
@@ -83,6 +84,11 @@ matters. The `.mjs` file should be understandable without having to keep the
 `.md` sketch open. Explain control-flow and memory decisions, not obvious
 JavaScript syntax.
 
+Prompt text should be written inline at the `.prompt()` call site. Do not pull
+system or user prompt text into separate string constants: keeping translated
+prompt text beside its tree node makes the executable tree self-contained and
+keeps the notation-to-code mapping visible.
+
 - `++ memory: NAME` → seed the **root scope** with `memory: { NAME: value }`
   in the runtime, or (inside a loop that needs to accumulate) a
   `.memory('NAME', ...)` write at the level where the value must persist.
@@ -103,6 +109,11 @@ JavaScript syntax.
   The COND is expanded into a predicate over the referenced slot. If COND
   says "above is true", bind it to the preceding `--` prompt's named result
   and normalize with a helper like `isYes`.
+- `## NAME: PATH` → import the module at the literal `PATH`, build its default
+  tree factory with the current builder API (`{ Tree, when, max, ... }`), and
+  attach the named result as `.branch(importedTree)`. The imported tree must
+  have a stable `.name()` and communicate through ordinary memory, branch
+  results, and visible Grandma KAT events.
 - Bare `**` → an unconditional named grouping branch. Assign a stable
   translator-generated name when none is written, then translate it as
   `.branch(Tree.name("<name>").branch(SUBTREE))`.
@@ -114,8 +125,13 @@ JavaScript syntax.
   top while the condition fails. The closing `()`'s text ("until there are no
   more tool calls left") is the condition, expanded into a predicate — for a
   tool-calling loop that's `!m.raw.branch.main_prompt?.toolCalls?.length`,
-  bounded by `max(12)`. Children placed **after** the `.until()` (i.e. after
-  the closing `()`) run exactly once, when the loop exits.
+   bounded by `max(12)`. Children placed **after** the `.until()` (i.e. after
+   the closing `()`) run exactly once, when the loop exits.
+- If a branch does bookkeeping after its useful prompt or tool result, translate
+  an explicit final result as `.return(m => m.branch.<result_name>)` after that
+  bookkeeping. Otherwise the branch exports its last executed child, which may
+  be a memory update or another internal value. Parent branches then consume
+  the explicit result through `m.branch.<branch_name>`.
 
 ## Known gotcha this notation forces you to face
 

@@ -115,7 +115,7 @@ npm install grandma-kat
 If the package isn't on npm yet in your timeline, depend on it directly:
 
 ```json
-{ "dependencies": { "grandma-kat": "git+https://github.com/<you>/grandma-knits.git" } }
+{ "dependencies": { "grandma-kat": "git+https://github.com/<you>/grandma-kat.git" } }
 ```
 
 ## Quick start
@@ -155,6 +155,20 @@ router, OpenAI itself). Point `baseURL` at it, set `model`, done.
 A named tree is a pure container with config. All *doing* lives in its
 children, which run **sequentially, in declared order**. A container's
 exported value is its last executed child's result.
+
+If a tree performs bookkeeping after producing its useful result, make the
+result explicit with `.return()` after that bookkeeping:
+
+```js
+const answer = Tree.name('answer')
+  .prompt('response', m => `Answer: ${m.question}`)
+  .memory('audit', m => ({ length: m.branch.response.length }))
+  .return(m => m.branch.response);
+```
+
+Without the explicit return, the container exports the last bookkeeping value
+instead. `.return()` is also the stable way for a parent to consume a named
+child's intended result via `m.branch.<name>`.
 
 ```js
 Tree.name('draft').prompt(m => `Write about ${m.task}`)
@@ -205,7 +219,7 @@ Inside any prompt/gate/check function, the memory view `m` gives you:
 |---|---|
 | `m.branch.X` | exported **value** of branch/step `X`, resolved up the chain |
 | `m.prev` | completed siblings' outputs, **most-recent-first** (positional) |
-| `m.raw.branch.X` / `m.raw.prev[i]` | the full **record**: `{ content, reasoning, toolCalls, toolResults, calls }` |
+| `m.raw.branch.X` / `m.raw.prev[i]` | the full **record**: `{ content, reasoning, toolCalls, toolResults, calls }` (container records may also include `children`) |
 | `m.error` | feedback from the last failed check (cleared on pass) |
 | `m.item` | current element inside a `.map()` subtree |
 | `m.<anything>` | any other name resolves up the scope chain (root inputs, ancestor slots) |
