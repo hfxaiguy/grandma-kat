@@ -19,6 +19,8 @@ without tracking method boundaries.
 | `>>` | `>> human: input_1` | pause, ask the human for input | `.human("input_1")` | slot name literal |
 | `!!` | `!! input` | require a memory slot (declared input) | `.needs("input")` | name literal; slot must be seeded by the caller |
 | `--` | `-- prompt: does X ...?` | ask the model | a named `.branch()` wrapping `.prompt()` | text **expanded** into a full prompt |
+| `->` | `-> query_batch: duckdb_query ...` | fixed/direct tool call, no model | `.call("query_batch", "duckdb_query", argsFn)` | call name and tool name literal; arguments **expanded** from context |
+| `@@` | `@@ upsert_rows: batch_rows` | run the subtree once per array element | `.map("upsert_rows", m => m.batch_rows, SUBTREE)` | name literal; the array is a memory/branch reference |
 | `**` | `** branch: if X is true, run:` or `**` | conditional or unconditional subtree | `.branch(when(cond), Tree.name(...))` or `.branch(Tree.name(...))` | condition text **expanded** when present |
 | `##` | `## contacts: app/contacts/tree.mjs` | import and attach another tree | import its factory, build it with the current API, then `.branch(importedTree)` | tree name and module path are literal |
 | `\|\|` | `\|\| prompt: ...` | child of the `**`/`()` block above | whatever the indented kind says | — |
@@ -131,6 +133,13 @@ keeps the notation-to-code mapping visible.
   tool-calling loop that's `!m.raw.branch.main_prompt?.toolCalls?.length`,
    bounded by `max(12)`. Children placed **after** the `.until()` (i.e. after
    the closing `()`) run exactly once, when the loop exits.
+- `-> NAME: TOOL` → `.call('NAME', 'TOOL', m => ARGS)`. The tool executes
+  immediately with the expanded arguments; no model is involved. When NAME is
+  omitted, assign a stable translator-generated name.
+- `@@ NAME: ARRAY` → `.map('NAME', m => m.ARRAY, SUBTREE)`. It opens a level:
+  the `||` lines below form the per-item subtree. The current element is
+  `m.item`, and the per-item results collect under `m.branch.NAME` in the
+  parent scope.
 - If a branch does bookkeeping after its useful prompt or tool result, translate
   an explicit final result as `.return(m => m.branch.<result_name>)` after that
   bookkeeping. Otherwise the branch exports its last executed child, which may
