@@ -164,6 +164,13 @@ class SqliteLogger {
   constructor(dbPath) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     this.db = new DatabaseSync(dbPath);
+    // Read-only pollers (admin tree panels, log viewers) must not starve
+    // the writer: WAL lets readers and writers coexist, and busy_timeout
+    // turns transient contention (e.g. the one-off mode migration on an
+    // existing delete-journal DB) into a short wait instead of throwing
+    // "database is locked" mid-run.
+    this.db.exec('PRAGMA busy_timeout = 5000');
+    this.db.exec('PRAGMA journal_mode = WAL');
     this.db.exec(CREATE_TABLES);
     this.insert = this.db.prepare(
       'INSERT INTO calls (run_id, definition_id, branch_path, iteration, scope_id, kind, content) VALUES (?, ?, ?, ?, ?, ?, ?)');
