@@ -46,14 +46,12 @@ function makeBuilder(def) {
       return next(def, (d) => { d.name = id; });
     },
 
-    // Accumulative: attach a named subtree.
+    // Accumulative: attach a subtree. The subtree may be unnamed: knit()
+    // auto-names it after this child (see autoname in knit.mjs).
     branch(...rawArgs) {
       const { gate, args } = takeGate(rawArgs, '.branch()');
       if (args.length !== 1) throw new TypeError('.branch() expects a single tree argument');
       const tree = unwrap(args[0]);
-      if (tree.name == null) {
-        throw new TypeError('.branch(): child tree must be named (call .name() first)');
-      }
       const child = { kind: 'branch', name: tree.name, tree, gate };
       return next(def, (d) => { d.children.push(child); });
     },
@@ -203,9 +201,6 @@ function makeBuilder(def) {
         throw new TypeError('.map(): second argument must be a function returning an array');
       }
       const tree = unwrap(args.shift());
-      if (tree.name == null) {
-        throw new TypeError('.map(): subtree must be named (call .name() first)');
-      }
       if (args.length !== 0) throw new TypeError('.map(): too many arguments');
       const child = { kind: 'map', name, arrayFn, tree, gate };
       return next(def, (d) => { d.children.push(child); });
@@ -398,10 +393,14 @@ function takeOptions(args, method) {
   return opts;
 }
 
-export const Tree = {
-  name(id) {
-    return makeBuilder(makeDef()).name(id);
-  },
+// Tree is the namespace AND an unnamed builder: Tree.prompt(...),
+// Tree.branch(...), Tree.human(...) etc. build a tree without calling
+// .name() first. Named roots still use Tree.name('...'). Unnamed subtrees
+// attached with .branch()/.map() are auto-named after their child at knit()
+// time (see autoname in knit.mjs) and registered so resume can find them.
+const baseTree = makeBuilder(makeDef());
+
+export const Tree = Object.assign(baseTree, {
   // Retrieve a registered tree by name (for reuse).
   from(id) {
     const def = registry.get(id);
@@ -411,6 +410,11 @@ export const Tree = {
   has(id) {
     return registry.has(id);
   },
-};
+});
+
+/** Register a tree def under its (possibly auto-assigned) name. */
+export function registerTree(tree) {
+  if (tree?.name != null) registry.set(tree.name, tree);
+}
 
 export { isBuilder, unwrap };

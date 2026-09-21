@@ -456,6 +456,72 @@ test('a failed resume keeps its checkpoint for a retry', async () => {
   }
 });
 
+test('an unnamed branch is auto-named and runs', async () => {
+  const dbPath = tmpLogger();
+  try {
+    const handler = scripted(['outer', 'inner']);
+    const pattern = Tree.name('t')
+      .prompt(m => 'outer')
+      .branch(Tree.prompt(m => `inner sees ${m['t#1']}`));
+
+    const { result, memory } = await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath }));
+    assert.equal(result, 'inner');
+    // The branch takes the auto name of its child slot in the parent scope.
+    assert.equal(memory['t#2'], 'inner');
+
+    const db = new DatabaseSync(dbPath, { readonly: true });
+    const row = db.prepare("SELECT branch_path FROM calls WHERE kind = 'llm_call' ORDER BY seq DESC LIMIT 1").get();
+    db.close();
+    assert.equal(row.branch_path, 't/t#2');
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
+test('resume works through an unnamed branch', async () => {
+  const dbPath = tmpLogger();
+  try {
+    const pattern = Tree.name('t')
+      .branch(
+        Tree.prompt(m => 'ask')
+          .human('reply')
+          .prompt(m => `got ${m.branch.reply ?? 'nothing'}`)
+      );
+
+    const step1 = await grandma.knit(pattern, mockRuntime(scripted(['q']), { logger: dbPath }));
+    assert.equal(step1.status, 'waiting');
+
+    const resumeHandler = scripted(['a']);
+    const step2 = await grandma.resume(step1.continuation, {
+      ...mockRuntime(resumeHandler, { logger: dbPath }),
+      humanInput: { reply: 'hi' },
+    });
+    assert.equal(step2.result, 'a');
+    assert.ok(resumeHandler.calls[0].messages[0].content.includes('got hi'));
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
+test('an unnamed .map() subtree is auto-named after the collection', async () => {
+  const dbPath = tmpLogger();
+  try {
+    const handler = scripted(['x', 'x']);
+    const pattern = Tree.name('t')
+      .map('rated', () => [1, 2], Tree.prompt(m => `rate ${m.item}`));
+
+    const { memory } = await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath }));
+    assert.deepEqual(memory.rated, ['x', 'x']);
+
+    const db = new DatabaseSync(dbPath, { readonly: true });
+    const row = db.prepare("SELECT branch_path FROM calls WHERE kind = 'llm_call' ORDER BY seq LIMIT 1").get();
+    db.close();
+    assert.equal(row.branch_path, 't/rated');
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
 test('.return() stops tree execution and exports value', async () => {
   const handler = scripted(['a', 'b', 'c']);
   const pattern = Tree.name('r')

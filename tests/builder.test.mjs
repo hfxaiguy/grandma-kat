@@ -18,10 +18,13 @@ test('.name() validates names', () => {
   assert.throws(() => Tree.name(''), /non-empty/);
 });
 
-test('.branch() requires a named tree', () => {
+test('.branch() accepts an unnamed tree', () => {
   assert.doesNotThrow(() => Tree.name('p').branch(Tree.name('c').prompt(m => 'x')));
-  const b = Tree.name('parent');
-  assert.throws(() => b.branch({ kind: 'tree', name: null, children: [], models: [], tools: [], untils: [], needs: [] }), /named/);
+  // Tree itself is an unnamed builder: Tree.prompt(...) needs no .name().
+  const b = Tree.name('parent').branch(Tree.prompt(m => 'x'));
+  assert.equal(b.def.children[0].name, null);
+  assert.equal(b.def.children[0].tree.name, null);
+  // knit() assigns the name at build time (covered in runner.test.mjs).
 });
 
 test('bare function in condition slot throws "did you mean when()?"', () => {
@@ -205,9 +208,7 @@ test('.map() validates arguments', () => {
   assert.throws(() => Tree.name('a').map(), /collection name/);
   assert.throws(() => Tree.name('a').map('x'), /array/);
   assert.throws(() => Tree.name('a').map('x', m => [], null), /expected a Tree/);
-  // unnamed tree
-  const unnamed = { kind: 'tree', name: null, children: [{ kind: 'prompt', name: null, prompt: 'x', gate: null }], models: [], tools: [], untils: [], needs: [] };
-  assert.throws(() => Tree.name('a').map('x', m => [], unnamed), /named/);
+  assert.doesNotThrow(() => Tree.name('a').map('x', m => [], Tree.prompt(m => 'y')));
   assert.throws(() => Tree.name('a').map('has#hash', m => [], sub), /reserved/);
 });
 

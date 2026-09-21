@@ -482,30 +482,38 @@ import { Tree } from 'grandma-kat';
 
 - **`Tree.name(id)`** — start a new tree and register it in the global
   registry under `id`. The registry is what makes reuse by name possible.
+- **`Tree.prompt(...)`, `Tree.branch(...)`, `Tree.human(...)`, …** — `Tree`
+  is also an unnamed builder: call any builder method directly to start a
+  tree without `.name()` (handy for branch/map subtrees nobody references).
 - **`Tree.from(id)`** — retrieve a registered tree (throws if unknown).
   Useful for dropping the same subtree into multiple parents.
 - **`Tree.has(id)`** — `true` if `id` is registered.
 
 ### `.name(id)`
 
-Names the tree. Every tree that becomes a `.branch()` or `.map()` child —
-including the root you pass to `knit()` — must be named. The name is also
-the memory key: a completed branch's exported value lands in its parent's
-scope under this name, readable as `m.branch.<name>`.
+Names the tree. The root you pass to `knit()` must be named; a `.branch()`
+or `.map()` subtree may be unnamed. The name is also the memory key: a
+completed branch's exported value lands in its parent's scope under this
+name, readable as `m.branch.<name>`.
 
 ### `.branch([when], tree)` — accumulative
 
-Attaches a named subtree. On execution: the child runs in a fresh scope
-linked to the current one (reads resolve upward; its internal writes stay
-internal), and its **exported value** — its last executed child's result —
-is written to the current scope under the child's name.
+Attaches a subtree. On execution: the child runs in a fresh scope linked to
+the current one (reads resolve upward; its internal writes stay internal),
+and its **exported value** — its last executed child's result — is written
+to the current scope under the child's name.
 
 ```js
 .branch(Tree.name('draft').prompt(m => `Write about ${m.task}`))
 .branch(when(m => m.branch.verify === 'fail'), reviseTree)
+// Unnamed: no .name() needed. `Tree` is itself an unnamed builder.
+.branch(Tree.prompt(m => `Check ${m.branch.draft}`))
 ```
 
-Throws at build time if the child tree is unnamed.
+An unnamed subtree is auto-named at `knit()` time after its attaching child
+(`${parent}#${k}`, k = 1-based child position) and registered so resume can
+rebuild it from the branch path. Name a subtree when you want to read its
+result as `m.branch.<name>`.
 
 ### `.prompt([when], [name], value, [options])` — accumulative
 
@@ -665,11 +673,12 @@ single-use — deleted after resume.
 ### `.map([when], name, arrayFn, tree)` — accumulative
 
 Appends a per-element iteration leaf. `arrayFn(memory)` returns an array;
-the (named) subtree runs fully, once per element, **sequentially**, each
-time in a fresh child scope with `m.item` set to the raw element. The
-collected result values are stored as an array in the current scope under
-`name` (also the leaf's own value). Empty (or non-array) input → no
-invocations, `m.branch.<name>` is `[]`.
+the subtree runs fully, once per element, **sequentially**, each time in a
+fresh child scope with `m.item` set to the raw element. The collected result
+values are stored as an array in the current scope under `name` (also the
+leaf's own value). Empty (or non-array) input → no invocations,
+`m.branch.<name>` is `[]`. The subtree may be unnamed; it takes the
+collection `name` (or the child's auto name for `.branch()`).
 
 ```js
 .map('ratings', m => m.branch.candidates,

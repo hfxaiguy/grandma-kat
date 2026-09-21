@@ -5,7 +5,7 @@
 import { Scope, makeView, lookupChain, resetScopeIdCounter } from './memory.mjs';
 import { callLlm, normalizeMessages } from './llm.mjs';
 import { createLogger, createRunId, definitionId } from './logger.mjs';
-import { unwrap, Tree } from './tree.mjs';
+import { unwrap, Tree, registerTree } from './tree.mjs';
 
 export class PauseSignal {
   constructor(checkpointId, humanSlot, context) {
@@ -904,11 +904,22 @@ function finalize(rootInput, runtime) {
 
 // Auto-names are assigned at build time: `${parentName}#${k}`, k = 1-based
 // position among ALL children (uniform, collision-free; `#` is reserved).
+// A branch/map subtree may be unnamed — it takes its attaching child's name
+// (for a branch that's the auto name, for a map the collection name) and is
+// registered so resume() can rebuild the level from the branch_path.
 function autoname(tree) {
   tree.children.forEach((child, idx) => {
     if (child.name == null) child.name = `${tree.name}#${idx + 1}`;
-    if (child.kind === 'branch') autoname(child.tree);
-    if (child.kind === 'map') autoname(child.tree);
+    if (child.kind === 'branch' || child.kind === 'map') {
+      if (child.tree.name == null) {
+        child.tree.name = child.name;
+        registerTree(child.tree);
+      }
+      // A named subtree reused across parents keeps one identity; the
+      // branch child follows it so results land under the same slot name.
+      if (child.kind === 'branch') child.name = child.tree.name;
+      autoname(child.tree);
+    }
   });
 }
 

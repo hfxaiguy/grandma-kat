@@ -21,10 +21,10 @@ without tracking method boundaries.
 | `--` | `-- prompt: does X ...?` | ask the model | a named `.branch()` wrapping `.prompt()` | text **expanded** into a full prompt |
 | `->` | `-> query_batch: duckdb_query ...` | fixed/direct tool call, no model | `.call("query_batch", "duckdb_query", argsFn)` | call name and tool name literal; arguments **expanded** from context |
 | `@@` | `@@ upsert_rows: batch_rows` | run the subtree once per array element | `.map("upsert_rows", m => m.batch_rows, SUBTREE)` | name literal; the array is a memory/branch reference |
-| `**` | `** branch: if X is true, run:` or `**` | conditional or unconditional subtree | `.branch(when(cond), Tree.name(...))` or `.branch(Tree.name(...))` | condition text **expanded** when present |
+| `**` | `** branch: if X is true, run:` or `**` | conditional or unconditional subtree | `.branch(when(cond), SUBTREE)` or `.branch(SUBTREE)` — the subtree may be unnamed | condition text **expanded** when present |
 | `##` | `## contacts: app/contacts/tree.mjs` | import and attach another tree | import its factory, build it with the current API, then `.branch(importedTree)` | tree name and module path are literal |
 | `\|\|` | `\|\| prompt: ...` | child of the `**`/`()` block above | whatever the indented kind says | — |
-| `()` | `()` … `()` | loop — repeat the enclosed body | a named `.branch()` whose trailing `.until(cond, max)` rewinds to the branch top | the closing `()` carries the exit condition |
+| `()` | `()` … `()` | loop — repeat the enclosed body | a `.branch()` whose trailing `.until(cond, max)` rewinds to the branch top | the closing `()` carries the exit condition |
 
 ## The four rules
 
@@ -120,15 +120,20 @@ keeps the notation-to-code mapping visible.
   attach the named result as `.branch(importedTree)`. The imported tree must
   have a stable `.name()` and communicate through ordinary memory, branch
   results, and visible Grandma KAT events.
-- Bare `**` → an unconditional named grouping branch. Assign a stable
-  translator-generated name when none is written, then translate it as
-  `.branch(Tree.name("<name>").branch(SUBTREE))`.
+- Bare `**` → an unconditional grouping branch. Translate it as
+  `.branch(SUBTREE)`. Subtrees do **not** need `.name()`: an unnamed subtree
+  takes its child's auto name (`${parent}#${k}`, k = 1-based child position)
+  and is registered so resume can find it. Name the subtree only when the
+  sketch names it or the parent reads its result (`m.branch.<name>`), then
+  translate as `.branch(Tree.name("<name>").branch(SUBTREE))`. `Tree` itself
+  is an unnamed builder, so `Tree.prompt(...)`, `Tree.human(...)`, etc. build
+  the subtree without a `.name()` call.
 - `|| KIND ...` → a child of the enclosing branch, at the matching depth.
-- `()` … `()` → a **named branch containing a loop**. The opening `()` becomes
-  `.branch(Tree.name("<name>"))`; assign a stable generated name if the loop
-  has no explicit name. The `||` body runs once per pass; the closing
-  `()` becomes a trailing `.until(cond, max(...))` that rewinds to the branch
-  top while the condition fails. The closing `()`'s text ("until there are no
+- `()` … `()` → a **branch containing a loop**. The opening `()` becomes
+  `.branch(SUBTREE)`, where the subtree holds the loop body (name it only when
+  the sketch names it). The `||` body runs once per pass; the closing
+  `()` becomes a trailing `.until(cond, max(...))` inside that subtree, which
+  rewinds to the branch top while the condition fails. The closing `()`'s text ("until there are no
   more tool calls left") is the condition, expanded into a predicate — for a
   tool-calling loop that's `!m.raw.branch.main_prompt?.toolCalls?.length`,
    bounded by `max(12)`. Children placed **after** the `.until()` (i.e. after
