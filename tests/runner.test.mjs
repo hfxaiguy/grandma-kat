@@ -419,6 +419,43 @@ test('resume restores prev for memoryUpdate on the executing scope', async () =>
   }
 });
 
+test('a failed resume keeps its checkpoint for a retry', async () => {
+  const dbPath = tmpLogger();
+  try {
+    let fail = true;
+    const pattern = Tree.name('t')
+      .human('ask')
+      .memory('answer', () => {
+        if (fail) throw new Error('boom');
+        return 'ok';
+      })
+      .return(m => m.answer);
+
+    const step1 = await grandma.knit(pattern, mockRuntime(scripted([]), { logger: dbPath }));
+    assert.equal(step1.status, 'waiting');
+
+    await assert.rejects(
+      grandma.resume(step1.continuation, {
+        ...mockRuntime(scripted([]), { logger: dbPath }),
+        humanInput: { ask: 'hi' },
+      }),
+      /boom/,
+    );
+
+    // The failure did not consume the checkpoint, so the same continuation
+    // can retry — the fixed code below succeeds on the second attempt.
+    fail = false;
+    const step2 = await grandma.resume(step1.continuation, {
+      ...mockRuntime(scripted([]), { logger: dbPath }),
+      humanInput: { ask: 'hi' },
+    });
+    assert.equal(step2.result, 'ok');
+    assert.equal(step2.memory.answer, 'ok');
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
 test('.return() stops tree execution and exports value', async () => {
   const handler = scripted(['a', 'b', 'c']);
   const pattern = Tree.name('r')

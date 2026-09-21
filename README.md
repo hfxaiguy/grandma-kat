@@ -780,6 +780,8 @@ const step2 = await grandma.resume(step1.continuation, {
 ```
 
 State is reconstructed from the event log — no serialized state travels
-through the continuation token. The checkpoint is deleted after resume
-(single-use). Multiple sequential pauses/resumes are supported (each pause
-creates a new checkpoint).
+through the continuation token. A successful resume consumes the checkpoint
+(single-use), and pausing again creates a new one, so multiple sequential
+pauses/resumes are supported. If the resumed run throws, the checkpoint is
+kept — the pause is still the last good state — so the same continuation can
+be retried.

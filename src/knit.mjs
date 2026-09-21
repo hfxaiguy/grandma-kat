@@ -250,7 +250,9 @@ export async function resume(checkpointId, runtime) {
           continuation: err.checkpointId,
         };
       }
-      logger.deleteCheckpoint(checkpointId);
+      // Keep the checkpoint on failure: the pause is still the last good
+      // state, so the same continuation can be retried (or the caller can
+      // abandon it). Deleting here would strand a paused conversation.
       throw err;
     }
   } finally {
