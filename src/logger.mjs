@@ -27,7 +27,7 @@ export function definitionId(rootDef) {
 
 const nullLogger = { log() {}, close() {}, saveCheckpoint() {}, getCheckpoint() { return null; }, deleteCheckpoint() {}, getEvents() { return []; } };
 
-const INFO_KINDS = new Set(['llm_call', 'llm_error', 'tool_call', 'tool_error', 'tool_result', 'flow', 'memory']);
+const INFO_KINDS = new Set(['llm_call', 'llm_error', 'tool_call', 'tool_error', 'tool_result', 'flow']);
 
 const KIND_LABELS = {
   llm_call: 'LLM',
@@ -38,7 +38,6 @@ const KIND_LABELS = {
   check: 'check',
   gate: 'gate',
   flow: 'flow',
-  memory: 'memory',
   skip: 'skip',
   human: 'human',
   scope_init: 'scope',
@@ -52,12 +51,15 @@ class ConsoleLogger {
   }
 
   log(event) {
-    if (this.level === 'info' && !INFO_KINDS.has(event.kind)) return;
+    const c = event.content ?? {};
+    // Memory writes arrive as record events with op 'memory'/'memoryUpdate';
+    // they stay visible at info level like the old dedicated rows were.
+    const memWrite = event.kind === 'record' && (c.op === 'memory' || c.op === 'memoryUpdate');
+    if (this.level === 'info' && !INFO_KINDS.has(event.kind) && !memWrite) return;
 
-    const label = KIND_LABELS[event.kind] ?? event.kind;
+    const label = memWrite ? 'memory' : KIND_LABELS[event.kind] ?? event.kind;
     const path = event.branch_path ? ` [${event.branch_path}]` : '';
     const iter = event.iteration > 1 ? ` #${event.iteration}` : '';
-    const c = event.content ?? {};
 
     switch (event.kind) {
       case 'llm_call':
@@ -98,9 +100,7 @@ class ConsoleLogger {
       case 'flow':
         console.error(`  ${label}${path}: ${c.type}${c.n ? ` goback(${c.n})` : ''}${c.child ? ` from '${c.child}'` : ''}${c.used ? ` (${c.used}/${c.max ?? '?'})` : ''}`);
         break;
-      case 'memory':
-        console.error(`  ${label}${path}: ${c.child} = ${truncate(JSON.stringify(c.value), 60)}`);
-        break;
+
       case 'check':
         console.error(`  ${label}${path}: ${c.child ?? '?'} ${c.pass ? 'pass' : `FAIL: ${truncate(c.feedback, 60)}`}`);
         break;
@@ -114,7 +114,11 @@ class ConsoleLogger {
         if (this.level === 'debug') console.error(`  ${label}: #${c.scopeId} parent=${c.parentScopeId ?? 'root'}`);
         break;
       case 'record':
-        if (this.level === 'debug') console.error(`  ${label}${path}: ${c.child} (idx=${c.childIndex}) → ${truncate(JSON.stringify(c.value), 60)}`);
+        if (memWrite) {
+          console.error(`  ${label}${path}: ${c.child} = ${truncate(JSON.stringify(c.value), 60)}`);
+        } else if (this.level === 'debug') {
+          console.error(`  ${label}${path}: ${c.child} (idx=${c.childIndex}) → ${truncate(JSON.stringify(c.value), 60)}`);
+        }
         break;
       case 'emit':
         if (this.level === 'debug') console.error(`  ${label}${path}: ${truncate(JSON.stringify(c.value), 60)}`);

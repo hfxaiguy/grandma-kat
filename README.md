@@ -380,8 +380,8 @@ ORDER BY seq;
 | `seq` | global execution order |
 | `branch_path` | path from root, e.g. `agent/draft#1` |
 | `iteration` | loop pass number |
-| `kind` | `llm_call` · `tool_call` · `tool_result` · `check` · `gate` · `flow` · `memory` · … |
-| `content` | JSON — messages, response, tool args/results, check feedback, goback target |
+| `kind` | `record` (every scope write; `content.op` is `set` · `memory` · `memoryUpdate`) · `llm_call` · `tool_call` · `tool_result` · `check` · `gate` · `flow` · … |
+| `content` | JSON — messages, response, tool args/results, check feedback, goback target; for `record`, the written value plus `op` and (for `memoryUpdate`) `execScopeId` |
 
 Since rewound retries drop outputs from memory, **the log is where dead
 outputs live.** `logLevel: 'info'` gives you a live console trace;

@@ -109,28 +109,36 @@ export async function resume(checkpointId, runtime) {
       if (!scope) continue;
 
       if (ev.kind === 'record') {
+        // scope_id is the slot's scope; execScopeId (when present) is the
+        // scope that ran the child, which is where prev/raw entries belong.
+        const execScope = c.execScopeId != null ? (scopes.get(c.execScopeId) ?? scope) : scope;
         scope.slots[c.child] = c.value;
-        scope.prev.unshift({ childIndex: c.childIndex, name: c.child, value: c.value });
+        execScope.prev.unshift({ childIndex: c.childIndex, name: c.child, value: c.value });
+      } else if (ev.kind === 'memory' && !c.update) {
+        // Legacy rows: memory writes used to be logged as their own kind, and
+        // old checkpoints must still resume from them.
+        scope.slots[c.child] = c.value;
       } else if (ev.kind === 'check') {
         scope.error = c.pass ? undefined : c.feedback;
-      } else if (ev.kind === 'memory' && !c.update) {
-        scope.slots[c.child] = c.value;
       } else if (ev.kind === 'human') {
         humanScopeId = ev.scope_id;
       }
     }
 
     // Detect iteration boundaries: when iteration increments, reset prev.
+    // prev lives on the executing scope, which for memoryUpdate records is
+    // execScopeId rather than the slot's scope_id.
     let lastIteration = new Map();
     for (const ev of events) {
       if (ev.seq > cp.seq) break;
       if (!ev.scope_id) continue;
-      const prev = lastIteration.get(ev.scope_id);
+      const prevScopeId = ev.content?.execScopeId ?? ev.scope_id;
+      const prev = lastIteration.get(prevScopeId);
       if (prev !== undefined && ev.iteration > prev) {
-        const scope = scopes.get(ev.scope_id);
+        const scope = scopes.get(prevScopeId);
         if (scope) { scope.prev = []; scope.prevRaw = []; }
       }
-      lastIteration.set(ev.scope_id, ev.iteration);
+      lastIteration.set(prevScopeId, ev.iteration);
     }
 
     // Detect goback: filter prev by cut index.
@@ -680,8 +688,8 @@ async function execMemory(exec, child, scope) {
   const view = makeView(scope);
   const current = scope.slots[child.name]; // read before write (may be undefined)
   const value = await callFn(child.fn, view, `memory fn of '${child.name}'`, current);
-  logEvent(exec, 'memory', { child: child.name, value }, scope);
-  return { value, record: { content: value } };
+  // The write itself is logged once, by record(), with op 'memory'.
+  return { value, record: { content: value }, _op: 'memory' };
 }
 
 // Like execMemory but the slot must already exist in the scope chain.
@@ -699,8 +707,9 @@ async function execMemoryUpdate(exec, child, scope) {
   }
   const current = target.slots[child.name];
   const value = await callFn(child.fn, view, `memoryUpdate fn of '${child.name}'`, current);
-  logEvent(exec, 'memory', { child: child.name, value, update: true }, target);
-  return { value, record: { content: value }, _slotScope: target };
+  // The write is logged once, by record(), with op 'memoryUpdate' and
+  // execScopeId pointing at the scope that ran this child.
+  return { value, record: { content: value }, _slotScope: target, _op: 'memoryUpdate' };
 }
 
 // Runs a subtree per element of an array. Each invocation gets `m.item`
@@ -776,7 +785,18 @@ function record(exec, scope, childIndex, name, outcome) {
   scope.raw[name] = outcome.record;
   scope.prev.unshift({ childIndex, name, value: outcome.value });
   scope.prevRaw.unshift({ childIndex, name, record: outcome.record });
-  logEvent(exec, 'record', { child: name, childIndex, value: outcome.value }, slotScope);
+  // ONE row per scope write. `op` says what kind of write it was ("set" for
+  // prompt/branch/call results, "memory"/"memoryUpdate" for slot writes), and
+  // execScopeId is only present when the value lands in a different scope than
+  // the one that ran the child (memoryUpdate) — resume uses it to push `prev`
+  // on the executing scope, not the slot's.
+  logEvent(exec, 'record', {
+    child: name,
+    childIndex,
+    value: outcome.value,
+    op: outcome._op ?? 'set',
+    ...(slotScope !== scope ? { execScopeId: scope.id } : {}),
+  }, slotScope);
 }
 
 // goback rewinds m.prev to the jump point; named slots are NOT rewound

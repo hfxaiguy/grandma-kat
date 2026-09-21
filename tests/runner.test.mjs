@@ -359,6 +359,66 @@ test('.memoryUpdate() with gate skips when gate is false', async () => {
   assert.equal(memory.slot, 'original');
 });
 
+test('memory writes are one record row with an op flag', async () => {
+  const dbPath = tmpLogger();
+  try {
+    const pattern = Tree.name('m')
+      .memory('slot', () => 'value')
+      .branch(Tree.name('inner').memoryUpdate('slot', (m, cur) => `${cur}!`));
+    await grandma.knit(pattern, mockRuntime(scripted([]), { logger: dbPath }));
+
+    const db = new DatabaseSync(dbPath, { readonly: true });
+    const rows = db.prepare('SELECT kind, scope_id, content FROM calls ORDER BY seq').all();
+    db.close();
+
+    assert.equal(rows.filter((r) => r.kind === 'memory').length, 0, 'no separate memory rows');
+    const writes = rows
+      .filter((r) => r.kind === 'record')
+      .map((r) => ({ ...JSON.parse(r.content), scope_id: r.scope_id }))
+      .filter((c) => c.op === 'memory' || c.op === 'memoryUpdate');
+    assert.deepEqual(writes.map((w) => [w.child, w.op]), [['slot', 'memory'], ['slot', 'memoryUpdate']]);
+
+    // The update lands in the declaring (root) scope but ran in the branch:
+    // execScopeId records the second so resume can restore prev correctly.
+    const update = writes[1];
+    assert.ok(update.execScopeId != null, 'memoryUpdate carries its executing scope');
+    assert.notEqual(update.scope_id, update.execScopeId);
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
+test('resume restores prev for memoryUpdate on the executing scope', async () => {
+  const dbPath = tmpLogger();
+  try {
+    const pattern = Tree.name('m')
+      .memory('slot', () => 'init')
+      .branch(
+        Tree.name('inner')
+          .memoryUpdate('slot', (m, cur) => `${cur}+`)
+          .human('go')
+          .prompt((m) => `prev=${m.prev[0] ?? 'none'}`)
+      );
+
+    const step1 = await grandma.knit(pattern, mockRuntime(scripted([]), { logger: dbPath }));
+    assert.equal(step1.status, 'waiting');
+
+    const resumeHandler = scripted(['after']);
+    await grandma.resume(step1.continuation, {
+      ...mockRuntime(resumeHandler, { logger: dbPath }),
+      humanInput: { go: 'ok' },
+    });
+
+    assert.equal(resumeHandler.calls.length, 1);
+    assert.ok(
+      resumeHandler.calls[0].messages[0].content.includes('prev=init+'),
+      'the branch scope prev must carry the memoryUpdate value',
+    );
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
 test('.return() stops tree execution and exports value', async () => {
   const handler = scripted(['a', 'b', 'c']);
   const pattern = Tree.name('r')
