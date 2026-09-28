@@ -194,7 +194,7 @@ runs both. `.model('x').model('y')` resolves to `'y'` (last match wins).
 | `.call(tool, argsFn)` | direct tool call, no LLM | the tool's result |
 | `.check(fn, goback(n, max(k)))` | validation | nothing on pass; sets `m.error` on fail |
 | `.memory(name, fn)` | memory write | the written value (also stored under `name`) |
-| `.memoryUpdate(name, fn)` | memory update (slot must already exist) | the updated value |
+| `.memoryUpdate(name, fn)` · `.memory(update(), name, fn)` | memory update (slot must already exist) | the updated value |
 | `.return(fn)` | early exit | stops the tree if `fn` returns non-null |
 | `.emit(fn)` | non-blocking output | calls `runtime.onEmit(value)`, continues |
 | `.human(name, contextFn?)` | human-in-the-loop | pauses execution, waits for input |
@@ -591,6 +591,10 @@ subtree. Placement matters: a slot written inside a branch stays local to
 that branch; put the `.memory()` at the level where the value needs to
 live (e.g. at loop level to accumulate across `.until()` passes).
 
+Add the `update()` marker — first or second argument, like `when()` — and
+the leaf updates an existing slot instead of initializing one:
+`.memory(update(), 'tried', fn)` or `.memory('tried', update(), fn)`.
+
 ### `.memoryUpdate([when], name, fn)` — accumulative
 
 Like `.memory()`, but the slot must **already exist** somewhere in the
@@ -599,6 +603,16 @@ may be an ancestor, so this is how a nested branch updates loop-level
 state. Throws `KnitError` at runtime if the slot doesn't exist (declare it
 with `.memory()` first, or inject it via runtime `memory`). Also produces
 `m.prev` output.
+
+`.memory(update(), name, fn)` is the same leaf written through the
+`.memory()` method (the marker may also follow the name). Use whichever
+reads better — e.g. keep a seed-then-append pair on one method:
+
+```js
+.memory('tried', () => [])
+// ...
+.memory(update(), 'tried', (m, cur) => [...cur, m.prev[0]])
+```
 
 ### `.return([when], fn)` — accumulative
 

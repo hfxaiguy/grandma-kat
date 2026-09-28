@@ -1,8 +1,9 @@
-// Marker factories: when(), goback(), goto(), max().
+// Marker factories: when(), update(), goback(), goto(), max().
 // Each marker is a distinct type so the builder can validate argument slots
 // at build time (e.g. reject a bare function in a condition slot).
 
 const WHEN = Symbol('grandma-kat/when');
+const UPDATE = Symbol('grandma-kat/update');
 const GOBACK = Symbol('grandma-kat/goback');
 const GOTO = Symbol('grandma-kat/goto');
 const MAX = Symbol('grandma-kat/max');
@@ -17,6 +18,16 @@ export function when(cond) {
 }
 
 export const isWhen = (v) => v != null && v[WHEN] === true;
+
+/**
+ * Marker for .memory(update(), name, fn) — the .memoryUpdate() leaf in
+ * .memory() clothing. Positioned like when(): first or second argument.
+ */
+export function update() {
+  return Object.freeze({ [UPDATE]: true });
+}
+
+export const isUpdate = (v) => v != null && v[UPDATE] === true;
 
 export function goback(n, maxMarker) {
   if (!Number.isInteger(n) || n < 1) {

@@ -1,7 +1,7 @@
 // Tree factory: chained builder methods accumulate an immutable definition
 // (plain data). Execution happens separately, via grandma.knit().
 
-import { isWhen, isGoback, isGoto, isMax, goback, goto, resolveMax } from './markers.mjs';
+import { isWhen, isUpdate, isGoback, isGoto, isMax, goback, goto, resolveMax } from './markers.mjs';
 
 const BUILDER = Symbol('grandma-kat/builder');
 const registry = new Map();
@@ -130,19 +130,35 @@ function makeBuilder(def) {
     // Accumulative: append a memory-write leaf.
     //   .memory(name, fn)               — fn(m) or fn(m, currentValue) → stored value, appears in m.prev
     //   .memory(when(cond), name, fn)
+    //   .memory(update(), name, fn)     — same leaf as .memoryUpdate(name, fn)
+    //   .memory(name, update(), fn)     — update() may sit first or second, like when()
     memory(...rawArgs) {
       const { gate, args } = takeGate(rawArgs, '.memory()');
+      const updateIndex = args.findIndex(isUpdate);
+      if (updateIndex > 1) {
+        throw new TypeError(".memory(): update() must be the first or second argument, e.g. .memory(update(), 'tried', fn)");
+      }
+      const updating = updateIndex !== -1;
+      if (updating) args.splice(updateIndex, 1);
       const name = args.shift();
       if (typeof name !== 'string' || name.length === 0) {
-        throw new TypeError(".memory(): first argument must be the slot name (string), e.g. .memory('tried', (m, cur) => [...cur ?? [], m.prev[0]])");
+        throw new TypeError(
+          updating
+            ? ".memory(update(), …): the slot name (string) must follow update(), e.g. .memory(update(), 'tried', fn)"
+            : ".memory(): first argument must be the slot name (string), e.g. .memory('tried', (m, cur) => [...cur ?? [], m.prev[0]])",
+        );
       }
       assertValidName(name, '.memory()');
       const fn = args.shift();
       if (typeof fn !== 'function') {
-        throw new TypeError('.memory(): second argument must be a function');
+        throw new TypeError(
+          updating
+            ? ".memory(update(), name, fn): fn must be a function"
+            : '.memory(): second argument must be a function',
+        );
       }
       if (args.length !== 0) throw new TypeError('.memory(): too many arguments');
-      const child = { kind: 'memory', name, fn, gate };
+      const child = { kind: updating ? 'memoryUpdate' : 'memory', name, fn, gate };
       return next(def, (d) => { d.children.push(child); });
     },
 
@@ -151,6 +167,8 @@ function makeBuilder(def) {
     // the slot is missing.
     //   .memoryUpdate(name, fn)               — fn(m, currentValue) → stored value
     //   .memoryUpdate(when(cond), name, fn)
+    //   .memory(update(), name, fn)           — equivalent alias
+    //   .memory(name, update(), fn)           — update() may sit first or second
     memoryUpdate(...rawArgs) {
       const { gate, args } = takeGate(rawArgs, '.memoryUpdate()');
       const name = args.shift();

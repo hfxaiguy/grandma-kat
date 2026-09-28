@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import grandma, { Tree, when, goback, max, KnitError } from '../src/index.mjs';
+import grandma, { Tree, when, update, goback, max, KnitError } from '../src/index.mjs';
 import { scripted, mockRuntime, tool } from './helpers.mjs';
 
 function tmpLogger() {
@@ -313,6 +313,30 @@ test('.memoryUpdate() updates existing slot from parent scope', async () => {
   const { result, memory } = await grandma.knit(pattern, mockRuntime(handler));
   assert.equal(memory.greeting, 'initial-hello');
   assert.equal(result, 'updated');
+});
+
+test('.memory(update(), name, fn) executes as a memory update', async () => {
+  const handler = scripted(['hello', 'updated']);
+  const pattern = Tree.name('m')
+    .memory('greeting', () => 'initial')
+    .prompt(m => 'hello')
+    .memory(update(), 'greeting', (m, cur) => `${cur}-${m.prev[0]}`)
+    .prompt(m => m.branch.greeting);
+
+  const { result, memory } = await grandma.knit(pattern, mockRuntime(handler));
+  assert.equal(memory.greeting, 'initial-hello');
+  assert.equal(result, 'updated');
+});
+
+test('.memory(name, update(), fn) executes as a memory update too', async () => {
+  const handler = scripted(['hello']);
+  const pattern = Tree.name('m')
+    .memory('greeting', () => 'initial')
+    .prompt(m => 'hello')
+    .memory('greeting', update(), (m, cur) => `${cur}-${m.prev[0]}`);
+
+  const { memory } = await grandma.knit(pattern, mockRuntime(handler));
+  assert.equal(memory.greeting, 'initial-hello');
 });
 
 test('.memoryUpdate() errors when slot does not exist', async () => {

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Tree, when, goback, max } from '../src/index.mjs';
+import { Tree, when, update, goback, max } from '../src/index.mjs';
 
 test('builder methods are immutable (copy-on-write)', () => {
   const base = Tree.name('base').prompt(m => 'a');
@@ -139,6 +139,35 @@ test('.memory() validates arguments', () => {
   assert.throws(() => Tree.name('a').memory(), /slot name/);
   assert.throws(() => Tree.name('a').memory('x'), /function/);
   assert.throws(() => Tree.name('a').memory('has#hash', m => m), /reserved/);
+});
+
+test('.memory(update(), name, fn) parses as a memoryUpdate leaf', () => {
+  const t = Tree.name('a').prompt(m => 'x').memory(update(), 'tried', (m, cur) => [...cur, m.prev[0]]);
+  const mem = t.def.children[1];
+  assert.equal(mem.kind, 'memoryUpdate');
+  assert.equal(mem.name, 'tried');
+  assert.equal(typeof mem.fn, 'function');
+  assert.equal(mem.gate, null);
+});
+
+test('.memory(name, update(), fn) parses as a memoryUpdate leaf too', () => {
+  const t = Tree.name('a').prompt(m => 'x').memory('tried', update(), (m, cur) => cur);
+  assert.equal(t.def.children[1].kind, 'memoryUpdate');
+  assert.equal(t.def.children[1].name, 'tried');
+});
+
+test('.memory(update(), …) supports the when() gate', () => {
+  const t = Tree.name('a').prompt(m => 'x').memory(when(m => true), update(), 'tried', (m, cur) => cur);
+  const mem = t.def.children[1];
+  assert.equal(mem.kind, 'memoryUpdate');
+  assert.equal(typeof mem.gate, 'function');
+});
+
+test('.memory(update(), …) validates arguments', () => {
+  assert.throws(() => Tree.name('a').memory(update()), /slot name/);
+  assert.throws(() => Tree.name('a').memory(update(), 'x'), /fn must be a function/);
+  assert.throws(() => Tree.name('a').memory(update(), 'has#hash', m => m), /reserved/);
+  assert.throws(() => Tree.name('a').memory('a', 'b', update(), m => m), /first or second argument/);
 });
 
 test('.memoryUpdate() parses name and fn', () => {
