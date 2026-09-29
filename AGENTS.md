@@ -748,6 +748,26 @@ function are just mechanisms for producing the value.
   anything else supplies tools at run time). (Renamed from `.tool()` — see
   Per-step tools.)
 
+### Inline tool registration (chosen)
+
+`.register(name, description, fn, [options])` lets a tree declare its own
+tools — the handler JS lives in the tree file, so a pattern can ship a tool
+without a runtime-registry entry.
+
+Modeled as a **declaration, not a step**: registers install into the run's
+tool table at `knit()` start and are available to every step, every pass,
+and every resume. Positional execution was rejected: `resume()`
+reconstructs scopes from the log and restarts at the paused child, so a
+registration node before the pause would never re-run and the tool would
+vanish on the next message.
+
+Consequences: `.register()` deliberately does **not** take `when()` (the
+second gated-declaration exception, alongside `.needs()`); duplicate names
+in one tree graph are a build error; a register shadows a same-named
+runtime tool for that run and warns at knit start. The fn is
+`(memory, args) => result` with `memory` the call-site view, and the
+optional `options.parameters` supplies the model-facing schema.
+
 ### Defined inputs
 
 Trees declare what they expect in memory: `.needs('draft', 'navigate')`.

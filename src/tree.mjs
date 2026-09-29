@@ -30,6 +30,10 @@ function next(def, patch) {
     tools: [...def.tools],
     untils: [...def.untils],
     needs: [...def.needs],
+    // Registers are carried only once used: a def that never registers must
+    // keep the exact same JSON shape — definition ids and host session
+    // hashes are computed over the def and must not churn on upgrade.
+    ...(def.registers ? { registers: [...def.registers] } : {}),
   };
   patch(d);
   if (d.name != null) registry.set(d.name, d);
@@ -97,6 +101,41 @@ function makeBuilder(def) {
       if (args.length !== 0) throw new TypeError('.call(): too many arguments');
       const child = { kind: 'call', name, tool, argsFn, gate, options };
       return next(def, (d) => { d.children.push(child); });
+    },
+
+    // Declarative: register an inline tool. Installed into the run's tool
+    // table before execution, so it is available to every step and every
+    // pass — fresh, rewound, and resumed alike. Its position in the chain
+    // is readability only, and a register never takes when().
+    //   .register(name, description, fn)                  — fn(m, args) → result
+    //   .register(name, description, fn, { parameters })  — model-facing schema
+    register(...rawArgs) {
+      const { gate, args } = takeGate(rawArgs, '.register()');
+      if (gate != null) {
+        throw new TypeError('.register(): registers are declarations — remove when() and let the tool itself decide');
+      }
+      const name = args.shift();
+      if (typeof name !== 'string' || name.length === 0) {
+        throw new TypeError('.register(): first argument must be the tool name (string), e.g. .register("lookup", "Find a person", (m, args) => …)');
+      }
+      assertValidName(name, '.register()');
+      const description = args.shift();
+      if (typeof description !== 'string' || description.length === 0) {
+        throw new TypeError('.register(): second argument must be a non-empty description (string) — the model reads it');
+      }
+      const fn = args.shift();
+      if (typeof fn !== 'function') {
+        throw new TypeError('.register(): third argument must be the tool function, e.g. (m, args) => result');
+      }
+      const options = takeOptions(args, '.register()', ['parameters']);
+      if (args.length !== 0) throw new TypeError('.register(): too many arguments');
+      const entry = {
+        name,
+        description,
+        parameters: options.parameters ?? { type: 'object', properties: {} },
+        fn,
+      };
+      return next(def, (d) => { d.registers = [...(d.registers ?? []), entry]; });
     },
 
     // Accumulative: append a check leaf with a flow (goback or goto) on failure.
@@ -394,19 +433,22 @@ function assertValidName(name, method) {
   }
 }
 
-function takeOptions(args, method) {
+function takeOptions(args, method, extraAllowed = []) {
   if (args.length === 0) return {};
   const opts = args[args.length - 1];
   if (typeof opts !== 'object' || opts === null || Array.isArray(opts) || typeof opts === 'function') {
     return {};
   }
   args.pop();
-  const allowed = new Set(['tools']);
+  const allowed = new Set(['tools', ...extraAllowed]);
   for (const k of Object.keys(opts)) {
     if (!allowed.has(k)) throw new TypeError(`${method}: unknown option '${k}'`);
   }
   if (opts.tools !== undefined && (!Array.isArray(opts.tools) || opts.tools.some((t) => typeof t !== 'string'))) {
     throw new TypeError(`${method}: options.tools must be an array of strings`);
+  }
+  if (opts.parameters !== undefined && (typeof opts.parameters !== 'object' || opts.parameters === null || Array.isArray(opts.parameters))) {
+    throw new TypeError(`${method}: options.parameters must be a JSON-schema object`);
   }
   return opts;
 }

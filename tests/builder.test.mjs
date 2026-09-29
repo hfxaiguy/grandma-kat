@@ -79,6 +79,37 @@ test('.needs() dedupes', () => {
   assert.deepEqual(t.def.needs, ['x', 'y']);
 });
 
+test('.register() validates its arguments', () => {
+  const ok = Tree.name('r1').register('lookup', 'Find a person', () => 'x');
+  assert.equal(ok.def.registers.length, 1);
+  assert.equal(ok.def.registers[0].name, 'lookup');
+  assert.equal(ok.def.registers[0].description, 'Find a person');
+  assert.deepEqual(ok.def.registers[0].parameters, { type: 'object', properties: {} });
+
+  assert.throws(() => Tree.name('r2').register('', 'd', () => 'x'), /tool name/);
+  assert.throws(() => Tree.name('r2').register('has#hash', 'd', () => 'x'), /reserved/);
+  assert.throws(() => Tree.name('r2').register('n', '', () => 'x'), /description/);
+  assert.throws(() => Tree.name('r2').register('n', 'd', 'not a fn'), /tool function/);
+  assert.throws(
+    () => Tree.name('r2').register(when(() => true), 'n', 'd', () => 'x'),
+    /declarations/);
+  assert.throws(() => Tree.name('r2').register('n', 'd', () => 'x', { bogus: 1 }), /unknown option/);
+  assert.throws(() => Tree.name('r2').register('n', 'd', () => 'x', { parameters: [] }), /JSON-schema/);
+  assert.doesNotThrow(() =>
+    Tree.name('r2').register('n', 'd', () => 'x', { parameters: { type: 'object', properties: { q: { type: 'string' } } } }));
+});
+
+test('.register() is copy-on-write and absent until used', () => {
+  const base = Tree.name('r3').prompt(m => 'x');
+  assert.ok(!('registers' in base.def), 'a def that never registers keeps its exact JSON shape');
+  const withTool = base.register('lookup', 'Find a person', () => 'x');
+  assert.equal(base.def.registers, undefined);
+  assert.equal(withTool.def.registers.length, 1);
+  const withTwo = withTool.register('other', 'Another', () => 'y');
+  assert.equal(withTool.def.registers.length, 1);
+  assert.equal(withTwo.def.registers.length, 2);
+});
+
 test('prompt options validate', () => {
   assert.throws(() => Tree.name('a').prompt(m => 'x', { bogus: 1 }), /unknown option/);
   assert.throws(() => Tree.name('a').prompt(m => 'x', { tools: 'nope' }), /array of strings/);

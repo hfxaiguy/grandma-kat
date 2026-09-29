@@ -38,7 +38,12 @@ export async function knit(rootInput, runtime = {}) {
     defId: definitionId(def),
     stack: [], // [{ name, tree, childIndex, pass, edgeCounters: Map }]
     seq: 0,
+    // Per-run tool table: runtime tools plus the tree's inline registers.
+    // The runtime's own table is never mutated.
+    tools: { ...(runtime.tools ?? {}) },
+    regShadowWarned: new Set(),
   };
+  installRegisters(exec, def);
 
   let rootScope;
   let resumeState = null;
@@ -264,7 +269,14 @@ export async function resume(checkpointId, runtime) {
       defId: definitionId(stack[0]?.tree ?? null),
       stack: [],
       seq: cp.seq,
+      tools: { ...(runtime.tools ?? {}) },
+      regShadowWarned: new Set(),
     };
+    // Registers are static in the defs, so every tree this resume re-enters
+    // reinstalls its inline tools — a pause never drops them.
+    for (const level of stack) {
+      if (level.tree) installRegisters(exec, level.tree);
+    }
     try {
       const outcome = await execTree(exec, stack[0].tree, rootScope, rootScope, resumeState);
       logger.deleteCheckpoint(checkpointId);
@@ -660,8 +672,8 @@ async function execPrompt(exec, child, scope, promptResume = null) {
       type: 'function',
       function: {
         name: n,
-        description: exec.runtime.tools?.[n]?.description ?? '',
-        parameters: exec.runtime.tools?.[n]?.parameters ?? { type: 'object', properties: {} },
+        description: exec.tools[n]?.description ?? '',
+        parameters: exec.tools[n]?.parameters ?? { type: 'object', properties: {} },
       },
     }));
 
@@ -716,7 +728,7 @@ async function execPrompt(exec, child, scope, promptResume = null) {
     let result;
     let isError = false;
     try {
-      const tool = exec.runtime.tools?.[name];
+      const tool = exec.tools[name];
       if (!tool) throw new KnitError(`unknown tool '${name}'`);
       if (tool.tree !== undefined) {
         // A tree tool: run the tree in a child scope seeded with the call
@@ -729,8 +741,10 @@ async function execPrompt(exec, child, scope, promptResume = null) {
         // Tools return either a string or a plain JSON object (structured
         // output). Objects flow through verbatim — patterns read them via
         // m.raw.prev[0].toolResults / branch slots — so tools can hand back
-        // structured data without JSON-encoding it into a string.
-        result = await tool.execute(args);
+        // structured data without JSON-encoding it into a string. The second
+        // argument carries the call-site view for inline registers; registry
+        // tools ignore it.
+        result = await tool.execute(args, { view: makeView(scope) });
       }
       // Tools may return error-shaped results instead of throwing.
       if (result && typeof result === 'object' && 'error' in result) {
@@ -762,7 +776,7 @@ async function execCall(exec, child, scope, callResume = null) {
   const args = typeof child.argsFn === 'function'
     ? await callFn(child.argsFn, view, `args fn of '${child.name}'`)
     : child.argsFn;
-  const tool = exec.runtime.tools?.[child.tool];
+  const tool = exec.tools[child.tool];
   if (!tool) throw new KnitError(`unknown tool '${child.tool}' (called from '${child.name}')`);
   if (tool.tree !== undefined) {
     // A .call() to a tree tool runs the subtree in place — the argument is
@@ -774,9 +788,11 @@ async function execCall(exec, child, scope, callResume = null) {
   }
   // Result may be a string or a plain JSON object; either is stored in the
   // branch slot verbatim so patterns can consume structured output directly.
+  // The second argument carries the call-site view for inline registers;
+  // registry tools ignore it.
   let result;
   try {
-    result = await tool.execute(args);
+    result = await tool.execute(args, { view });
   } catch (err) {
     // A thrown tool error leaves no value to route — log it for diagnosis.
     logEvent(exec, 'tool_error', {
@@ -799,6 +815,8 @@ async function execCall(exec, child, scope, callResume = null) {
  */
 async function runTreeTool(exec, toolName, tool, args, scope, resumeState = null) {
   const def = await resolveTreeTool(exec, toolName, tool.tree);
+  // A tree used as a tool brings its own inline registers.
+  installRegisters(exec, def);
   const childScope = resumeState
     ? (resumeState.levelScopes[resumeState.stackIdx] ?? new Scope(scope))
     : new Scope(scope);
@@ -1191,6 +1209,46 @@ function collectNames(tree, set) {
   }
 }
 
+// --- inline tool registers (`.register()`) ---
+
+// Registers are declarations: collect them from the whole tree graph
+// (branches, maps, imported subtrees) by name. Duplicates are a build error
+// — an ambiguous tool table would make call resolution order-dependent.
+function collectRegisters(def, out = new Map(), path = def?.name ?? '') {
+  for (const entry of def?.registers ?? []) {
+    const clash = out.get(entry.name);
+    if (clash) {
+      throw new KnitError(`duplicate .register('${entry.name}') — already declared at '${clash.path}'`);
+    }
+    out.set(entry.name, { ...entry, path });
+  }
+  for (const child of def?.children ?? []) {
+    if (child.kind === 'branch' || child.kind === 'map') {
+      collectRegisters(child.tree, out, `${path}/${child.name}`);
+    }
+  }
+  return out;
+}
+
+// Install a def's registers into the run's tool table. Called at knit()/
+// resume() start and whenever a tree-tool def is resolved, because a pause
+// never re-runs earlier nodes — a positional registration would silently
+// vanish on the next message.
+function installRegisters(exec, def) {
+  for (const entry of collectRegisters(def).values()) {
+    if (exec.runtime.tools?.[entry.name] && !exec.regShadowWarned.has(entry.name)) {
+      exec.regShadowWarned.add(entry.name);
+      console.warn(`[grandma-kat] .register('${entry.name}') shadows a runtime tool of the same name`);
+    }
+    exec.tools[entry.name] = {
+      description: entry.description,
+      parameters: entry.parameters,
+      // The fn receives the view of the CALLING scope plus the tool args.
+      execute: (args, ctx) => callFn(entry.fn, ctx?.view, `register '${entry.name}'`, args),
+    };
+  }
+}
+
 function validateRuntime(def, runtime) {
   // Reserved framework keys may not be injected as root memory.
   for (const k of Object.keys(runtime.memory ?? {})) {
@@ -1231,9 +1289,12 @@ function validateRuntime(def, runtime) {
     }
   }
 
+  // Registers declared by the tree itself count as available tools.
+  const registers = collectRegisters(def);
   const tools = runtime.tools ?? {};
   const missing = [];
   for (const { name, path } of [...toolRefs, ...callRefs]) {
+    if (registers.has(name)) continue;
     const entry = tools[name];
     if (!entry) {
       missing.push(`${path} references unknown tool '${name}'`);
@@ -1251,7 +1312,7 @@ function validateRuntime(def, runtime) {
     }
   }
   if (missing.length) {
-    const available = Object.keys(tools).join(', ') || 'none';
+    const available = [...Object.keys(tools), ...registers.keys()].join(', ') || 'none';
     throw new KnitError(`unknown tools:\n  ${missing.join('\n  ')}\navailable: ${available}`);
   }
 }

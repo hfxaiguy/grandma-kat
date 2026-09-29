@@ -768,6 +768,33 @@ Consequence: declare needs only for inputs present at **first execution**.
 Loop-carried reads (draft reading `m.branch.verify` on pass 1) must stay
 undeclared and defensive: `${m.branch.verify ?? ''}`.
 
+### `.register(name, description, fn, [options])` — declaration
+
+Declares an **inline tool** that lives in the tree itself — no runtime
+registry entry needed:
+
+```js
+.register("lookup", "Find a person by name and return their phone",
+  (m, args) => findPerson(m.workspace, args.name))
+```
+
+- `fn(memory, args)` is the tool body; `memory` is the view of the scope
+  where the tool is **called** (not where it was registered), `args` the
+  parsed arguments. The return value is the tool result: a string or a
+  plain JSON object, with the same error conventions as registry tools (an
+  object with an `error` key, or a string starting with "error", is a tool
+  error).
+- `options.parameters` is the JSON schema the model sees; the default is an
+  empty object schema.
+- A register is a **declaration, not a step**: it installs into the run's
+  tool table at `knit()` start and is available to every step and every
+  pass — fresh, rewound, and resumed alike. Its position in the chain is
+  readability only, and it does not take `when()`.
+- Model visibility is unchanged: whitelist the name on a prompt
+  (`.tools('lookup')`) or call it directly (`.call('lookup', m => …)`).
+  A register shadows a same-named runtime tool for that run; a warning is
+  printed at `knit()` start.
+
 ### `.until([when], cond, [max])` — selective (last match wins)
 
 Declares a container-level loop: after all children run, `cond(memory)` is

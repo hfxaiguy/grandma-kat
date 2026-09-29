@@ -1085,6 +1085,106 @@ const tc = (name, args, id = name) => ({
   function: { name, arguments: JSON.stringify(args ?? {}) },
 });
 
+// ── inline tool registers (`.register()`) ──────────────────────────────────
+// A register is a declaration: installed into the run's tool table before
+// execution, so position does not matter and a pause cannot lose it.
+
+test('.register() is hoisted: a declaration after its call site still resolves', async () => {
+  const pattern = Tree.name('late_register')
+    .call('lookup', () => ({ name: 'Ada' }))
+    .register('lookup', 'Find a person by name', (m, args) => `found:${args.name}`);
+
+  const { result } = await grandma.knit(pattern, mockRuntime(scripted([])));
+  assert.equal(result, 'found:Ada');
+});
+
+test('.register() fn reads the memory of the scope it is called from', async () => {
+  const pattern = Tree.name('register_scope')
+    .register('peek', 'Read the local slot', (m) => m.local ?? 'missing')
+    .branch(
+      Tree.name('inner_scope')
+        .memory('local', () => 'inner-ctx')
+        .call('peek', () => ({}))
+    );
+
+  const { memory } = await grandma.knit(pattern, mockRuntime(scripted([])));
+  assert.equal(memory.inner_scope, 'inner-ctx');
+});
+
+test('.register() exposes the inline tool to the model via .tools()', async () => {
+  const handler = scripted([
+    { content: '', tool_calls: [tc('lookup', { name: 'Ada' })] },
+    'reported',
+  ]);
+  const pattern = Tree.name('register_model')
+    .register('lookup', 'Find a person by name', (m, args) => ({ phone: `555-${args.name}` }))
+    .tools('lookup')
+    .prompt(m => 'find Ada')
+    .memory('phone', m => m.raw.branch['register_model#1'].toolResults[0].result.phone);
+
+  const { memory } = await grandma.knit(pattern, mockRuntime(handler));
+  assert.equal(memory.phone, '555-Ada');
+  assert.equal(handler.calls[0].tools[0].function.description, 'Find a person by name');
+});
+
+test('.register() error-shaped results are tool errors, not fatal', async () => {
+  const handler = scripted([
+    { content: '', tool_calls: [tc('flaky', {})] },
+    'next',
+  ]);
+  const pattern = Tree.name('register_err')
+    .register('flaky', 'Always fails', () => ({ error: 'no can do' }))
+    .tools('flaky')
+    .prompt(m => 'go')
+    .memory('isError', m => m.raw.branch['register_err#1'].toolResults[0].isError);
+
+  const { memory } = await grandma.knit(pattern, mockRuntime(handler));
+  assert.equal(memory.isError, true);
+});
+
+test('.register() survives a pause: the tool still resolves after resume', async () => {
+  const dbPath = tmpLogger();
+  try {
+    const pattern = Tree.name('register_resume')
+      .register('lookup', 'Find a person by name', (m, args) => `found:${args.name}`)
+      .prompt(m => 'start')
+      .human('reply')
+      .call('lookup', () => ({ name: 'Ada' }));
+
+    const step1 = await grandma.knit(pattern, mockRuntime(scripted(['hello']), { logger: dbPath }));
+    assert.equal(step1.status, 'waiting');
+
+    const step2 = await grandma.resume(step1.continuation, {
+      ...mockRuntime(scripted([]), { logger: dbPath }),
+      humanInput: { reply: 'go' },
+    });
+    assert.equal(step2.result, 'found:Ada');
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
+test('.register() shadows a same-named runtime tool for that run', async () => {
+  const tools = { lookup: tool(async () => 'host result') };
+  const pattern = Tree.name('register_shadow')
+    .register('lookup', 'Inline keeps the wheel', () => 'inline result')
+    .call('lookup', () => ({}));
+
+  const { result } = await grandma.knit(pattern, mockRuntime(scripted([]), { tools }));
+  assert.equal(result, 'inline result');
+});
+
+test('duplicate .register() names fail at knit() start', async () => {
+  const pattern = Tree.name('register_dup')
+    .register('lookup', 'One', () => 'a')
+    .register('lookup', 'Two', () => 'b')
+    .prompt(m => 'go');
+
+  await assert.rejects(
+    grandma.knit(pattern, mockRuntime(scripted(['x']))),
+    /duplicate \.register\('lookup'\)/);
+});
+
 test('a .call() to a tree tool runs the subtree with seeded args', async () => {
   const child = Tree.name('greeter').needs('who').prompt(m => `hello ${m.who}`);
   const handler = scripted(['hi']);

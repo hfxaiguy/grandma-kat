@@ -21,6 +21,7 @@ without tracking method boundaries.
 | `!!` | `!! input` | require a memory slot (declared input) | `.needs("input")` | name literal; slot must be seeded by the caller |
 | `--` | `-- prompt: does X ...?` | ask the model | a named `.branch()` wrapping `.prompt()` | text **expanded** into a full prompt |
 | `->` | `-> query_batch: duckdb_query ...` | fixed/direct tool call, no model | `.call("query_batch", "duckdb_query", argsFn)` | call name and tool name literal; arguments **expanded** from context |
+| `+->` | `+-> lookup: "Find a person by name"` | register an inline tool the tree's steps (and the model, when whitelisted) can call | `.register("lookup", "Find a person by name", (m, args) => ...)` | name literal; the description `"..."` verbatim; the body is JavaScript at the call site |
 | `??` | `?? check: X holds; else goto draft_plan (max 3)` | guard the chunk above; on failure jump to a named child | `.check(m => EXPAND(COND), goto("NAME", max(k)))` | condition **expanded**; the `goto` target and max are literal |
 | `@@` | `@@ upsert_rows: batch_rows` | run the subtree once per array element | `.map("upsert_rows", m => m.batch_rows, SUBTREE)` | name literal; the array is a memory/branch reference |
 | `**` | `** branch: if X is true, run:` or `**` | conditional or unconditional subtree | `.branch(when(cond), SUBTREE)` or `.branch(SUBTREE)` — the subtree may be unnamed | condition text **expanded** when present |
@@ -169,6 +170,17 @@ keeps the notation-to-code mapping visible.
 - `-> NAME: TOOL` → `.call('NAME', 'TOOL', m => ARGS)`. The tool executes
   immediately with the expanded arguments; no model is involved. When NAME is
   omitted, assign a stable translator-generated name.
+- `+-> NAME: "DESCRIPTION"` → `.register("NAME", "DESCRIPTION", (m, args) =>
+  …)`. The body is JavaScript, written at the call site; the notation names
+  the tool and fixes its description verbatim. A register is a
+  **declaration, not a step**: it is installed before the tree runs and is
+  available to every step and every pass — fresh and resumed alike — so its
+  position in the sketch is readability only and it never takes `when()`.
+  The fn receives the memory view of the **call site** plus the tool
+  arguments, and its return value is the tool result (a string or a plain
+  object; an object with an `error` key, or a string starting with "error",
+  is a tool error). A prompt offers the tool to the model with
+  `.tools("NAME")`; `.call("NAME", …)` works from any step.
 - `@@ NAME: ARRAY` → `.map('NAME', m => m.ARRAY, SUBTREE)`. It opens a level:
   the `||` lines below form the per-item subtree. The current element is
   `m.item`, and the per-item results collect under `m.branch.NAME` in the
