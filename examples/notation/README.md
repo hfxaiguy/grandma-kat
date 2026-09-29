@@ -181,6 +181,22 @@ keeps the notation-to-code mapping visible.
   object; an object with an `error` key, or a string starting with "error",
   is a tool error). A prompt offers the tool to the model with
   `.tools("NAME")`; `.call("NAME", …)` works from any step.
+
+  Write the body **inline at the call site**, multi-line and `async` as
+  needed — like prompt text, do not hoist it into a separate function or
+  constant; the inline body is what keeps the notation line and its
+  implementation side by side. Read the call's inputs from `args` and the
+  current memory from `m`, and return the result:
+
+  ```js
+  // +-> lookup: "Find a person by name and return their phone"
+  .register("lookup", "Find a person by name and return their phone",
+    async (m, args) => {
+      const hit = await findPerson(m.workspace, args.name);
+      if (!hit) return { error: `no contact named ${args.name}` };
+      return { name: hit.name, phone: hit.phone };
+    })
+  ```
 - `@@ NAME: ARRAY` → `.map('NAME', m => m.ARRAY, SUBTREE)`. It opens a level:
   the `||` lines below form the per-item subtree. The current element is
   `m.item`, and the per-item results collect under `m.branch.NAME` in the

@@ -784,6 +784,10 @@ registry entry needed:
   plain JSON object, with the same error conventions as registry tools (an
   object with an `error` key, or a string starting with "error", is a tool
   error).
+- Write the body **inline** at the `.register()` call site — multi-line and
+  `async` are fine. Like prompt text, don't hoist the handler into a
+  separate constant or module: keeping it beside the tree is what makes the
+  tool's dataflow readable.
 - `options.parameters` is the JSON schema the model sees; the default is an
   empty object schema.
 - A register is a **declaration, not a step**: it installs into the run's

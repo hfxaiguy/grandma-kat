@@ -766,7 +766,10 @@ second gated-declaration exception, alongside `.needs()`); duplicate names
 in one tree graph are a build error; a register shadows a same-named
 runtime tool for that run and warns at knit start. The fn is
 `(memory, args) => result` with `memory` the call-site view, and the
-optional `options.parameters` supplies the model-facing schema.
+optional `options.parameters` supplies the model-facing schema. The body
+is authored **inline at the call site** (multi-line, `async` allowed) —
+the same rule as prompt text, so the tool and the tree using it stay
+together.
 
 ### Defined inputs
 
