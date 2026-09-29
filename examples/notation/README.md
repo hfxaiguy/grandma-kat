@@ -115,7 +115,13 @@ keeps the notation-to-code mapping visible.
   be gated when the write is genuinely optional; a `++!` update never is.
 - `<< label: "TEXT"` → `.emit(m => ({ text: "TEXT" }))`. The quoted string is
   the verbatim `text`. (grandma-kat's `.emit` fires `onEmit` and does not
-  pause.)
+  pause.) A message may also carry `buttons`: a flat `{ label, value }[]`,
+  e.g. `.emit(m => ({ text: "Ready to call?", buttons: [{ label: "Yes",
+  value: "yes" }, { label: "Edit", value: "edit" }] }))`. A chat surface
+  renders each `label` as a tappable control and feeds its `value` in exactly
+  as if the user had typed it — so `value` must read as a valid reply to the
+  pause the message belongs to. A surface that cannot render buttons shows
+  the text alone; the user can always type the value instead.
 - `>> human: NAME` → `.human("NAME")`. The reply is read back as
   `m.branch.NAME`.
 - `!! NAME` → `.needs("NAME")`. The tree declares the slot as a required input:
