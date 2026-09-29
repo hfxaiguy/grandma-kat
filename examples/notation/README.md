@@ -14,17 +14,27 @@ without tracking method boundaries.
 
 | Symbol | Example | Means | Maps to (builder) | Text rule |
 |---|---|---|---|---|
-| `++` | `++ memory: mem_global` | declare a memory slot / session seed | runtime `memory:` seed or `.memory(name, fn)` | name literal; value is data |
+| `++` | `++ memory: mem_global` | declare a memory slot / session seed, or an update that may be gated | runtime `memory:` seed, `.memory(name, fn)`, or `.memoryUpdate(name, fn)` | name literal; value is data |
+| `++!` | `++! conversation: keep the log` | required memory update — runs every pass, never gated | `.memoryUpdate(name, fn)` with no `when(...)` gate | name literal; value is data |
 | `<<` | `<< output_msg: "Hi"` | non-blocking output | `.emit(m => ({ text: ... }))` | `"..."` verbatim |
 | `>>` | `>> human: input_1` | pause, ask the human for input | `.human("input_1")` | slot name literal |
 | `!!` | `!! input` | require a memory slot (declared input) | `.needs("input")` | name literal; slot must be seeded by the caller |
 | `--` | `-- prompt: does X ...?` | ask the model | a named `.branch()` wrapping `.prompt()` | text **expanded** into a full prompt |
 | `->` | `-> query_batch: duckdb_query ...` | fixed/direct tool call, no model | `.call("query_batch", "duckdb_query", argsFn)` | call name and tool name literal; arguments **expanded** from context |
+| `??` | `?? check: X holds; else goto draft_plan (max 3)` | guard the chunk above; on failure jump to a named child | `.check(m => EXPAND(COND), goto("NAME", max(k)))` | condition **expanded**; the `goto` target and max are literal |
 | `@@` | `@@ upsert_rows: batch_rows` | run the subtree once per array element | `.map("upsert_rows", m => m.batch_rows, SUBTREE)` | name literal; the array is a memory/branch reference |
 | `**` | `** branch: if X is true, run:` or `**` | conditional or unconditional subtree | `.branch(when(cond), SUBTREE)` or `.branch(SUBTREE)` — the subtree may be unnamed | condition text **expanded** when present |
 | `##` | `## contacts: app/contacts/tree.mjs` | import and attach another tree | import its factory, build it with the current API, then `.branch(importedTree)` | tree name and module path are literal |
 | `\|\|` | `\|\| prompt: ...` | child of the `**`/`()` block above | whatever the indented kind says | — |
-| `()` | `()` … `()` | loop — repeat the enclosed body | a `.branch()` whose trailing `.until(cond, max)` rewinds to the branch top | the closing `()` carries the exit condition |
+| `()` | `()` … `() goto NAME until COND (max n)` | loop — repeat the enclosed body, jumping back to a named child | a `.branch()` whose trailing `.until(goto("NAME"), cond, max(n))` rewinds to that child | the closing `()` carries the target and the exit condition |
+
+`!` marks a chunk as required: `!!` a slot that must already be seeded, `++!`
+an update that must always run. A plain `++` update may be gated or
+conditional; a `++!` update never is.
+
+Every `??` and every `()` names its jump target explicitly with `goto NAME` —
+the notation never relies on an implicit rewind. The target is a named child
+(the builder's `goback(n)` default is a convenience the notation does not use).
 
 ## The four rules
 
@@ -37,7 +47,7 @@ one chunk, but the notation keeps it to one line for readability.
 ### 2. Lines reference each other by name
 
 A `--` prompt or `**` condition can refer to the result of an earlier chunk by
-its **slot name** — the name after `>>`, `++`, or the branch name the
+its **slot name** — the name after `>>`, `++`/`++!`, or the branch name the
 translator gives a `--` prompt. Any branch, prompt, grouping block, or loop
 without an explicit name receives a stable translator-generated name; explicit
 names always win. Example: `** branch: if above is true` means
@@ -70,10 +80,11 @@ too; the body is the `||` lines between the opening
 `()` and the closing `()`:
 
 ```
-()                                 (level 0, opens level 1)
-|| -- use the tool for each ...    (level 1 — loop body)
-|| << emit the update output       (level 1 — loop body)
-() until there are no more tool calls left   (level 0, closes the loop)
+()                                             (level 0, opens level 1)
+|| -- main_prompt: use the tool for each ...   (level 1 — loop body, named)
+|| << emit the update output                   (level 1 — loop body)
+() goto main_prompt until there are no more tool calls left (max 12)
+                                               (level 0, closes the loop)
 ```
 
 ## Translating this notation (for the translator / LLM author)
@@ -98,6 +109,10 @@ keeps the notation-to-code mapping visible.
 - `++ memory: NAME` → seed the **root scope** with `memory: { NAME: value }`
   in the runtime, or (inside a loop that needs to accumulate) a
   `.memory('NAME', ...)` write at the level where the value must persist.
+- `++! NAME` → `.memoryUpdate("NAME", fn)` **unconditional** — do not wrap it
+  in `when(...)`. Use it for state the rest of the tree depends on being
+  complete (a conversation log, a required counter). A plain `++` update may
+  be gated when the write is genuinely optional; a `++!` update never is.
 - `<< label: "TEXT"` → `.emit(m => ({ text: "TEXT" }))`. The quoted string is
   the verbatim `text`. (grandma-kat's `.emit` fires `onEmit` and does not
   pause.)
@@ -129,15 +144,22 @@ keeps the notation-to-code mapping visible.
   is an unnamed builder, so `Tree.prompt(...)`, `Tree.human(...)`, etc. build
   the subtree without a `.name()` call.
 - `|| KIND ...` → a child of the enclosing branch, at the matching depth.
-- `()` … `()` → a **branch containing a loop**. The opening `()` becomes
-  `.branch(SUBTREE)`, where the subtree holds the loop body (name it only when
-  the sketch names it). The `||` body runs once per pass; the closing
-  `()` becomes a trailing `.until(cond, max(...))` inside that subtree, which
-  rewinds to the branch top while the condition fails. The closing `()`'s text ("until there are no
-  more tool calls left") is the condition, expanded into a predicate — for a
-  tool-calling loop that's `!m.raw.branch.main_prompt?.toolCalls?.length`,
-   bounded by `max(12)`. Children placed **after** the `.until()` (i.e. after
-   the closing `()`) run exactly once, when the loop exits.
+- `?? check: COND; else goto NAME (max k)` → `.check(m => EXPAND(COND),
+  goto("NAME", max(k)))`. The expanded condition returns `true` to pass, or a
+  string — the feedback, placed in `m.error` and read by the retried prompt as
+  `${m.error ?? '...'}`. The flow always names its target; do not translate it
+  to the builder's `goback(n)` default.
+- `()` … `() goto NAME until COND (max n)` → a **branch containing a loop**.
+  The opening `()` becomes `.branch(SUBTREE)`, where the subtree holds the
+  loop body (name it only when the sketch names it). The `||` body runs once
+  per pass; the closing `()` becomes a trailing
+  `.until(goto("NAME"), cond, max(n))` inside that subtree, which rewinds to
+  the named child while the condition fails. The closing `()`'s text after
+  `until` ("there are no more tool calls left") is the condition, expanded
+  into a predicate — for a tool-calling loop that's
+  `!m.raw.branch.main_prompt?.toolCalls?.length`, bounded by `max(12)`.
+  Children placed **after** the `.until()` (i.e. after the closing `()`) run
+  exactly once, when the loop exits.
 - `-> NAME: TOOL` → `.call('NAME', 'TOOL', m => ARGS)`. The tool executes
   immediately with the expanded arguments; no model is involved. When NAME is
   omitted, assign a stable translator-generated name.
