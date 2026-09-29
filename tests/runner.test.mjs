@@ -1071,3 +1071,262 @@ test('.emit() inside .until() loop fires each iteration', async () => {
   assert.equal(result, 'yes');
   assert.equal(emitted.length, 3);
 });
+
+// ── trees as tools ────────────────────────────────────────────────────────
+// A runtime tool entry may declare `tree: <name|def>` instead of execute().
+// The model (and .call()) invokes it like any tool; the engine runs the
+// subtree in a child scope seeded with the call args, and the subtree's
+// exported value becomes the tool result. A pause inside the subtree
+// suspends the whole run and resumes in place — the calling prompt round is
+// replayed from the log, never re-sent to the model.
+
+const tc = (name, args, id = name) => ({
+  id,
+  function: { name, arguments: JSON.stringify(args ?? {}) },
+});
+
+test('a .call() to a tree tool runs the subtree with seeded args', async () => {
+  const child = Tree.name('greeter').needs('who').prompt(m => `hello ${m.who}`);
+  const handler = scripted(['hi']);
+  const pattern = Tree.name('host')
+    .call('greet', 'greeter_tool', () => ({ who: 'Ada' }))
+    .memory('seen', m => m.branch.greet);
+
+  const { memory } = await grandma.knit(pattern, mockRuntime(handler, {
+    tools: { greeter_tool: { description: 'greet', parameters: {}, tree: child } },
+  }));
+
+  assert.equal(memory.greet, 'hi');           // subtree export = tool result
+  assert.equal(memory.seen, 'hi');
+  assert.equal(handler.calls.length, 1);
+  assert.equal(handler.calls[0].messages[0].content, 'hello Ada'); // seeded slot
+});
+
+test('a model tool call to a tree tool returns the subtree export as the tool result', async () => {
+  const child = Tree.name('finder').prompt(m => `looking for ${m.query}`);
+  const handler = scripted([
+    { content: '', tool_calls: [tc('finder_tool', { query: 'keys' })] },
+    'searching',
+  ]);
+  const pattern = Tree.name('host')
+    .tools('finder_tool')
+    .prompt('act', () => 'go')
+    .memory('seen', m => m.raw.branch.act.toolResults[0].result);
+
+  const { memory } = await grandma.knit(pattern, mockRuntime(handler, {
+    tools: { finder_tool: { description: 'find', parameters: {}, tree: child } },
+  }));
+
+  assert.equal(memory.seen, 'searching');
+  assert.equal(handler.calls.length, 2);
+  assert.equal(handler.calls[1].messages[0].content, 'looking for keys');
+});
+
+test('a pause inside a model-called tree resumes without re-calling the model', async () => {
+  const child = Tree.name('interview')
+    .prompt(m => `q for ${m.topic}`)
+    .human('answer')
+    .memory('out', m => `got: ${m.answer}`);
+
+  const handler = scripted([
+    { content: '', tool_calls: [tc('ask', { topic: 'cats' })] },
+    'child says hi',
+    'host done',
+  ]);
+  const runtime = mockRuntime(handler, {
+    logger: tmpLogger(),
+    tools: { ask: { description: 'ask', parameters: {}, tree: child } },
+  });
+  const pattern = Tree.name('host')
+    .tools('ask')
+    .prompt('act', () => 'go')
+    .prompt('after', m => `tool said: ${m.raw.branch.act.toolResults[0].result}`)
+    .memory('seen', m => m.raw.branch.act.toolResults[0].result);
+
+  const first = await grandma.knit(pattern, runtime);
+  assert.equal(first.status, 'waiting');
+  assert.equal(first.humanSlot, 'answer');
+  assert.equal(handler.calls.length, 2); // host round + the child prompt, then the pause
+
+  const second = await grandma.knit(pattern, {
+    ...runtime,
+    _continuation: first.continuation,
+    humanInput: 'purr',
+  });
+  assert.equal(second.status, undefined);
+  assert.equal(handler.calls.length, 3, 'the round was replayed — the child prompt did not re-run');
+  assert.equal(second.memory.seen, 'got: purr', 'the subtree export came back as the tool result');
+});
+
+test('a pause inside a .call() tree resumes structurally', async () => {
+  const child = Tree.name('asker')
+    .prompt(() => 'question')
+    .human('answer')
+    .memory('out', m => `answer: ${m.answer}`);
+
+  const handler = scripted(['child prompt']);
+  const runtime = mockRuntime(handler, { logger: tmpLogger(), tools: { asker_tool: { tree: child } } });
+  const pattern = Tree.name('host')
+    .call('run', 'asker_tool', () => ({}))
+    .memory('seen', m => m.branch.run);
+
+  const first = await grandma.knit(pattern, runtime);
+  assert.equal(first.status, 'waiting');
+  assert.equal(first.humanSlot, 'answer');
+  assert.equal(handler.calls.length, 1);
+
+  const second = await grandma.knit(pattern, {
+    ...runtime,
+    _continuation: first.continuation,
+    humanInput: 'b',
+  });
+  assert.equal(second.status, undefined);
+  assert.equal(handler.calls.length, 1, 'the subtree finished without further model calls');
+  assert.equal(second.memory.seen, 'answer: b');
+});
+
+test('completed sibling tool calls are replayed, not re-executed, after a pause', async () => {
+  const effects = [];
+  const child = Tree.name('nested').human('go').memory('out', () => 'nested done');
+  const handler = scripted([
+    { content: '', tool_calls: [tc('effect', { n: 1 }, 'c1'), tc('ask', {}, 'c2')] },
+  ]);
+  const runtime = mockRuntime(handler, {
+    logger: tmpLogger(),
+    tools: {
+      effect: tool((args) => { effects.push(args); return { ok: true, n: effects.length }; }),
+      ask: { description: 'ask', parameters: {}, tree: child },
+    },
+  });
+  const pattern = Tree.name('host')
+    .tools('effect', 'ask')
+    .prompt('act', () => 'go')
+    .memory('first', m => m.raw.branch.act.toolResults[0].result)
+    .memory('second', m => m.raw.branch.act.toolResults[1].result);
+
+  const first = await grandma.knit(pattern, runtime);
+  assert.equal(first.status, 'waiting');
+  assert.equal(first.humanSlot, 'go');
+  assert.equal(effects.length, 1);
+
+  const second = await grandma.knit(pattern, {
+    ...runtime,
+    _continuation: first.continuation,
+    humanInput: 'x',
+  });
+  assert.equal(second.status, undefined);
+  assert.equal(effects.length, 1, 'the completed sibling effect was replayed, not re-run');
+  assert.deepEqual(second.memory.first, { ok: true, n: 1 });
+  assert.equal(second.memory.second, 'nested done');
+});
+
+test('a subtree failure surfaces as an isError tool result', async () => {
+  const child = Tree.name('flaky')
+    .prompt(() => 'try')
+    .check(() => 'nope', goback(1, max(1)));
+  const handler = scripted([
+    { content: '', tool_calls: [tc('flaky_tool', {})] },
+    'a',
+    'b',
+  ]);
+  const pattern = Tree.name('host')
+    .tools('flaky_tool')
+    .prompt('act', () => 'go')
+    .memory('err', m => m.raw.branch.act.toolResults[0].isError)
+    .memory('msg', m => String(m.raw.branch.act.toolResults[0].result));
+
+  const { memory } = await grandma.knit(pattern, mockRuntime(handler, {
+    tools: { flaky_tool: { description: 'flaky', parameters: {}, tree: child } },
+  }));
+
+  assert.equal(memory.err, true);
+  assert.match(memory.msg, /^error: /);
+});
+
+test('an unresolvable tree tool name is an isError result', async () => {
+  const handler = scripted([{ content: '', tool_calls: [tc('ghost', {})] }]);
+  const pattern = Tree.name('host')
+    .tools('ghost')
+    .prompt('act', () => 'go')
+    .memory('err', m => m.raw.branch.act.toolResults[0].isError)
+    .memory('msg', m => String(m.raw.branch.act.toolResults[0].result));
+
+  const { memory } = await grandma.knit(pattern, mockRuntime(handler, {
+    tools: { ghost: { description: 'ghost', parameters: {}, tree: 'no_such_tree' } },
+  }));
+
+  assert.equal(memory.err, true);
+  assert.match(memory.msg, /not registered/);
+});
+
+test('loadTree resolves and names a dynamically loaded tree', async () => {
+  const late = Tree.prompt(m => `late: ${m.who}`).def; // unnamed, unregistered
+  const asked = [];
+  const handler = scripted(['late result']);
+  const runtime = mockRuntime(handler, { tools: { late_tool: { tree: 'late_tree' } } });
+  runtime.loadTree = async (name) => {
+    asked.push(name);
+    return name === 'late_tree' ? late : null;
+  };
+  const pattern = Tree.name('host').call('run', 'late_tool', () => ({ who: 'x' }));
+
+  const { memory } = await grandma.knit(pattern, runtime);
+  assert.deepEqual(asked, ['late_tree']);
+  assert.equal(memory.run, 'late result');
+  assert.equal(handler.calls[0].messages[0].content, 'late: x');
+});
+
+test('tree tool entries must declare exactly one implementation', async () => {
+  const handler = scripted(['x']);
+  await assert.rejects(
+    grandma.knit(
+      Tree.name('host').call('run', 'bad', () => ({})),
+      mockRuntime(handler, { tools: { bad: { execute: () => 1, tree: Tree.prompt(() => 'x') } } }),
+    ),
+    /both execute and tree/,
+  );
+  await assert.rejects(
+    grandma.knit(
+      Tree.name('host').call('run', 'bad2', () => ({})),
+      mockRuntime(handler, { tools: { bad2: { description: 'no impl' } } }),
+    ),
+    /needs execute\(\) or a tree/,
+  );
+});
+
+test('nested tree tools replay every prompt level on resume', async () => {
+  const inner = Tree.name('inner').human('go').memory('out', () => 'inner done');
+  const outer = Tree.name('outer')
+    .tools('inner_tool')
+    .prompt('outer_act', () => 'call inner')
+    .memory('outer_out', m => m.raw.branch.outer_act.toolResults[0].result);
+  const handler = scripted([
+    { content: '', tool_calls: [tc('outer_tool', {})] },
+    { content: '', tool_calls: [tc('inner_tool', {})] },
+  ]);
+  const runtime = mockRuntime(handler, {
+    logger: tmpLogger(),
+    tools: {
+      outer_tool: { description: 'outer', parameters: {}, tree: outer },
+      inner_tool: { description: 'inner', parameters: {}, tree: inner },
+    },
+  });
+  const pattern = Tree.name('host')
+    .tools('outer_tool')
+    .prompt('act', () => 'go')
+    .memory('seen', m => m.raw.branch.act.toolResults[0].result);
+
+  const first = await grandma.knit(pattern, runtime);
+  assert.equal(first.status, 'waiting');
+  assert.equal(first.humanSlot, 'go');
+  assert.equal(handler.calls.length, 2);
+
+  const second = await grandma.knit(pattern, {
+    ...runtime,
+    _continuation: first.continuation,
+    humanInput: 'x',
+  });
+  assert.equal(second.status, undefined);
+  assert.equal(handler.calls.length, 2, 'both prompt levels were replayed');
+  assert.equal(second.memory.seen, 'inner done', 'results flowed back through both levels');
+});

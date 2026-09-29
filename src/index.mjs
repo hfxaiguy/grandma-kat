@@ -14,7 +14,14 @@
 //   // object (structured output). Both are stored in branch slots / tool
 //   // results verbatim; an object with an "error" key (or a string
 //   // starting with "error") is treated as a tool error.
+//   //
+//   // A tool may instead declare a tree: { tree: 'name' } (a registered
+//   // name, or a def/builder). The model and .call() then invoke the tree
+//   // like any tool — it runs in place and its result is the tool result.
+//   // loadTree(name) resolves names the process has never built (the host
+//   // can load them from disk); it is also the resume fallback.
 //   tools: {},
+//   loadTree: async (name) => null,
 //   });
 
 import { knit, resume, KnitError, PauseSignal } from './knit.mjs';

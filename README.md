@@ -314,6 +314,33 @@ const tools = {
 - `.call('navigate', m => ({ url: m.branch.best }))` calls a tool directly,
   no LLM involved.
 
+#### Trees as tools
+
+A tree can be exposed as a tool — same name space, same call sites, no new
+builder method:
+
+```js
+tools: {
+  'find-address': { description: 'Find an address…', parameters: {…}, tree: 'find-address' },
+}
+```
+
+`tree` is a registered name (resolved by the runtime's `loadTree` hook,
+falling back to the global registry) or a def/builder directly. When the
+model calls a tree tool — or a `.call()` targets one — the engine runs that
+tree in place, in a child scope **seeded with the call args** as slots (so
+the subtree's `.needs('input')` is satisfied by `{ input: … }`). The
+subtree's exported value becomes the tool result, exactly like a function
+tool's return.
+
+This is a call, not a handoff: one run, one log, one continuation. The
+subtree's `.emit()`s and `.human()` pauses are the caller's — a pause inside
+a model-called tree suspends the whole run, and the resumed turn continues
+inside the subtree (the calling prompt round is **replayed from the log**,
+never re-sent to the model, and already-completed sibling tool calls are not
+re-executed). The caller sees the result and keeps going, which is what
+makes patterns like *route to any workspace tree, then summarize* trivial.
+
 ### Validation up front
 
 `knit()` sees the whole tree before the first LLM call and fails loudly:
@@ -344,7 +371,8 @@ const b = Tree.name('b').branch(Tree.from('navigate'));
 ```js
 await grandma.knit(pattern, {
   models:    { /* name → { baseURL, apiKey, model } or { model, handler } */ },
-  tools:     { /* name → { description, parameters, execute } */ },
+  tools:     { /* name → { description, parameters, execute } — or { tree } */ },
+  loadTree:  async (name) => null, // resolve a tree name the process never built
   memory:    { /* initial root scope: plain JSON values */ },
   logger:    true,          // SQLite at ./logs/grandma-kat.db
              // 'path/to.db' | { path } | { log, close } | false (off, default)
@@ -555,6 +583,10 @@ Appends a direct tool-call leaf — no LLM involved.
 the runtime registry; the leaf's value is the tool's raw return value (any
 JSON). Unknown tool names throw — both at `knit()` start (whole-tree
 validation) and at call time.
+
+If the tool declares `tree`, the call runs that tree in place (args seed the
+subtree's scope, its export is the value). A `.human()` inside the subtree
+pauses the whole run and resumes back into this call — see *Trees as tools*.
 
 ### `.check([when], fn, [flow])` — accumulative
 

@@ -486,6 +486,43 @@ Results are collected into an array in the parent scope under `name`.
   (m.branch.rated ?? []).filter(r => r.rating === 'likely'))
 ```
 
+### Trees as tools: dynamic tree execution (chosen)
+
+A runtime tool entry may declare `tree` instead of `execute`:
+
+```js
+tools: {
+  'caller-list': { description: '…', parameters: {…}, tree: 'caller-list' },
+}
+```
+
+**Why:** the model (and `.call()`) invoke trees exactly like tools — no new
+builder method, no model-facing distinction between a function tool and a
+tree. An earlier `.dispatch(selectFn)` leaf with a `pick_tree` pseudo-tool
+was rejected: it forced authors to dig the selection out of `toolResults`
+and made the model call a tool that was not a tool.
+
+**Semantics** (chosen: *call*, not handoff — "as if the subtree were
+included from the beginning"):
+- Resolution: `runtime.loadTree(name)` (host hook — may load from disk) →
+  global registry → `KnitError`. Resolved defs are registered under their
+  name so resume can find them; `resume()` resolves registry-first with the
+  `loadTree` fallback after a restart.
+- Execution: child scope seeded with the call args as slots (satisfying
+  `.needs()`), `execTree` runs it like a static branch. The exported value
+  is the tool result. One run / log / continuation; caller state survives.
+- A `.human()` inside a model-called tree pauses the whole run. On resume
+  the calling prompt round is **replayed from the logged `llm_call` +
+  `tool_result` events** — the model is not called again and completed
+  sibling tool calls are not re-executed. The paused call index is derived
+  from the count of logged results; no checkpoint format change.
+- `PauseSignal` passes through the prompt tool loop untouched; subtree
+  `KnitError`s become `isError` tool results so the caller can recover.
+
+**Limitations:** selectors aside, a subtree edited mid-pause can shift shape
+without invalidating the root definition hash; self-recursive tree tools are
+legal but unguarded (loop `max()` still bounds rounds).
+
 ## Memory Model: Scope Chain (chosen)
 
 **Memory is a scope chain.** Every branch owns a memory — a set of name →

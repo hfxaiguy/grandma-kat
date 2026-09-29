@@ -185,15 +185,45 @@ export async function resume(checkpointId, runtime) {
     // the checkpoint's human event already named (see injectHumanInput).
     injectHumanInput(runtime.humanInput, scopes, humanEvent.content?.child ?? "main_input");
 
-    // Build the resume stack.
-    const stack = treeNames.map((name, idx) => ({
-      name,
-      tree: registryGet(name),
-      childIndex: 0,
-      pass: 0,
-      edgeCounters: new Map(),
-      resumeChildStart: resumePositions[idx],
-    }));
+    // Build the resume stack. Each level resolves by name: the registry
+    // holds the build the run started with (hosts reload it every turn),
+    // and loadTree is the fallback for trees that were loaded dynamically
+    // and are gone from the registry after a restart.
+    const stack = [];
+    for (let idx = 0; idx < treeNames.length; idx += 1) {
+      stack.push({
+        name: treeNames[idx],
+        tree: await resolveTreeForResume(treeNames[idx], runtime),
+        childIndex: 0,
+        pass: 0,
+        edgeCounters: new Map(),
+        resumeChildStart: resumePositions[idx],
+      });
+    }
+
+    // A prompt that led into a paused tree tool must replay its logged
+    // round instead of calling the model again. Attach the logged llm_call
+    // (plus the tool results it already produced) to the level whose resume
+    // position points at that prompt child.
+    for (let idx = 0; idx < stack.length - 1; idx += 1) {
+      const level = stack[idx];
+      const promptChild = level.tree?.children?.[level.resumeChildStart];
+      if (!promptChild || promptChild.kind !== 'prompt') continue;
+      const path = treeNames.slice(0, idx + 1).join('/');
+      let llmCall = null;
+      const doneResults = [];
+      for (const ev of events) {
+        if (ev.seq > cp.seq) break;
+        if (ev.branch_path !== path) continue;
+        if (ev.kind === 'llm_call' && ev.content?.child === promptChild.name) {
+          llmCall = ev.content;
+          doneResults.length = 0;
+        } else if (llmCall && ev.kind === 'tool_result' && ev.content?.child === promptChild.name) {
+          doneResults.push(ev.content);
+        }
+      }
+      if (llmCall) level.replay = { llmCall, doneResults };
+    }
 
     const resumeState = {
       scopes,
@@ -231,12 +261,12 @@ export async function resume(checkpointId, runtime) {
       runtime,
       logger,
       runId: cp.run_id,
-      defId: definitionId(rootScope ? registryGet(treeNames[0]) : null),
+      defId: definitionId(stack[0]?.tree ?? null),
       stack: [],
       seq: cp.seq,
     };
     try {
-      const outcome = await execTree(exec, registryGet(treeNames[0]), rootScope, rootScope, resumeState);
+      const outcome = await execTree(exec, stack[0].tree, rootScope, rootScope, resumeState);
       logger.deleteCheckpoint(checkpointId);
       return { result: outcome.value, memory: rootScope.slots, runId: exec.runId };
     } catch (err) {
@@ -321,11 +351,12 @@ async function execTree(exec, tree, scope, parentScope, resumeState = null) {
 }
 
 async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
-  // Declared inputs must resolve via the scope chain (ancestors may satisfy
-  // them even when a sibling producer was skipped).
+  // Declared inputs must resolve via the scope chain. For a static branch
+  // the child scope is empty, so this is the parent chain; for a tree tool
+  // the call args were seeded into the child scope first.
   if (!resumeState) {
     for (const need of tree.needs) {
-      if (lookupChain(parentScope, need) === undefined) {
+      if (lookupChain(scope, need) === undefined) {
         throw new KnitError(`tree '${tree.name}' needs '${need}', but it does not resolve in scope`);
       }
     }
@@ -439,7 +470,17 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
           record: { content: out.value ?? null, children: { ...childScope.raw } },
         };
       } else if (child.kind === 'prompt') {
-        outcome = await execPrompt(exec, child, scope);
+        // On resume, a prompt that led into a paused tree tool replays its
+        // logged round instead of calling the model again (same deeper-level
+        // guard as branch children).
+        const promptResume =
+          resumeStart != null &&
+          i === resumeStart &&
+          savedResume !== null &&
+          savedResume.levelScopes.length > savedResume.stackIdx
+            ? savedResume
+            : null;
+        outcome = await execPrompt(exec, child, scope, promptResume);
       } else if (child.kind === 'memory') {
         outcome = await execMemory(exec, child, scope);
       } else if (child.kind === 'memoryUpdate') {
@@ -539,6 +580,17 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
           i = 0;
         }
         continue;
+      } else if (child.kind === 'call') {
+        // A .call() to a tree tool descends structurally — the same deeper
+        // guard as branch children resumes a pause inside that subtree.
+        const callResume =
+          resumeStart != null &&
+          i === resumeStart &&
+          savedResume !== null &&
+          savedResume.levelScopes.length > savedResume.stackIdx
+            ? savedResume
+            : null;
+        outcome = await execCall(exec, child, scope, callResume);
       } else {
         outcome = await execCall(exec, child, scope);
       }
@@ -551,59 +603,89 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
   }
 }
 
-async function execPrompt(exec, child, scope) {
-  const view = makeView(scope);
-  const value = typeof child.prompt === 'function'
-    ? await callFn(child.prompt, view, `prompt fn of '${child.name}'`)
-    : child.prompt;
-  const messages = normalizeMessages(value);
-
-  const modelName = (await resolveInherited(exec, 'models', view)) ?? runtimeDefaultModel(exec);
-  const modelEntry = exec.runtime.models?.[modelName];
-  if (!modelEntry) {
-    throw new KnitError(`model '${modelName}' (used by '${child.name}') not found in runtime models`);
+async function execPrompt(exec, child, scope, promptResume = null) {
+  const levelEntry = exec.stack[exec.stack.length - 1];
+  const replay = promptResume ? (levelEntry?.replay ?? null) : null;
+  if (promptResume && !replay) {
+    throw new KnitError(
+      `resume: no logged llm_call for prompt '${child.name}' — the checkpoint is missing replay data`,
+    );
   }
+  if (replay) levelEntry.replay = null;
 
-  const toolNames = child.options.tools ?? (await resolveInherited(exec, 'tools', view)) ?? [];
-  const tools = toolNames.map((n) => ({
-    type: 'function',
-    function: {
-      name: n,
-      description: exec.runtime.tools?.[n]?.description ?? '',
-      parameters: exec.runtime.tools?.[n]?.parameters ?? { type: 'object', properties: {} },
-    },
-  }));
-
-  const record = { content: null, reasoning: null, toolCalls: [], toolResults: [], calls: [], model: modelName };
-
-  // One LLM call. If the model returns tool calls, execute them — but do
-  // NOT loop. The tree controls retries via .check() + goback().
+  const record = { content: null, reasoning: null, toolCalls: [], toolResults: [], calls: [], model: null };
   let response;
-  try {
-    response = await callLlm(modelEntry, messages, { tools });
-  } catch (err) {
-    // Record failed calls so they are diagnosable from the log DB — a
-    // thrown LLM error otherwise leaves no trace. Rethrow; the tree still
-    // decides how to recover.
-    logEvent(exec, 'llm_error', {
-      child: child.name,
+
+  if (replay) {
+    // Resume path: the round already ran before the pause — rebuild its
+    // record from the log (no second LLM call) and continue with the tool
+    // call that paused inside a tree.
+    const rc = replay.llmCall;
+    response = { content: rc.content ?? '', reasoning: rc.reasoning ?? '', tool_calls: rc.toolCalls ?? null };
+    record.model = rc.model ?? null;
+    for (const tc of response.tool_calls ?? []) {
+      record.toolCalls.push({ id: tc.id, name: tc.function?.name, arguments: tc.function?.arguments });
+    }
+    record.calls.push({
       round: 1,
-      model: modelName,
+      messages: (rc.messages ?? []).map((m) => ({ ...m })),
+      response: { content: response.content, reasoning: response.reasoning, tool_calls: response.tool_calls ?? null },
+    });
+    for (const tr of replay.doneResults) {
+      record.toolResults.push({ name: tr.tool, result: tr.result, isError: tr.isError === true });
+    }
+  } else {
+    const view = makeView(scope);
+    const value = typeof child.prompt === 'function'
+      ? await callFn(child.prompt, view, `prompt fn of '${child.name}'`)
+      : child.prompt;
+    const messages = normalizeMessages(value);
+
+    const modelName = (await resolveInherited(exec, 'models', view)) ?? runtimeDefaultModel(exec);
+    const modelEntry = exec.runtime.models?.[modelName];
+    if (!modelEntry) {
+      throw new KnitError(`model '${modelName}' (used by '${child.name}') not found in runtime models`);
+    }
+    record.model = modelName;
+
+    const toolNames = child.options.tools ?? (await resolveInherited(exec, 'tools', view)) ?? [];
+    const tools = toolNames.map((n) => ({
+      type: 'function',
+      function: {
+        name: n,
+        description: exec.runtime.tools?.[n]?.description ?? '',
+        parameters: exec.runtime.tools?.[n]?.parameters ?? { type: 'object', properties: {} },
+      },
+    }));
+
+    // One LLM call. If the model returns tool calls, execute them — but do
+    // NOT loop. The tree controls retries via .check() + goback().
+    try {
+      response = await callLlm(modelEntry, messages, { tools });
+    } catch (err) {
+      // Record failed calls so they are diagnosable from the log DB — a
+      // thrown LLM error otherwise leaves no trace. Rethrow; the tree still
+      // decides how to recover.
+      logEvent(exec, 'llm_error', {
+        child: child.name,
+        round: 1,
+        model: modelName,
+        messages,
+        error: err instanceof Error ? err.message : String(err),
+      }, scope);
+      throw err;
+    }
+    record.calls.push({
+      round: 1,
+      messages: messages.map((m) => ({ ...m })),
+      response: { content: response.content, reasoning: response.reasoning, tool_calls: response.tool_calls ?? null },
+    });
+    logEvent(exec, 'llm_call', {
+      child: child.name, round: 1, model: modelName,
       messages,
-      error: err instanceof Error ? err.message : String(err),
+      content: response.content, reasoning: response.reasoning, toolCalls: response.tool_calls ?? null,
     }, scope);
-    throw err;
   }
-  record.calls.push({
-    round: 1,
-    messages: messages.map((m) => ({ ...m })),
-    response: { content: response.content, reasoning: response.reasoning, tool_calls: response.tool_calls ?? null },
-  });
-  logEvent(exec, 'llm_call', {
-    child: child.name, round: 1, model: modelName,
-    messages,
-    content: response.content, reasoning: response.reasoning, toolCalls: response.tool_calls ?? null,
-  }, scope);
 
   if (!response.tool_calls?.length) {
     // No tool calls — text-only response.
@@ -612,21 +694,37 @@ async function execPrompt(exec, child, scope) {
     return { value: response.content, record };
   }
 
-  // Execute tool calls (one round), then return.
-  for (const tc of response.tool_calls) {
+  // Execute tool calls (one round), then return. In replay mode the calls
+  // before the paused one already ran and are already logged (`doneResults`)
+  // — copy them instead of re-executing; the paused call (index ===
+  // doneResults.length) descends into its subtree with the resume state;
+  // later calls run fresh.
+  const toolCalls = response.tool_calls;
+  for (let ci = 0; ci < toolCalls.length; ci++) {
+    if (replay && ci < replay.doneResults.length) continue;
+    const tc = toolCalls[ci];
     const name = tc.function?.name;
-    record.toolCalls.push({ id: tc.id, name, arguments: tc.function?.arguments });
+    if (!replay) record.toolCalls.push({ id: tc.id, name, arguments: tc.function?.arguments });
     const args = (() => { try { return JSON.parse(tc.function.arguments); } catch { return tc.function.arguments; } })();
     let result;
     let isError = false;
     try {
       const tool = exec.runtime.tools?.[name];
       if (!tool) throw new KnitError(`unknown tool '${name}'`);
-      // Tools return either a string or a plain JSON object (structured
-      // output). Objects flow through verbatim — patterns read them via
-      // m.raw.prev[0].toolResults / branch slots — so tools can hand back
-      // structured data without JSON-encoding it into a string.
-      result = await tool.execute(args);
+      if (tool.tree !== undefined) {
+        // A tree tool: run the tree in a child scope seeded with the call
+        // args; its exported value is the tool result. A .human() inside
+        // pauses the whole run, and on resume the paused call receives the
+        // resume state so the subtree continues exactly where it stopped.
+        const resume = replay && ci === replay.doneResults.length ? promptResume : null;
+        result = await runTreeTool(exec, name, tool, args, scope, resume);
+      } else {
+        // Tools return either a string or a plain JSON object (structured
+        // output). Objects flow through verbatim — patterns read them via
+        // m.raw.prev[0].toolResults / branch slots — so tools can hand back
+        // structured data without JSON-encoding it into a string.
+        result = await tool.execute(args);
+      }
       // Tools may return error-shaped results instead of throwing.
       if (result && typeof result === 'object' && 'error' in result) {
         isError = true;
@@ -634,6 +732,9 @@ async function execPrompt(exec, child, scope) {
         isError = true;
       }
     } catch (err) {
+      // A pause inside a tree tool is not a tool error — it suspends the
+      // whole run and must reach knit() unchanged.
+      if (err instanceof PauseSignal) throw err;
       isError = true;
       result = `error: ${err.message}`;
     }
@@ -649,13 +750,21 @@ async function execPrompt(exec, child, scope) {
   return { value: record.content, record };
 }
 
-async function execCall(exec, child, scope) {
+async function execCall(exec, child, scope, callResume = null) {
   const view = makeView(scope);
   const args = typeof child.argsFn === 'function'
     ? await callFn(child.argsFn, view, `args fn of '${child.name}'`)
     : child.argsFn;
   const tool = exec.runtime.tools?.[child.tool];
   if (!tool) throw new KnitError(`unknown tool '${child.tool}' (called from '${child.name}')`);
+  if (tool.tree !== undefined) {
+    // A .call() to a tree tool runs the subtree in place — the argument is
+    // the tree's name (a registered/dynamically loaded tree) or a def. A
+    // pause inside resumes through the structural branch machinery.
+    const result = await runTreeTool(exec, child.tool, tool, args, scope, callResume);
+    logEvent(exec, 'tool_call', { child: child.name, tool: child.tool, args, result }, scope);
+    return { value: result, record: { content: result, tool: child.tool, args, toolResults: [result] } };
+  }
   // Result may be a string or a plain JSON object; either is stored in the
   // branch slot verbatim so patterns can consume structured output directly.
   let result;
@@ -673,6 +782,93 @@ async function execCall(exec, child, scope) {
   }
   logEvent(exec, 'tool_call', { child: child.name, tool: child.tool, args, result }, scope);
   return { value: result, record: { content: result, tool: child.tool, args, toolResults: [result] } };
+}
+
+/**
+ * Run a tree tool: the subtree executes like a static branch — child scope,
+ * seeded call args, exported value as the result. On resume the
+ * reconstructed level scope is reused and only missing seed slots are
+ * filled, so a pause inside the subtree continues in place.
+ */
+async function runTreeTool(exec, toolName, tool, args, scope, resumeState = null) {
+  const def = await resolveTreeTool(exec, toolName, tool.tree);
+  const childScope = resumeState
+    ? (resumeState.levelScopes[resumeState.stackIdx] ?? new Scope(scope))
+    : new Scope(scope);
+  if (!resumeState || childScope.parent !== scope) {
+    logEvent(exec, 'scope_init', { scopeId: childScope.id, parentScopeId: scope.id }, childScope);
+  }
+  if (args && typeof args === 'object' && !Array.isArray(args)) {
+    for (const [k, v] of Object.entries(args)) {
+      if (!(k in childScope.slots)) childScope.slots[k] = v;
+    }
+  }
+  const out = await execTree(exec, def, childScope, scope, resumeState);
+  return out.value ?? null;
+}
+
+/** Resolve a tree tool's spec (a name or a def/builder) to a definition. */
+async function resolveTreeTool(exec, toolName, spec) {
+  let def;
+  if (typeof spec === 'string' && spec.length > 0) {
+    def = await loadNamedTree(exec.runtime, spec);
+  } else if (spec && typeof spec === 'object') {
+    def = unwrap(spec);
+  } else {
+    throw new KnitError(`tool '${toolName}': tree must be a registered name or a tree definition`);
+  }
+  if (def.name == null) {
+    def.name = typeof spec === 'string' ? spec : toolName;
+    registerTree(def);
+  }
+  return def;
+}
+
+/**
+ * Resolve a tree by name: the host loader first (workspace trees that were
+ * never built into this process), then the build-time registry. A loader
+ * that returns null/undefined or throws falls through to the registry, so
+ * statically built trees keep working without a loader.
+ */
+async function loadNamedTree(runtime, name) {
+  const loadTree = runtime?.loadTree;
+  const loadError = { message: null };
+  if (typeof loadTree === 'function') {
+    let loaded = null;
+    try {
+      loaded = await loadTree(name);
+    } catch (err) {
+      loadError.message = err instanceof Error ? err.message : String(err);
+      loaded = null;
+    }
+    if (loaded != null) {
+      const def = unwrap(loaded);
+      if (def.name == null) def.name = name;
+      registerTree(def);
+      return def;
+    }
+  }
+  if (Tree.has(name)) return Tree.from(name).def;
+  const detail = loadError.message ? `: ${loadError.message}` : '';
+  throw new KnitError(`tree '${name}' is not registered and loadTree did not provide it${detail}`);
+}
+
+/** Resume-time resolution: the registry is authoritative (hosts reload it), loadTree is the restart fallback. */
+async function resolveTreeForResume(name, runtime) {
+  if (Tree.has(name)) return Tree.from(name).def;
+  const loadTree = runtime?.loadTree;
+  if (typeof loadTree === 'function') {
+    try {
+      const loaded = await loadTree(name);
+      if (loaded != null) {
+        const def = unwrap(loaded);
+        if (def.name == null) def.name = name;
+        registerTree(def);
+        return def;
+      }
+    } catch { /* fall through to the error below */ }
+  }
+  throw new KnitError(`cannot resume: tree '${name}' is not registered (call .name() to register)`);
 }
 
 // Calls runtime.onEmit(value) then continues. No state mutation.
@@ -820,13 +1016,7 @@ function serializeStackEntry(entry, resumeChildStart) {
   };
 }
 
-// Look up a registered tree by name (from the builder's global registry).
-function registryGet(name) {
-  if (!Tree.has(name)) {
-    throw new KnitError(`cannot resume: tree '${name}' is not registered (call .name() to register)`);
-  }
-  return Tree.from(name).def;
-}
+
 
 // A container's value = its last executed child's result.
 function exportOutcome(scope) {
@@ -1037,7 +1227,21 @@ function validateRuntime(def, runtime) {
   const tools = runtime.tools ?? {};
   const missing = [];
   for (const { name, path } of [...toolRefs, ...callRefs]) {
-    if (!tools[name]) missing.push(`${path} references unknown tool '${name}'`);
+    const entry = tools[name];
+    if (!entry) {
+      missing.push(`${path} references unknown tool '${name}'`);
+      continue;
+    }
+    // A tool is either a function (execute) or a tree (tree: name/def) —
+    // never both, and never neither.
+    const hasExecute = typeof entry.execute === 'function';
+    const hasTree = entry.tree !== undefined;
+    if (hasExecute && hasTree) {
+      throw new KnitError(`tool '${name}' (${path}) declares both execute and tree — give it one implementation`);
+    }
+    if (!hasExecute && !hasTree) {
+      throw new KnitError(`tool '${name}' (${path}) needs execute() or a tree`);
+    }
   }
   if (missing.length) {
     const available = Object.keys(tools).join(', ') || 'none';
