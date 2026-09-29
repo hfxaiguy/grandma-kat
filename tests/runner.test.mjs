@@ -1330,3 +1330,150 @@ test('nested tree tools replay every prompt level on resume', async () => {
   assert.equal(handler.calls.length, 2, 'both prompt levels were replayed');
   assert.equal(second.memory.seen, 'inner done', 'results flowed back through both levels');
 });
+
+// ── round trip: record → resume → record ─────────────────────────────────
+// The log is the source of truth for resume; these tests pin the invariant
+// that a second pause resumes from a record written in the resumed life.
+
+test('round trip: record → resume → record resumes from the second record', async () => {
+  const dbPath = tmpLogger();
+  const handler = scripted(['one', 'two']);
+  const pattern = Tree.name('round')
+    .prompt(m => 'first')
+    .human('first_answer')
+    .prompt(m => `second: ${m.branch.first_answer}`)
+    .human('second_answer')
+    .memory('final', m => `done: ${m.branch.second_answer}`);
+
+  const first = await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath }));
+  assert.equal(first.status, 'waiting');
+  assert.equal(first.humanSlot, 'first_answer');
+  assert.equal(handler.calls.length, 1);
+
+  const second = await grandma.knit(pattern, {
+    ...mockRuntime(handler, { logger: dbPath }),
+    _continuation: first.continuation,
+    humanInput: 'world',
+  });
+  assert.equal(second.status, 'waiting');
+  assert.equal(second.humanSlot, 'second_answer');
+  assert.equal(handler.calls.length, 2, 'only the second prompt ran on the first resume');
+
+  const third = await grandma.knit(pattern, {
+    ...mockRuntime(handler, { logger: dbPath }),
+    _continuation: second.continuation,
+    humanInput: 'again',
+  });
+  assert.equal(third.status, undefined);
+  assert.equal(third.memory.final, 'done: again');
+});
+
+test('resume restores slots accumulated across several pauses', async () => {
+  const dbPath = tmpLogger();
+  const handler = scripted([]);
+  const loop = Tree.name('loop')
+    .human('word')
+    .memory(update(), 'count', (m, cur) => cur + 1)
+    .memory(update(), 'words', (m, cur) => [...(cur ?? []), m.branch.word])
+    .until(m => m.branch.word === 'stop', max(10));
+  const pattern = Tree.name('acc')
+    .memory('count', () => 0)
+    .memory('words', () => [])
+    .branch(loop);
+
+  const first = await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath }));
+  assert.equal(first.status, 'waiting');
+  const second = await grandma.knit(pattern, {
+    ...mockRuntime(handler, { logger: dbPath }),
+    _continuation: first.continuation,
+    humanInput: 'a',
+  });
+  assert.equal(second.status, 'waiting');
+  const third = await grandma.knit(pattern, {
+    ...mockRuntime(handler, { logger: dbPath }),
+    _continuation: second.continuation,
+    humanInput: 'b',
+  });
+  assert.equal(third.status, 'waiting');
+  const fourth = await grandma.knit(pattern, {
+    ...mockRuntime(handler, { logger: dbPath }),
+    _continuation: third.continuation,
+    humanInput: 'stop',
+  });
+  assert.equal(fourth.status, undefined);
+  assert.equal(fourth.memory.count, 3, 'count survived all resumes');
+  assert.deepEqual(fourth.memory.words, ['a', 'b', 'stop']);
+});
+
+test('resume after a pause inside a .map() keeps prior items', async () => {
+  const dbPath = tmpLogger();
+  const handler = scripted(['rated-1', 'rated-2']);
+  const item = Tree.name('item')
+    .prompt(m => `rate ${m.item}`)
+    .human('verdict');
+  const pattern = Tree.name('mapper')
+    .map('rated', m => ['x', 'y'], item);
+
+  const first = await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath }));
+  assert.equal(first.status, 'waiting');
+  const second = await grandma.knit(pattern, {
+    ...mockRuntime(handler, { logger: dbPath }),
+    _continuation: first.continuation,
+    humanInput: 'ok',
+  });
+  assert.equal(second.status, 'waiting', 'paused on the second item');
+  assert.equal(handler.calls.length, 2, 'the first item did not re-run');
+  assert.deepEqual(second.humanSlot, 'verdict');
+});
+
+test('branch slot written before a pause survives resume', async () => {
+  const dbPath = tmpLogger();
+  const handler = scripted([]);
+  const sub = Tree.name('sub')
+    .memory('kept', () => 'value')
+    .human('go')
+    .emit(m => ({ text: `kept=${m.branch.kept}` }));
+  const pattern = Tree.name('slot').branch(sub);
+
+  const first = await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath }));
+  assert.equal(first.status, 'waiting');
+  const emitted = [];
+  const second = await grandma.knit(pattern, {
+    ...mockRuntime(handler, { logger: dbPath }),
+    _continuation: first.continuation,
+    humanInput: 'ok',
+    onEmit: (v) => emitted.push(v),
+  });
+  assert.equal(second.status, undefined);
+  assert.deepEqual(emitted, [{ text: 'kept=value' }], 'the branch scope was reconstructed on resume');
+});
+
+test('a map item ending in .human() keeps its export across two resumes', async () => {
+  // Regression: on resume, execTreeInner skipped state.pass++ for the
+  // resumed pass. A scope created in a resumed life logged scope_init at
+  // iteration 0 and its records at iteration 1, so the NEXT resume's
+  // iteration-boundary heuristic wiped its prev — a map item whose last
+  // child is .human() then exported undefined.
+  const dbPath = tmpLogger();
+  const handler = scripted(['x1', 'x2']);
+  const item = Tree.name('tail-item')
+    .prompt(m => `p${m.item}`)
+    .human('h');
+  const pattern = Tree.name('tail-map').map('r', () => [1, 2], item);
+
+  const first = await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath }));
+  assert.equal(first.status, 'waiting');
+  const second = await grandma.knit(pattern, {
+    ...mockRuntime(handler, { logger: dbPath }),
+    _continuation: first.continuation,
+    humanInput: 'v',
+  });
+  assert.equal(second.status, 'waiting', 'paused on the second item');
+  const third = await grandma.knit(pattern, {
+    ...mockRuntime(handler, { logger: dbPath }),
+    _continuation: second.continuation,
+    humanInput: 'v',
+  });
+  assert.equal(third.status, undefined);
+  assert.deepEqual(third.result, ['x1', 'x2'], 'both paused-item exports survived the resumes');
+});

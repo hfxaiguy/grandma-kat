@@ -368,9 +368,16 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
   const savedResume = resumeState; // kept for passing to branch children
 
   for (;;) {
+    // The resumed pass IS a pass: increment it even on resume so events
+    // logged after a pause carry the same iteration as before it. Skipping
+    // the increment logged fresh scopes as iteration 0 followed by their
+    // records at iteration 1, which the resume-time iteration-boundary
+    // heuristic then treated as a NEW pass and wiped their prev.
+    state.pass++;
     if (!resumeState) {
-      state.pass++;
       // .until() rewinds m.prev at the start of each pass (current-path log).
+      // Never on the resumed pass — its prev was reconstructed from the log
+      // and the paused subtree continues from it.
       scope.prev = [];
       scope.prevRaw = [];
     }
