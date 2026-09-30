@@ -27,6 +27,10 @@
 import { knit, resume, KnitError, PauseSignal } from './knit.mjs';
 
 export { Tree } from './tree.mjs';
+// The element form: Tree(Name('agent'), Prompt('ask', …), Branch(sub), …) —
+// the same definitions the chain builds, with markers anywhere among an
+// element's arguments.
+export { Name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Map, Call, Check, Emit, Return, Until } from './records.mjs';
 export { when, update, goback, goto, max, calls, parameters, disableAuto, toolHookBefore, toolHookAfter, isWhen, isUpdate, isGoback, isGoto, isMax, isCalls, isParameters, isDisableAuto, isToolHookBefore, isToolHookAfter, DEFAULT_MAX } from './markers.mjs';
 export { knit, resume, KnitError, PauseSignal } from './knit.mjs';
 export { createLogger } from './logger.mjs';

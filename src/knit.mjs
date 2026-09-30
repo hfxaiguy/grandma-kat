@@ -999,14 +999,14 @@ async function loadNamedTree(runtime, name) {
       return def;
     }
   }
-  if (Tree.has(name)) return Tree.from(name).def;
+  if (Tree.has(name)) return Tree.from(name);
   const detail = loadError.message ? `: ${loadError.message}` : '';
   throw new KnitError(`tree '${name}' is not registered and loadTree did not provide it${detail}`);
 }
 
 /** Resume-time resolution: the registry is authoritative (hosts reload it), loadTree is the restart fallback. */
 async function resolveTreeForResume(name, runtime) {
-  if (Tree.has(name)) return Tree.from(name).def;
+  if (Tree.has(name)) return Tree.from(name);
   const loadTree = runtime?.loadTree;
   if (typeof loadTree === 'function') {
     try {

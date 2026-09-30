@@ -144,11 +144,14 @@ keeps the notation-to-code mapping visible.
   The COND is expanded into a predicate over the referenced slot. If COND
   says "above is true", bind it to the preceding `--` prompt's named result
   and normalize with a helper like `isYes`.
-- `## NAME: PATH` → import the module at the literal `PATH`, build its default
-  tree factory with the current builder API (`{ Tree, when, max, ... }`), and
-  attach the named result as `.branch(importedTree)`. The imported tree must
-  have a stable `.name()` and communicate through ordinary memory, branch
-  results, and visible Grandma KAT events.
+- `## NAME: PATH` → import the module at the literal `PATH` and attach its
+  tree as a branch. A tree that imports grandma-kat itself exports the built
+  tree (`export default Tree(...)` — see "The element form" below); a
+  dependency-free module exports a factory
+  (`export default ({ Tree, when, max, ... }) => Tree(...)`) which the host
+  builds with its own API — hosts accept both. The imported tree must have a
+  stable name and communicate through ordinary memory, branch results, and
+  visible Grandma KAT events.
 - Bare `**` → an unconditional grouping branch. Translate it as
   `.branch(SUBTREE)`. Subtrees do **not** need `.name()`: an unnamed subtree
   takes its child's auto name (`${parent}#${k}`, k = 1-based child position)
@@ -227,6 +230,63 @@ keeps the notation-to-code mapping visible.
   bookkeeping. Otherwise the branch exports its last executed child, which may
   be a memory update or another internal value. Parent branches then consume
   the explicit result through `m.branch.<branch_name>`.
+
+## The element form (JS)
+
+The translation has two spellings with one meaning. The **element form** is
+preferred for new trees; the **chain** stays fully supported:
+
+```js
+// chain — one method call per chunk
+Tree.name('call_outcome')
+  .model('strong')
+  .prompt('response', textFn, max(6))
+  .register('note_phone', 'Save a phone note', body, calls('contacts__get_contact'))
+  .branch(outcomeTree)
+  .until(() => false, max(100000));
+
+// element — the same chunks as arguments of one call
+export default Tree(
+  Name('call_outcome'),
+  Model('strong'),
+  Prompt('response', textFn, max(6)),
+  Register('note_phone', 'Save a phone note', body, calls('contacts__get_contact')),
+  Branch(outcomeTree),
+  Until(() => false, max(100000)),
+);
+```
+
+| Chunk | Element |
+|---|---|
+| `++ NAME` / `++! NAME` | `Memory([when(cond),] [update(),] NAME, fn)` — `update()` makes it the `++!`-style required update |
+| `<<` | `Emit(m => ({ text, buttons? }))` |
+| `>>` | `Human(NAME, [contextFn])` |
+| `!!` | `Needs(NAME)` |
+| `--` | `Prompt([when(cond),] [name,] value, [max(n)], [disableAuto()], [toolHookBefore/After(fn)], [options])` |
+| `->` | `Call([name,] tool, argsFn, [options])` |
+| `#->` | `Register(name, "description", body, [calls(...)], [parameters({ ... })])` |
+| `??` | `Check(checkFn, [goback(n) / goto(target)], [options])` |
+| `@@` | `Map(name, arrayFn, subtree)` |
+| `**` | `Branch([when(cond),] subtree)` |
+| `()` | `Branch(Tree(…, Until(goto(name), cond, max(n))))` — the loop body is the subtree, the closing `()` its trailing `Until` |
+| `##` | `Branch(importedTree)` — see the rule above |
+| tree name | `Name('id')` |
+| model / tools rules | `Model([when(cond),] 'name')` / `Tools([when(cond),] 'a', 'b')` |
+
+Differences from the chain, on purpose:
+
+- A marker sits **anywhere** among the element's arguments —
+  `Prompt('response', textFn, when(cond), max(6))` — while the chain keeps its
+  first-or-second `when()` rule. `when(cond)` is always explicit; there is no
+  default gate.
+- `Model(...)` / `Tools(...)` are **directives, not steps**: they apply from
+  the position where they appear (last match wins up the execution path), so
+  write them wherever the covered steps start — never as a tree header.
+- `Register(...)` is a **declaration** (like `#->`): it never takes `when()`,
+  may sit anywhere in the sequence, and is collected onto the def — visible to
+  the whole subtree, overridable by a child.
+- `Name('id')` names the tree; unnamed subtrees still auto-name
+  (`${parent}#${k}`) as usual, so `Branch(Tree(...))` needs no `Name`.
 
 ## Known gotcha this notation forces you to face
 
