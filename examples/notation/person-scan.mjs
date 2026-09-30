@@ -32,7 +32,7 @@
 //     bare .prompt(), so the `**` condition can reference its result by name
 //     instead of a fragile auto-name like `#1`.
 
-import { Tree, when } from "../../src/index.mjs";
+import grandma, { Tree, when, Name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Map, Call, Check, Emit, Return, Until } from "../../src/index.mjs";
 
 // System prompt for the yes/no detection step: the model only judges
 // presence of personal information, nothing else.
@@ -52,37 +52,37 @@ const isYes = (v) => typeof v === "string" && /^\s*yes\b/i.test(v.trim());
 // The tree. Pass it to `grandma.knit(pattern, runtime)`. The runtime must
 // provide the model(s) and, when several greeting turns run in one session,
 // the `mem_global` seed (see the runner/smoke test).
-export const pattern = Tree.name("person-scan")
-  .model("default")
+export const pattern = Tree(Name("person-scan")
+  , Model("default")
 
   // `<< output_msg: "Hi. This is grandpa-bob"` → .emit() the verbatim text.
-  .emit(() => ({ text: "Hi. This is grandpa-bob" }))
+  , Emit(() => ({ text: "Hi. This is grandpa-bob" }))
 
   // `>> human: input_1` → pause for the human's message.
-  .human("input_1")
+  , Human("input_1")
 
   // `-- prompt: does input_1 contain information about a person` →
   // a named branch wrapping the detect-person prompt. The bare seed text is
   // expanded here: a system prompt, the injected input_1, and a strict
   // yes/no format the next gate depends on.
-  .branch(
-    Tree.name("scan_input").prompt((m) => [
+  , Branch(
+    Tree(Name("scan_input"), Prompt((m) => [
       { role: "system", content: DETECT_SYSTEM },
       {
         role: "user",
         content: `Input:\n${m.branch.input_1}\n\nDoes this contain information about a person? Answer ONLY "yes" or "no".`,
       },
-    ]),
+    ])),
   )
 
   // `** branch: if above is true, run:` → a branch gated on scan_input being
   // "yes". "above" binds to scan_input; isYes normalizes the answer.
-  .branch(
+  , Branch(
     when((m) => isYes(m.branch.scan_input)),
-    Tree.name("summarize_people")
+    Tree(Name("summarize_people")
       // `|| prompt: how many people and what kind of information...` →
       // the child prompt, expanded to extract counts + per-person info.
-      .prompt((m) => [
+      , Prompt((m) => [
         { role: "system", content: SUMMARY_SYSTEM },
         {
           role: "user",
@@ -90,5 +90,5 @@ export const pattern = Tree.name("person-scan")
             m.branch.input_1
           }\n\nHow many people are mentioned, and what information is present about each?`,
         },
-      ]),
-  );
+      ])),
+  ));

@@ -1,6 +1,6 @@
-// The element surface — the executable spec: Tree(element, …) builds the same
-// definitions the chain builds (byte for byte, so definition ids and host
-// session hashes do not churn), and element-built trees knit like any other.
+// The element surface — the executable spec: Tree(element, …) builds a tree
+// definition, the record shapes are the contract (definition ids and host
+// session hashes are computed over the def), and the trees knit end to end.
 //
 // Scripted against mock models — no live LLM.
 
@@ -9,19 +9,15 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import grandma, {
-  Tree, Name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch,
-  Map, Call, Check, Emit, Return, Until,
-  when, max, update, calls, parameters, disableAuto, toolHookBefore, toolHookAfter,
-  goback, goto,
-} from '../src/index.mjs';
+import grandma, { Tree, Name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Map, Call, Check, Emit, Return, Until, when, max, update, calls, parameters, disableAuto, toolHookBefore, toolHookAfter, goback, goto } from '../src/index.mjs';
 import { scripted, mockRuntime, tool } from './helpers.mjs';
 
-// ── both front-ends build the same definition ──────────────────────────────
+// ── the def shape is the contract ──────────────────────────────────────────
+//
+// Definition ids and host session hashes are computed over the def, so the
+// record shapes below must not churn: no optional key appears unless used.
 
-test('a kitchen-sink element tree equals the chain tree, structurally', () => {
-  // Every function is defined once and reused on both sides: the definitions
-  // hold live functions, so equality only holds for the same references.
+test('the kitchen sink builds one tree with the exact shape', () => {
   const f = {
     cond: () => true,
     text: () => 'hi',
@@ -39,34 +35,9 @@ test('a kitchen-sink element tree equals the chain tree, structurally', () => {
   };
   const schema = { type: 'object', properties: { q: { type: 'string' } } };
   const flow = goback(1, max(3));
-  const subChain = Tree.name('sub').prompt('leaf', f.text);
-  const subElement = Tree(Name('sub'), Prompt('leaf', f.text));
+  const sub = Tree(Name('sub'), Prompt('leaf', f.text));
 
-  const chain = Tree.name('sink')
-    .model('strong')
-    .model(when(f.cond), 'cheap')
-    .tools('a', 'b')
-    .tools(when(f.cond), 'c')
-    .needs('input')
-    .human('ask')
-    .human(when(f.cond), 'gated_ask', f.context)
-    .memory('slot', f.mem)
-    .memory(update(), 'slot', f.memUpdate)
-    .memoryUpdate('slot', f.memUpdate)
-    .emit(f.emit)
-    .call('t', 'tool', f.callArgs)
-    .call('named', 'tool2', f.callArgs, { tools: ['a'] })
-    .prompt('response', 'static text')
-    .prompt(max(6), toolHookBefore(f.hook), toolHookAfter(f.hook), disableAuto(), 'p2', f.text, { tools: ['b'] })
-    .check(f.check, flow)
-    .register('lookup', 'find one', f.body, calls('echo'), parameters(schema))
-    .branch(when(f.cond), subChain)
-    .map('items', f.array, subChain)
-    .return(f.give)
-    .until(f.until, max(5))
-    .until(goto('ask'), f.until, max(5));
-
-  const elements = Tree(
+  const tree = Tree(
     Name('sink'),
     Model('strong'),
     Model(when(f.cond), 'cheap'),
@@ -85,31 +56,64 @@ test('a kitchen-sink element tree equals the chain tree, structurally', () => {
     Prompt(max(6), toolHookBefore(f.hook), toolHookAfter(f.hook), disableAuto(), 'p2', f.text, { tools: ['b'] }),
     Check(f.check, flow),
     Register('lookup', 'find one', f.body, calls('echo'), parameters(schema)),
-    Branch(when(f.cond), subElement),
-    Map('items', f.array, subElement),
+    Branch(when(f.cond), sub),
+    Map('items', f.array, sub),
     Return(f.give),
     Until(f.until, max(5)),
     Until(goto('ask'), f.until, max(5)),
   );
 
-  assert.deepStrictEqual(elements.def, chain.def);
+  assert.deepEqual(tree.children.map((c) => c.kind), [
+    'human', 'human', 'memory', 'memoryUpdate', 'memoryUpdate', 'emit', 'call',
+    'call', 'prompt', 'prompt', 'check', 'branch', 'map', 'return', 'until', 'until',
+  ]);
+  assert.deepEqual(
+    tree.models.map((r) => ({ gated: typeof r.cond === 'function', value: r.value })),
+    [{ gated: false, value: 'strong' }, { gated: true, value: 'cheap' }],
+  );
+  assert.deepEqual(tree.tools.map((r) => r.value), [['a', 'b'], ['c']]);
+  assert.deepEqual(tree.needs, ['input']);
+
+  const plain = tree.children[8];
+  assert.equal(plain.gate, null);
+  assert.ok(!('auto' in plain), 'a plain prompt keeps its exact JSON shape');
+  assert.deepEqual(plain.options, {});
+
+  const configured = tree.children[9];
+  assert.deepEqual(Object.keys(configured.auto), ['max', 'disabled', 'hooks']);
+  assert.equal(configured.auto.max.count, 6);
+  assert.equal(configured.auto.disabled, true);
+  assert.equal(configured.auto.hooks.before[0].fn, f.hook);
+  assert.deepEqual(configured.options, { tools: ['b'] });
+
+  assert.equal(tree.children[3].gate, null, 'untouched children keep gate: null');
+  assert.equal(tree.children[11].tree, sub, 'Branch holds the subtree by reference');
+  assert.equal(tree.children[13].fn, f.give);
+  assert.equal(tree.children[14].jumpType, null);
+  assert.equal(tree.children[15].jumpType, 'goto');
+  assert.equal(tree.children[15].jumpTarget, 'ask');
+
+  assert.deepEqual(Object.keys(tree.registers[0]), ['name', 'description', 'parameters', 'calls', 'fn']);
+  assert.equal(tree.registers[0].fn, f.body);
+  assert.deepEqual(tree.registers[0].calls, ['echo']);
+  assert.deepEqual(tree.registers[0].parameters, schema);
 });
 
 test('a def without registers never grows the registers key', () => {
   const text = () => 'x';
-  const chain = Tree.name('plain').prompt('p', text);
-  const elements = Tree(Name('plain'), Prompt('p', text));
-  assert.deepStrictEqual(elements.def, chain.def);
-  assert.ok(!('registers' in elements.def));
+  const bare = Tree(Name('plain'), Prompt('p', text));
+  const tooled = Tree(Name('plain'), Prompt('p', text), Register('lookup', 'd', () => 'x'));
+  assert.ok(!('registers' in bare), 'a def that never registers keeps its exact JSON shape');
+  assert.equal(tooled.registers.length, 1);
 });
 
 test('element directives patch the definition', () => {
   const tree = Tree(Name('el_directives'), Model('cheap'), Tools('a', 'b'), Needs('input'));
   assert.ok(Tree.has('el_directives'), 'Name(...) registers the tree');
-  assert.equal(Tree.from('el_directives').def, tree.def);
-  assert.deepEqual(tree.def.models, [{ cond: null, value: 'cheap' }]);
-  assert.deepEqual(tree.def.tools, [{ cond: null, value: ['a', 'b'] }]);
-  assert.deepEqual(tree.def.needs, ['input']);
+  assert.equal(Tree.from('el_directives'), tree);
+  assert.deepEqual(tree.models, [{ cond: null, value: 'cheap' }]);
+  assert.deepEqual(tree.tools, [{ cond: null, value: ['a', 'b'] }]);
+  assert.deepEqual(tree.needs, ['input']);
 });
 
 // ── the element surface fails loudly at build time ─────────────────────────

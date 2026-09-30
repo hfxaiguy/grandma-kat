@@ -52,7 +52,7 @@
 //   - Each step can use different tools — the address-checking step needs
 //     no tools at all, while the pick-action step needs navigate and click.
 
-import { Tree, when, goback, max, disableAuto } from '../../src/index.mjs';
+import grandma, { Tree, when, goback, max, update, disableAuto, Name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Map, Call, Check, Emit, Return, Until } from '../../src/index.mjs';
 
 // The system prompt tells the AI what kind of assistant it is. Think of it
 // as setting the AI's "job title" — it's a web navigation helper that
@@ -102,54 +102,54 @@ Answer: yes or no
 // 5. On "yes" → act on that element. On "no" → try the next one.
 // 6. Loop until the address is found or we've tried 3 times
 
-export const pattern = Tree.name("find-address")
-  .model("default")
+export const pattern = Tree(Name("find-address")
+  , Model("default")
 
   // STEP 1: Navigate to the starting URL (if one was provided).
-  .call(
+  , Call(
     when((m) => typeof m.url === "string" && m.url.length > 0),
     "navigate",
     (m) => ({ url: m.url }),
   )
 
   // STEP 2: Grab the page content (text, URL, title) using the snapshot tool.
-  .call("get_page", "snapshot", () => ({}))
+  , Call("get_page", "snapshot", () => ({}))
 
   // STEP 3: Ask the AI "Is there an address on this page?"
-  .branch(
-    Tree.name("check_address").prompt((m) => [
+  , Branch(
+    Tree(Name("check_address"), Prompt((m) => [
       { role: "system", content: SYSTEM_PROMPT_NO_TOOLS },
       {
         role: "user",
         content: `Page text:\n\n${m.branch.get_page?.textPreview ?? ""}`,
       },
       { role: "user", content: CHECK_ADDRESS_PROMPT },
-    ]),
+    ])),
   )
 
-  .branch(
+  , Branch(
     when((m) => isNo(m.branch.check_address) && !m.branch.get_company_start),
-    Tree.name("get_company_start").prompt((m) => [
+    Tree(Name("get_company_start"), Prompt((m) => [
       { role: "system", content: SYSTEM_PROMPT_NO_TOOLS },
       {
         role: "user",
         content: `Page title: ${m.branch.get_page?.title ?? ""}\nPage text: ${(m.branch.get_page?.textPreview ?? "").slice(0, 1000)}\n\nWhat is the name of the company or organization on this page? Answer with ONLY the name, nothing else.`,
       },
-    ]),
+    ])),
   )
 
   // Track which elements we've already tried (persists across loop iterations).
-  .memory(when((m) => isNo(m.branch.check_address)), "tried_elements", (m, current) => current || [])
+  , Memory(when((m) => isNo(m.branch.check_address)), "tried_elements", (m, current) => current || [])
 
   // STEP 4: If the address wasn't found, try to find it by clicking around.
-  .branch(
+  , Branch(
     when((m) => isNo(m.branch.check_address)),
-    Tree.name("try_find")
+    Tree(Name("try_find")
       // 4b: Scan the page for clickable elements.
-      .call("scan_clickables", "scan_clickables", () => ({}))
+      , Call("scan_clickables", "scan_clickables", () => ({}))
 
       // 4c: Filter out non-useful elements (body, script, etc.).
-      .memory("filtered", (m) =>
+      , Memory("filtered", (m) =>
         (m.branch.scan_clickables ?? []).filter(
           (el) => !SKIP_TAGS.has(String(el.tag || "").toLowerCase()),
         ),
@@ -158,10 +158,10 @@ export const pattern = Tree.name("find-address")
       // 4d: Try elements one at a time. Pick the next untried element,
       // ask the AI if it would lead to the address. On "yes" → return it.
       // On "no" → try the next element.
-      .branch(
-        Tree.name("try_element")
+      , Branch(
+        Tree(Name("try_element")
           // Pick the first element not yet tried.
-          .memory("current", (m) => {
+          , Memory("current", (m) => {
             const tried = m.branch.tried_elements ?? [];
             return (
               (m.branch.filtered ?? []).find(
@@ -170,7 +170,7 @@ export const pattern = Tree.name("find-address")
             );
           })
           // Ask the AI: would clicking this find the address?
-          .prompt("try_interact", (m) => {
+          , Prompt("try_interact", (m) => {
             const el = m.branch.current;
             if (!el)
               return [{ role: "user", content: "No more elements to try." }];
@@ -195,34 +195,34 @@ export const pattern = Tree.name("find-address")
             ];
           })
           // Record this element as tried (so we skip it in future iterations).
-          .memoryUpdate("tried_elements", (m, cur) => {
+          , Memory(update(), "tried_elements", (m, cur) => {
             const el = m.branch.current;
             return [...(cur ?? []), el?.selector].filter(Boolean);
           })
           
           // If the answer is "yes", return the element. Tree stops.
-          .return((m) => {
+          , Return((m) => {
             const answer = m.try_interact?.trim().toLowerCase();
             if (answer?.startsWith("yes")) return m.branch.current;
           })
 
           // If "no", loop to the next element.
-          .until((m) => {
+          , Until((m) => {
             // Stop if we got a yes (current was returned) or no more elements.
             const current = m.branch.current;
             return current == null;
-          }, max(10)),
+          }, max(10))),
       )
 
       // 4e: Act on the chosen element. Navigate to its URL or click it.
-      .branch(
-        Tree.name("pick_action")
-          .tools("navigate", "click")
+      , Branch(
+        Tree(Name("pick_action")
+          , Tools("navigate", "click")
           // disableAuto: this step acts on exactly ONE choice per loop
           // iteration — the tree drives the loop (check + goback below and
           // the outer .until), it must not feed tool results back and let
           // the model keep calling tools inside the prompt.
-          .prompt(disableAuto(), (m) => {
+          , Prompt(disableAuto(), (m) => {
             const el = m.branch.try_element;
             if (!el)
               return [
@@ -246,7 +246,7 @@ export const pattern = Tree.name("find-address")
               },
             ];
           })
-          .check(
+          , Check(
             (m) => {
               const tc = m.raw.prev[0]?.toolCalls?.[0];
               const tr = m.raw.prev[0]?.toolResults?.[0];
@@ -272,11 +272,11 @@ export const pattern = Tree.name("find-address")
               1,
               max(3, (m) => `pick_action gave up: ${m.error}`),
             ),
-          ),
+          )),
       )
 
       // 4f: Wait for the page to load after clicking/navigating.
-      .call(
+      , Call(
         when((m) => {
           const tc = m.raw.branch.pick_action?.children?.['pick_action#1']?.toolCalls?.[0];
           return Boolean(tc && tc.name);
@@ -284,16 +284,16 @@ export const pattern = Tree.name("find-address")
         "wait_for_load",
         "wait_for_load",
         () => ({ timeoutMs: 10000 }),
-      ),
+      )),
   )
 
   // THE LOOP: Keep going until the address is found, or give up after
   // 3 full attempts.
-  .until(
+  , Until(
     (m) => !isNo(m.branch.check_address),
     max(
       3,
       (m) =>
         `find-address: gave up after 3 iterations: ${m.error ?? "address not found"}`,
     ),
-  );
+  ));

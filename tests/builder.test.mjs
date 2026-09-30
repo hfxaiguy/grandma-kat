@@ -1,51 +1,57 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Tree, when, update, goback, max, calls, parameters } from '../src/index.mjs';
+import { Tree, when, update, goback, max, calls, parameters, Name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Map, Call, Check, Emit, Return, Until } from '../src/index.mjs';
 
-test('builder methods are immutable (copy-on-write)', () => {
-  const base = Tree.name('base').prompt(m => 'a');
-  const t1 = base.prompt(m => 'b');
-  const t2 = base.prompt(m => 'c');
+test('definitions are immutable: building never mutates shared trees', () => {
+  const sub = Tree(Name('sub'), Prompt(m => 'x'));
+  const frozen = JSON.stringify(sub);
+  const parent = Tree(Name('p'), Branch(sub), Prompt(m => 'y'));
+  const sibling = Tree(Name('p'), Branch(sub), Prompt(m => 'z'));
 
-  assert.equal(base.def.children.length, 1);
-  assert.equal(t1.def.children.length, 2);
-  assert.equal(t2.def.children.length, 2);
-  assert.notEqual(t1.def.children[1].prompt, t2.def.children[1].prompt);
+  assert.equal(JSON.stringify(sub), frozen, 'the shared subtree is untouched');
+  assert.equal(parent.children.length, 2);
+  assert.equal(sibling.children.length, 2);
+  assert.notEqual(parent.children[1].prompt, sibling.children[1].prompt);
+  assert.equal(parent.children[0].tree, sub, 'the branch holds the subtree by reference');
 });
 
-test('.name() validates names', () => {
-  assert.throws(() => Tree.name('has#hash'), /reserved/);
-  assert.throws(() => Tree.name(''), /non-empty/);
+test('Name() validates names', () => {
+  assert.throws(() => Tree(Name('has#hash')), /reserved/);
+  assert.throws(() => Tree(Name('')), /non-empty/);
 });
 
-test('.branch() accepts an unnamed tree', () => {
-  assert.doesNotThrow(() => Tree.name('p').branch(Tree.name('c').prompt(m => 'x')));
-  // Tree itself is an unnamed builder: Tree.prompt(...) needs no .name().
-  const b = Tree.name('parent').branch(Tree.prompt(m => 'x'));
-  assert.equal(b.def.children[0].name, null);
-  assert.equal(b.def.children[0].tree.name, null);
+test('Branch() accepts an unnamed tree', () => {
+  assert.doesNotThrow(() => Tree(Name('p'), Branch(Tree(Name('c'), Prompt(m => 'x')))));
+  // An unnamed tree is just Tree(...) without Name().
+  const b = Tree(Name('parent'), Branch(Tree(Prompt(m => 'x'))));
+  assert.equal(b.children[0].name, null);
+  assert.equal(b.children[0].tree.name, null);
   // knit() assigns the name at build time (covered in runner.test.mjs).
 });
 
 test('bare function in condition slot throws "did you mean when()?"', () => {
   assert.throws(
-    () => Tree.name('a').prompt(m => 'x', m => 'y'),
+    () => Tree(Name('a'), Prompt(m => 'x', m => 'y')),
     /did you mean when\(\)?/);
   assert.throws(
-    () => Tree.name('a').model(m => true, 'cheap'),
+    () => Tree(Name('a'), Model(m => true, 'cheap')),
     /did you mean when\(\)?/);
   // single-arg function is the value, not a condition — fine
-  assert.doesNotThrow(() => Tree.name('a').prompt(m => 'x'));
-  assert.doesNotThrow(() => Tree.name('a').until(m => true));
+  assert.doesNotThrow(() => Tree(Name('a'), Prompt(m => 'x')));
+  assert.doesNotThrow(() => Tree(Name('a'), Until(m => true)));
 });
 
-test('when() works in first and second position', () => {
-  const t1 = Tree.name('a').prompt(when(m => true), m => 'x');
-  assert.equal(typeof t1.def.children[0].gate, 'function');
+test('when() works anywhere among the arguments', () => {
+  const t1 = Tree(Name('a'), Prompt(when(m => true), m => 'x'));
+  assert.equal(typeof t1.children[0].gate, 'function');
 
-  const t2 = Tree.name('a').prompt('named', when(m => true), m => 'x');
-  assert.equal(t2.def.children[0].name, 'named');
-  assert.equal(typeof t2.def.children[0].gate, 'function');
+  const t2 = Tree(Name('a'), Prompt('named', when(m => true), m => 'x'));
+  assert.equal(t2.children[0].name, 'named');
+  assert.equal(typeof t2.children[0].gate, 'function');
+
+  const t3 = Tree(Name('a'), Prompt('named', m => 'x', when(m => true)));
+  assert.equal(t3.children[0].name, 'named');
+  assert.equal(typeof t3.children[0].gate, 'function');
 });
 
 test('markers validate their arguments', () => {
@@ -58,202 +64,191 @@ test('markers validate their arguments', () => {
   assert.doesNotThrow(() => goback(1, max(3)));
 });
 
-test('.check() defaults to goback(1) with default max', () => {
-  const t = Tree.name('a').prompt(m => 'x').check(m => true);
-  const check = t.def.children[1];
+test('Check() defaults to goback(1) with default max', () => {
+  const t = Tree(Name('a'), Prompt(m => 'x'), Check(m => true));
+  const check = t.children[1];
   assert.equal(check.kind, 'check');
   assert.equal(check.flow.n, 1);
   assert.equal(check.flow.max.count, 3);
 });
 
-test('.until() parses condition and max', () => {
-  const t = Tree.name('a').prompt(m => 'x').until(m => true, max(5));
-  const untilChild = t.def.children[1];
+test('Until() parses condition and max', () => {
+  const t = Tree(Name('a'), Prompt(m => 'x'), Until(m => true, max(5)));
+  const untilChild = t.children[1];
   assert.equal(untilChild.kind, 'until');
   assert.equal(untilChild.max.count, 5);
-  assert.throws(() => Tree.name('a').prompt(m => 'x').until('nope'), /function/);
+  assert.throws(() => Tree(Name('a'), Prompt(m => 'x'), Until('nope')), /function/);
 });
 
-test('.needs() dedupes', () => {
-  const t = Tree.name('a').needs('x', 'y', 'x');
-  assert.deepEqual(t.def.needs, ['x', 'y']);
+test('Needs() dedupes', () => {
+  const t = Tree(Name('a'), Needs('x', 'y', 'x'));
+  assert.deepEqual(t.needs, ['x', 'y']);
 });
 
-test('.register() validates its arguments', () => {
-  const ok = Tree.name('r1').register('lookup', 'Find a person', () => 'x');
-  assert.equal(ok.def.registers.length, 1);
-  assert.equal(ok.def.registers[0].name, 'lookup');
-  assert.equal(ok.def.registers[0].description, 'Find a person');
-  assert.deepEqual(ok.def.registers[0].parameters, { type: 'object', properties: {} });
+test('Register() validates its arguments', () => {
+  const ok = Tree(Name('r1'), Register('lookup', 'Find a person', () => 'x'));
+  assert.equal(ok.registers.length, 1);
+  assert.equal(ok.registers[0].name, 'lookup');
+  assert.equal(ok.registers[0].description, 'Find a person');
+  assert.deepEqual(ok.registers[0].parameters, { type: 'object', properties: {} });
 
-  assert.throws(() => Tree.name('r2').register('', 'd', () => 'x'), /tool name/);
-  assert.throws(() => Tree.name('r2').register('has#hash', 'd', () => 'x'), /reserved/);
-  assert.throws(() => Tree.name('r2').register('n', '', () => 'x'), /description/);
-  assert.throws(() => Tree.name('r2').register('n', 'd', 'not a fn'), /tool function/);
+  assert.throws(() => Tree(Name('r2'), Register('', 'd', () => 'x')), /tool name/);
+  assert.throws(() => Tree(Name('r2'), Register('has#hash', 'd', () => 'x')), /reserved/);
+  assert.throws(() => Tree(Name('r2'), Register('n', '', () => 'x')), /description/);
+  assert.throws(() => Tree(Name('r2'), Register('n', 'd', 'not a fn')), /tool function/);
   assert.throws(
-    () => Tree.name('r2').register(when(() => true), 'n', 'd', () => 'x'),
+    () => Tree(Name('r2'), Register(when(() => true), 'n', 'd', () => 'x')),
     /declarations/);
-  assert.throws(() => Tree.name('r2').register('n', 'd', () => 'x', { bogus: 1 }), /unexpected argument/);
-  assert.throws(() => Tree.name('r2').register('n', 'd', () => 'x', parameters([])), /JSON-schema/);
-  assert.throws(() => Tree.name('r2').register('n', 'd', () => 'x', calls('')), /non-empty/);
+  assert.throws(() => Tree(Name('r2'), Register('n', 'd', () => 'x', { bogus: 1 })), /unexpected argument/);
+  assert.throws(() => Tree(Name('r2'), Register('n', 'd', () => 'x', parameters([]))), /JSON-schema/);
+  assert.throws(() => Tree(Name('r2'), Register('n', 'd', () => 'x', calls(''))), /non-empty/);
   assert.throws(
-    () => Tree.name('r2').register('n', 'd', () => 'x', parameters({}), parameters({})),
+    () => Tree(Name('r2'), Register('n', 'd', () => 'x', parameters({}), parameters({}))),
     /only appear once/);
-  const marked = Tree.name('r2').register(
-    'n', 'd', () => 'x', calls('sql_query'), parameters({ type: 'object', properties: { q: { type: 'string' } } }));
-  assert.deepEqual(marked.def.registers[0].calls, ['sql_query']);
-  assert.deepEqual(marked.def.registers[0].parameters, { type: 'object', properties: { q: { type: 'string' } } });
+  const marked = Tree(Name('r2'), Register(
+    'n', 'd', () => 'x', calls('sql_query'), parameters({ type: 'object', properties: { q: { type: 'string' } } })));
+  assert.deepEqual(marked.registers[0].calls, ['sql_query']);
+  assert.deepEqual(marked.registers[0].parameters, { type: 'object', properties: { q: { type: 'string' } } });
 });
 
-test('.register() is copy-on-write and absent until used', () => {
-  const base = Tree.name('r3').prompt(m => 'x');
-  assert.ok(!('registers' in base.def), 'a def that never registers keeps its exact JSON shape');
-  const withTool = base.register('lookup', 'Find a person', () => 'x');
-  assert.equal(base.def.registers, undefined);
-  assert.equal(withTool.def.registers.length, 1);
-  const withTwo = withTool.register('other', 'Another', () => 'y');
-  assert.equal(withTool.def.registers.length, 1);
-  assert.equal(withTwo.def.registers.length, 2);
+test('registers are absent until used and never shared', () => {
+  const base = Tree(Name('r3'), Prompt(m => 'x'));
+  assert.ok(!('registers' in base), 'a def that never registers keeps its exact JSON shape');
+  const withTool = Tree(Name('r3'), Prompt(m => 'x'), Register('lookup', 'Find a person', () => 'x'));
+  assert.equal(base.registers, undefined, 'the earlier definition is untouched');
+  assert.equal(withTool.registers.length, 1);
+  const withTwo = Tree(
+    Name('r3'), Prompt(m => 'x'),
+    Register('lookup', 'Find a person', () => 'x'),
+    Register('other', 'Another', () => 'y'));
+  assert.equal(withTool.registers.length, 1);
+  assert.equal(withTwo.registers.length, 2);
 });
 
 test('prompt options validate', () => {
-  assert.throws(() => Tree.name('a').prompt(m => 'x', { bogus: 1 }), /unknown option/);
-  assert.throws(() => Tree.name('a').prompt(m => 'x', { tools: 'nope' }), /array of strings/);
-  assert.doesNotThrow(() => Tree.name('a').prompt(m => 'x', { tools: [] }));
+  assert.throws(() => Tree(Name('a'), Prompt(m => 'x', { bogus: 1 })), /unknown option/);
+  assert.throws(() => Tree(Name('a'), Prompt(m => 'x', { tools: 'nope' })), /array of strings/);
+  assert.doesNotThrow(() => Tree(Name('a'), Prompt(m => 'x', { tools: [] })));
 });
 
 test('registry: Tree.from() retrieves named trees', () => {
-  Tree.name('registered').prompt(m => 'x');
+  Tree(Name('registered'), Prompt(m => 'x'));
   assert.equal(Tree.has('registered'), true);
   const t = Tree.from('registered');
-  assert.equal(t.def.name, 'registered');
-  // registry holds the latest definition (children added after .name())
-  assert.equal(t.def.children.length, 1);
+  assert.equal(t.name, 'registered');
+  // The registry holds the latest definition built under that name.
+  assert.equal(t.children.length, 1);
   assert.throws(() => Tree.from('nonexistent'), /no tree registered/);
 });
 
-test('.call() parses tool name and args', () => {
-  const t = Tree.name('a').call('navigate', m => ({ url: 'x' }));
-  const call = t.def.children[0];
+test('Call() parses tool name and args', () => {
+  const t = Tree(Name('a'), Call('navigate', m => ({ url: 'x' })));
+  const call = t.children[0];
   assert.equal(call.kind, 'call');
   assert.equal(call.tool, 'navigate');
   assert.equal(call.name, null);
-  assert.throws(() => Tree.name('a').call(), /tool name/);
+  assert.throws(() => Tree(Name('a'), Call()), /tool name/);
 });
 
-test('.call() supports optional name', () => {
-  const t = Tree.name('a').call('get_page', 'exec_js', () => ({ code: '1' }));
-  const c = t.def.children[0];
+test('Call() supports optional name', () => {
+  const t = Tree(Name('a'), Call('get_page', 'exec_js', () => ({ code: '1' })));
+  const c = t.children[0];
   assert.equal(c.kind, 'call');
   assert.equal(c.name, 'get_page');
   assert.equal(c.tool, 'exec_js');
 
-  const g = Tree.name('b').call(when(m => true), 'get_page', 'exec_js', () => ({ code: '2' }));
-  const gc = g.def.children[0];
+  const g = Tree(Name('b'), Call(when(m => true), 'get_page', 'exec_js', () => ({ code: '2' })));
+  const gc = g.children[0];
   assert.equal(gc.name, 'get_page');
   assert.equal(gc.tool, 'exec_js');
   assert.equal(typeof gc.gate, 'function');
 });
 
-test('.memory() parses name and fn', () => {
-  const t = Tree.name('a').prompt(m => 'x').memory('tried', (m, cur) => [...cur ?? [], m.prev[0]]);
-  const mem = t.def.children[1];
+test('Memory() parses name and fn', () => {
+  const t = Tree(Name('a'), Prompt(m => 'x'), Memory('tried', (m, cur) => [...cur ?? [], m.prev[0]]));
+  const mem = t.children[1];
   assert.equal(mem.kind, 'memory');
   assert.equal(mem.name, 'tried');
   assert.equal(typeof mem.fn, 'function');
   assert.equal(mem.gate, null);
 });
 
-test('.memory() supports when() gate', () => {
-  const t = Tree.name('a').prompt(m => 'x').memory(when(m => true), 'tried', (m, cur) => cur ?? []);
-  const mem = t.def.children[1];
+test('Memory() supports when() gate', () => {
+  const t = Tree(Name('a'), Prompt(m => 'x'), Memory(when(m => true), 'tried', (m, cur) => cur ?? []));
+  const mem = t.children[1];
   assert.equal(mem.kind, 'memory');
   assert.equal(mem.name, 'tried');
   assert.equal(typeof mem.gate, 'function');
 });
 
-test('.memory() validates arguments', () => {
-  assert.throws(() => Tree.name('a').memory(), /slot name/);
-  assert.throws(() => Tree.name('a').memory('x'), /function/);
-  assert.throws(() => Tree.name('a').memory('has#hash', m => m), /reserved/);
+test('Memory() validates arguments', () => {
+  assert.throws(() => Tree(Name('a'), Memory()), /slot name/);
+  assert.throws(() => Tree(Name('a'), Memory('x')), /function/);
+  assert.throws(() => Tree(Name('a'), Memory('has#hash', m => m)), /reserved/);
 });
 
-test('.memory(update(), name, fn) parses as a memoryUpdate leaf', () => {
-  const t = Tree.name('a').prompt(m => 'x').memory(update(), 'tried', (m, cur) => [...cur, m.prev[0]]);
-  const mem = t.def.children[1];
+test('Memory(update(), name, fn) parses as a memoryUpdate leaf', () => {
+  const t = Tree(Name('a'), Prompt(m => 'x'), Memory(update(), 'tried', (m, cur) => [...cur, m.prev[0]]));
+  const mem = t.children[1];
   assert.equal(mem.kind, 'memoryUpdate');
   assert.equal(mem.name, 'tried');
   assert.equal(typeof mem.fn, 'function');
   assert.equal(mem.gate, null);
 });
 
-test('.memory(name, update(), fn) parses as a memoryUpdate leaf too', () => {
-  const t = Tree.name('a').prompt(m => 'x').memory('tried', update(), (m, cur) => cur);
-  assert.equal(t.def.children[1].kind, 'memoryUpdate');
-  assert.equal(t.def.children[1].name, 'tried');
+test('Memory(name, update(), fn) parses as a memoryUpdate leaf too', () => {
+  const t = Tree(Name('a'), Prompt(m => 'x'), Memory('tried', update(), (m, cur) => cur));
+  assert.equal(t.children[1].kind, 'memoryUpdate');
+  assert.equal(t.children[1].name, 'tried');
 });
 
-test('.memory(update(), …) supports the when() gate', () => {
-  const t = Tree.name('a').prompt(m => 'x').memory(when(m => true), update(), 'tried', (m, cur) => cur);
-  const mem = t.def.children[1];
+test('Memory(update(), …) supports the when() gate', () => {
+  const t = Tree(Name('a'), Prompt(m => 'x'), Memory(when(m => true), update(), 'tried', (m, cur) => cur));
+  const mem = t.children[1];
   assert.equal(mem.kind, 'memoryUpdate');
   assert.equal(typeof mem.gate, 'function');
 });
 
-test('.memory(update(), …) validates arguments', () => {
-  assert.throws(() => Tree.name('a').memory(update()), /slot name/);
-  assert.throws(() => Tree.name('a').memory(update(), 'x'), /fn must be a function/);
-  assert.throws(() => Tree.name('a').memory(update(), 'has#hash', m => m), /reserved/);
-  assert.throws(() => Tree.name('a').memory('a', 'b', update(), m => m), /first or second argument/);
-});
-
-test('.memoryUpdate() parses name and fn', () => {
-  const t = Tree.name('a').prompt(m => 'x').memoryUpdate('tried', (m, cur) => [...cur, m.prev[0]]);
-  const mem = t.def.children[1];
+test('Memory(update(), when(…), …) also gates — markers go anywhere', () => {
+  const t = Tree(Name('a'), Prompt(m => 'x'), Memory(update(), when(m => true), 'tried', (m, cur) => cur));
+  const mem = t.children[1];
   assert.equal(mem.kind, 'memoryUpdate');
-  assert.equal(mem.name, 'tried');
-  assert.equal(typeof mem.fn, 'function');
-  assert.equal(mem.gate, null);
-});
-
-test('.memoryUpdate() supports when() gate', () => {
-  const t = Tree.name('a').prompt(m => 'x').memoryUpdate(when(m => true), 'tried', (m, cur) => cur);
-  const mem = t.def.children[1];
-  assert.equal(mem.kind, 'memoryUpdate');
-  assert.equal(mem.name, 'tried');
   assert.equal(typeof mem.gate, 'function');
 });
 
-test('.memoryUpdate() validates arguments', () => {
-  assert.throws(() => Tree.name('a').memoryUpdate(), /slot name/);
-  assert.throws(() => Tree.name('a').memoryUpdate('x'), /function/);
-  assert.throws(() => Tree.name('a').memoryUpdate('has#hash', m => m), /reserved/);
+test('Memory(update(), …) validates arguments', () => {
+  assert.throws(() => Tree(Name('a'), Memory(update())), /slot name/);
+  assert.throws(() => Tree(Name('a'), Memory(update(), 'x')), /fn must be a function/);
+  assert.throws(() => Tree(Name('a'), Memory(update(), 'has#hash', m => m)), /reserved/);
+  // update() may sit anywhere among the arguments.
+  const t = Tree(Name('a'), Prompt(m => 'x'), Memory('tried', update(), (m, cur) => cur));
+  assert.equal(t.children[1].kind, 'memoryUpdate');
 });
 
-test('.return() parses fn', () => {
-  const t = Tree.name('a').prompt(m => 'x').return(m => 'done');
-  const ret = t.def.children[1];
+test('Return() parses fn', () => {
+  const t = Tree(Name('a'), Prompt(m => 'x'), Return(m => 'done'));
+  const ret = t.children[1];
   assert.equal(ret.kind, 'return');
   assert.equal(typeof ret.fn, 'function');
   assert.equal(ret.gate, null);
 });
 
-test('.return() supports when() gate', () => {
-  const t = Tree.name('a').return(when(m => true), m => 'done');
-  const ret = t.def.children[0];
+test('Return() supports when() gate', () => {
+  const t = Tree(Name('a'), Return(when(m => true), m => 'done'));
+  const ret = t.children[0];
   assert.equal(ret.kind, 'return');
   assert.equal(typeof ret.gate, 'function');
 });
 
-test('.return() validates arguments', () => {
-  assert.throws(() => Tree.name('a').return(), /function/);
-  assert.throws(() => Tree.name('a').return('not a fn'), /function/);
+test('Return() validates arguments', () => {
+  assert.throws(() => Tree(Name('a'), Return()), /function/);
+  assert.throws(() => Tree(Name('a'), Return('not a fn')), /function/);
 });
 
-test('.map() parses name, arrayFn, and tree', () => {
-  const sub = Tree.name('rate').prompt(m => `rate ${m.item}`);
-  const t = Tree.name('a').map('rated', m => m.branch.items, sub);
-  const map = t.def.children[0];
+test('Map() parses name, arrayFn, and tree', () => {
+  const sub = Tree(Name('rate'), Prompt(m => `rate ${m.item}`));
+  const t = Tree(Name('a'), Map('rated', m => m.branch.items, sub));
+  const map = t.children[0];
   assert.equal(map.kind, 'map');
   assert.equal(map.name, 'rated');
   assert.equal(typeof map.arrayFn, 'function');
@@ -261,39 +256,39 @@ test('.map() parses name, arrayFn, and tree', () => {
   assert.equal(map.gate, null);
 });
 
-test('.map() supports when() gate', () => {
-  const sub = Tree.name('rate').prompt(m => `rate ${m.item}`);
-  const t = Tree.name('a').map(when(m => true), 'rated', m => [], sub);
-  const map = t.def.children[0];
+test('Map() supports when() gate', () => {
+  const sub = Tree(Name('rate'), Prompt(m => `rate ${m.item}`));
+  const t = Tree(Name('a'), Map(when(m => true), 'rated', m => [], sub));
+  const map = t.children[0];
   assert.equal(map.kind, 'map');
   assert.equal(typeof map.gate, 'function');
 });
 
-test('.map() validates arguments', () => {
-  const sub = Tree.name('rate').prompt(m => 'x');
-  assert.throws(() => Tree.name('a').map(), /collection name/);
-  assert.throws(() => Tree.name('a').map('x'), /array/);
-  assert.throws(() => Tree.name('a').map('x', m => [], null), /expected a Tree/);
-  assert.doesNotThrow(() => Tree.name('a').map('x', m => [], Tree.prompt(m => 'y')));
-  assert.throws(() => Tree.name('a').map('has#hash', m => [], sub), /reserved/);
+test('Map() validates arguments', () => {
+  const sub = Tree(Name('rate'), Prompt(m => 'x'));
+  assert.throws(() => Tree(Name('a'), Map()), /collection name/);
+  assert.throws(() => Tree(Name('a'), Map('x')), /array/);
+  assert.throws(() => Tree(Name('a'), Map('x', m => [], null)), /expected a Tree/);
+  assert.doesNotThrow(() => Tree(Name('a'), Map('x', m => [], Tree(Prompt(m => 'y')))));
+  assert.throws(() => Tree(Name('a'), Map('has#hash', m => [], sub)), /reserved/);
 });
 
-test('.emit() parses fn', () => {
-  const t = Tree.name('a').emit(m => ({ text: 'hi' }));
-  const e = t.def.children[0];
+test('Emit() parses fn', () => {
+  const t = Tree(Name('a'), Emit(m => ({ text: 'hi' })));
+  const e = t.children[0];
   assert.equal(e.kind, 'emit');
   assert.equal(typeof e.fn, 'function');
   assert.equal(e.gate, null);
 });
 
-test('.emit() supports when() gate', () => {
-  const t = Tree.name('a').emit(when(m => true), m => 'hi');
-  const e = t.def.children[0];
+test('Emit() supports when() gate', () => {
+  const t = Tree(Name('a'), Emit(when(m => true), m => 'hi'));
+  const e = t.children[0];
   assert.equal(e.kind, 'emit');
   assert.equal(typeof e.gate, 'function');
 });
 
-test('.emit() validates arguments', () => {
-  assert.throws(() => Tree.name('a').emit(), /function/);
-  assert.throws(() => Tree.name('a').emit('not a fn'), /function/);
+test('Emit() validates arguments', () => {
+  assert.throws(() => Tree(Name('a'), Emit()), /function/);
+  assert.throws(() => Tree(Name('a'), Emit('not a fn')), /function/);
 });
