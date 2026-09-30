@@ -38,7 +38,7 @@ find-address (loops until address found, max 3 passes)
         └── wait_for_load — wait for page to load after clicking
 ```
 
-- `find-address.mjs` — the pattern (`export const pattern = Tree.name(...)`).
+- `find-address.mjs` — the pattern (`export const pattern = Tree(name(...), …)`).
   Every step has a plain-language comment; read it top to bottom.
 - `entry.mjs` — the CLI wiring: launches Chrome, starts the MCP tool
   server, maps the tools into a grandma-kat registry, runs
@@ -55,10 +55,10 @@ runs the whole tree — gates, retries, loop exhaustion —
 against a scripted mock model and an in-memory fake page. `npm test` covers
 the happy path, wrong picks, invalid tool calls, and giving up.
 
-Tree features demonstrated: `.branch()`, `.prompt()` (string fn + message
-arrays), `.call()`, `.check()` + `goback()` + `max()`, `.memory()` /
-`.memoryUpdate()`, `.return()`, `.until()`, `when()` gates, per-branch
-`.tools()`.
+Tree features demonstrated: `Branch()`, `Prompt()` (string fn + message
+arrays), `Call()`, `Check()` + `goback()` + `max()`, `Memory()` /
+`Memory(update(), …)`, `Return()`, `Until()`, `when()` gates, per-branch
+`Tools()`.
 
 ## find-listings / find-pagination — the prototypes (before)
 

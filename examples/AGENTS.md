@@ -222,9 +222,9 @@ Only use a factory function if the tree shape genuinely varies by input.
 ```js
 // Good
 export const pattern = Tree.name('my-tree')
-  .model('default')
-  .prompt(m => `...`)
-  .until(m => done, max(3));
+  Model('default')
+  Prompt(m => `...`)
+  Until(m => done, max(3));
 
 // Only if the tree shape varies
 export function createPattern({ mode }) { ... }
@@ -243,9 +243,9 @@ const CHECK_ADDRESS_PROMPT = `...`;
 const PICK_ACTION_PROMPT = `...`;
 ```
 
-**Use `.memory()` for pure data manipulation.** If you're computing a
+**Use `Memory()` for pure data manipulation.** If you're computing a
 value from existing data (formatting a list, accumulating an array,
-incrementing a counter), `.memory()` is the right tool. Don't route
+incrementing a counter), `Memory()` is the right tool. Don't route
 through `exec_js` or a fake tool call for side-channel state.
 
 ```js
@@ -254,22 +254,22 @@ through `exec_js` or a fake tool call for side-channel state.
 .call('record_tried', 'exec_js', m => ({ code: `window.__tried.push(...)` }))
 
 // Good — memory is the tree's own state
-.memory('tried', (m, cur) => [...(cur ?? []), m.prev[0]])
+Memory('tried', (m, cur) => [...(cur ?? []), m.prev[0]])
 ```
 
-**Scope `.memory()` to where the data needs to persist.** If a value
-must survive across loop iterations, place `.memory()` at the loop
+**Scope `Memory()` to where the data needs to persist.** If a value
+must survive across loop iterations, place `Memory()` at the loop
 level — not inside a branch that gets recreated each pass. Read child
 branch data via `m.raw.branch.X`.
 
 ```js
-// tried persists across .until() iterations because it's at the loop level
-.branch(when(...),
+// tried persists across Until() iterations because it's at the loop level
+Branch(when(...),
   Tree.name('try_find')
-    .branch(Tree.name('pick_action')
-      .prompt(...)
-      .check(...))
-    .memory(when(...), 'tried', (m, cur) => {
+    Branch(Tree.name('pick_action')
+      Prompt(...)
+      Check(...))
+    Memory(when(...), 'tried', (m, cur) => {
       const tc = m.raw.branch.pick_action?.toolCalls?.[0];
       return [...(cur ?? []), tc.arguments];
     })
@@ -288,11 +288,11 @@ instead of gating each one individually:
 .call(when(needsMore && pickCalled), 'wait', ...)
 
 // Good — one gate, inner logic handles the rest
-.branch(when(needsMore),
+Branch(when(needsMore),
   Tree.name('try_find')
     .call('scan', ...)
-    .memory('format', ...)
-    .branch(Tree.name('pick_action') ...)
+    Memory('format', ...)
+    Branch(Tree.name('pick_action') ...)
     .call(when(m => m.branch.tried != null), 'wait', ...))
 ```
 
@@ -302,10 +302,10 @@ fold it into the call site rather than defining it separately:
 ```js
 // Unnecessary indirection
 const needsMore = (m) => isNo(m.branch.check_address);
-.branch(when(needsMore), ...)
+Branch(when(needsMore), ...)
 
 // Direct
-.branch(when(m => isNo(m.branch.check_address)), ...)
+Branch(when(m => isNo(m.branch.check_address)), ...)
 ```
 
 **Add non-technical comments.** Every constant and every tree step
@@ -385,7 +385,7 @@ Key points:
 - The tool registry wraps `callTool(client, name, args)` — keep it in
   entry.mjs, not in the pattern file. Patterns stay decoupled from MCP.
 - `memory` seeds the root scope with initial inputs (like a URL).
-- The pattern always uses `.model('default')` — the runtime config decides
+- The pattern always uses `Model('default')` — the runtime config decides
   which actual model that resolves to.
 
 ### Testing

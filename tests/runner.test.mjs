@@ -144,7 +144,7 @@ test('needs: missing at runtime (scope chain miss) throws loudly', async () => {
     /needs 'late', but it does not resolve in scope/);
 });
 
-test('model resolution: tree .model() overrides runtime default', async () => {
+test('model resolution: tree Model() overrides runtime default', async () => {
   const usedBy = { a: 0, b: 0 };
   const models = {
     a: { model: 'a', handler: async () => { usedBy.a++; return { content: 'from-a' }; } },
@@ -158,6 +158,30 @@ test('model resolution: tree .model() overrides runtime default', async () => {
   await grandma.knit(pattern, mockRuntime(null, { models }));
   assert.equal(usedBy.a, 1);
   assert.equal(usedBy.b, 1);
+});
+
+test('a gated Model(when(cond), name) rule switches models at resolution time', async () => {
+  const calls = [];
+  const say = (tag, text) => async () => { calls.push(tag); return { content: text }; };
+  const models = {
+    cheap: { model: 'cheap', handler: say('cheap', 'hard') },
+    strong: { model: 'strong', handler: say('strong', 'solved') },
+  };
+  const build = (suffix) => Tree(name(suffix)
+    , Model('cheap')                                                // default first
+    , Model(when(m => m.branch.plan?.trim().toLowerCase() === 'hard'), 'strong')  // gated override
+    , Prompt('plan', m => `Is this task "easy" or "hard"? One word: ${m.task}`)
+    , Prompt('solve', m => `Solve: ${m.task}`));
+
+  const { memory } = await grandma.knit(build('gated_model'), mockRuntime(null, { models }));
+  assert.deepEqual(calls, ['cheap', 'strong'], 'plan ran on cheap; solve ran on strong');
+  assert.equal(memory.plan, 'hard');
+
+  calls.length = 0;
+  models.cheap.handler = say('cheap', 'easy');
+  models.strong.handler = say('strong', 'never');
+  await grandma.knit(build('gated_model_mild'), mockRuntime(null, { models }));
+  assert.deepEqual(calls, ['cheap', 'cheap'], 'gate stayed false: both prompts used the default');
 });
 
 test('prompt with tools: tool call executed, result in record', async () => {
@@ -192,7 +216,7 @@ test('tool errors are recorded, not fatal', async () => {
   assert.equal(handler.calls.length, 1);
 });
 
-test('.call() leaf executes a tool directly with args from memory', async () => {
+test('Call() leaf executes a tool directly with args from memory', async () => {
   const executed = [];
   const tools = { navigate: tool(async (args) => { executed.push(args); return 'navigated'; }) };
   const pattern = Tree(name('agent')
@@ -204,7 +228,7 @@ test('.call() leaf executes a tool directly with args from memory', async () => 
   assert.equal(result, 'navigated');
 });
 
-test('unknown tool in .tools() fails at knit() start with branch path', async () => {
+test('unknown tool in Tools() fails at knit() start with branch path', async () => {
   const pattern = Tree(name('agent')
     , Tools('navigte') // typo
     , Prompt(m => 'go'));
@@ -258,7 +282,7 @@ test('memory out feeds the next run (sessions)', async () => {
   assert.ok(second.memory['s#1'] === 'v2');
 });
 
-test('.memory() writes to a named slot and produces m.prev output', async () => {
+test('Memory() writes to a named slot and produces m.prev output', async () => {
   const seen = [];
   const handler = scripted(['hello', 'result']);
   const pattern = Tree(name('m')
@@ -269,12 +293,12 @@ test('.memory() writes to a named slot and produces m.prev output', async () => 
   const { result, memory } = await grandma.knit(pattern, mockRuntime(handler));
   // memory slot was written
   assert.equal(memory.greeting, 'hello');
-  // .memory() now appears in m.prev — the second prompt sees prompt + memory
+  // Memory() now appears in m.prev — the second prompt sees prompt + memory
   assert.equal(seen[0].greeting, 'hello');
   assert.equal(seen[0].prevLen, 2);
 });
 
-test('.memory() with gate skips when gate is false', async () => {
+test('Memory() with gate skips when gate is false', async () => {
   const handler = scripted(['val']);
   const pattern = Tree(name('m')
     , Prompt(m => 'val')
@@ -285,7 +309,7 @@ test('.memory() with gate skips when gate is false', async () => {
   assert.equal(memory.skipped, undefined);
 });
 
-test('.memory() accumulates across loop iterations', async () => {
+test('Memory() accumulates across loop iterations', async () => {
   let i = 0;
   const handler = async () => {
     const n = i++;
@@ -315,7 +339,7 @@ test('Memory(update(), …) updates an existing slot from parent scope', async (
   assert.equal(result, 'updated');
 });
 
-test('.memory(update(), name, fn) executes as a memory update', async () => {
+test('Memory(update(), name, fn) executes as a memory update', async () => {
   const handler = scripted(['hello', 'updated']);
   const pattern = Tree(name('m')
     , Memory('greeting', () => 'initial')
@@ -328,7 +352,7 @@ test('.memory(update(), name, fn) executes as a memory update', async () => {
   assert.equal(result, 'updated');
 });
 
-test('.memory(name, update(), fn) executes as a memory update too', async () => {
+test('Memory(name, update(), fn) executes as a memory update too', async () => {
   const handler = scripted(['hello']);
   const pattern = Tree(name('m')
     , Memory('greeting', () => 'initial')
@@ -527,7 +551,7 @@ test('resume works through an unnamed branch', async () => {
   }
 });
 
-test('an unnamed .map() subtree is auto-named after the collection', async () => {
+test('an unnamed Each() subtree is auto-named after the collection', async () => {
   const dbPath = tmpLogger();
   try {
     const handler = scripted(['x', 'x']);
@@ -546,7 +570,7 @@ test('an unnamed .map() subtree is auto-named after the collection', async () =>
   }
 });
 
-test('.return() stops tree execution and exports value', async () => {
+test('Return() stops tree execution and exports value', async () => {
   const handler = scripted(['a', 'b', 'c']);
   const pattern = Tree(name('r')
     , Prompt(m => 'first')
@@ -558,7 +582,7 @@ test('.return() stops tree execution and exports value', async () => {
   assert.equal(handler.calls.length, 1); // only the first prompt ran
 });
 
-test('.return() with undefined continues the tree', async () => {
+test('Return() with undefined continues the tree', async () => {
   const handler = scripted(['first', 'second']);
   const pattern = Tree(name('r')
     , Prompt(m => 'first')
@@ -570,7 +594,7 @@ test('.return() with undefined continues the tree', async () => {
   assert.equal(handler.calls.length, 2); // both prompts ran
 });
 
-test('.return() with gate only fires when condition is true', async () => {
+test('Return() with gate only fires when condition is true', async () => {
   const handler = scripted(['not-trigger', 'continued']);
   const pattern = Tree(name('r')
     , Prompt(m => 'val')
@@ -581,7 +605,7 @@ test('.return() with gate only fires when condition is true', async () => {
   assert.equal(result, 'continued'); // gate was false, return skipped
 });
 
-test('.return() with gate fires when condition is true', async () => {
+test('Return() with gate fires when condition is true', async () => {
   const handler = scripted(['trigger']);
   const pattern = Tree(name('r')
     , Prompt(m => 'val')
@@ -593,7 +617,7 @@ test('.return() with gate fires when condition is true', async () => {
   assert.equal(handler.calls.length, 1);
 });
 
-test('.map() runs subtree per element and collects results', async () => {
+test('Each() runs subtree per element and collects results', async () => {
   const items = ['a', 'b', 'c'];
   let callIdx = 0;
   const calls = [];
@@ -611,7 +635,7 @@ test('.map() runs subtree per element and collects results', async () => {
   assert.equal(calls.length, 3);
 });
 
-test('.map() injects m.item for each invocation', async () => {
+test('Each() injects m.item for each invocation', async () => {
   const seen = [];
   const items = [{ name: 'x' }, { name: 'y' }];
   let callIdx = 0;
@@ -623,7 +647,7 @@ test('.map() injects m.item for each invocation', async () => {
   assert.deepEqual(seen, [{ name: 'x' }, { name: 'y' }]);
 });
 
-test('.map() with empty array produces empty result', async () => {
+test('Each() with empty array produces empty result', async () => {
   const handler = async () => ({ content: 'should not run' });
   const sub = Tree(name('s'), Prompt(m => 'x'));
   const pattern = Tree(name('m'), Each('out', m => [], sub));
@@ -633,7 +657,7 @@ test('.map() with empty array produces empty result', async () => {
   assert.deepEqual(memory.out, []);
 });
 
-test('.map() with gate skips when false', async () => {
+test('Each() with gate skips when false', async () => {
   const handler = scripted(['val']);
   const sub = Tree(name('s'), Prompt(m => 'x'));
   const pattern = Tree(name('m')
@@ -644,7 +668,7 @@ test('.map() with gate skips when false', async () => {
   assert.equal(memory.out, undefined);
 });
 
-test('.map() subtree can use .memory() and .return()', async () => {
+test('Each() subtree can use Memory() and Return()', async () => {
   const items = [1, 2, 3];
   let callIdx = 0;
   const handler = async () => ({ content: `${items[callIdx++] * 10}` });
@@ -659,7 +683,7 @@ test('.map() subtree can use .memory() and .return()', async () => {
 
 // --- pause/resume (human-in-the-loop) ---
 
-test('.human() pauses execution and returns waiting status', async () => {
+test('Human() pauses execution and returns waiting status', async () => {
   const handler = scripted(['draft']);
   const dbPath = tmpLogger();
   try {
@@ -678,7 +702,7 @@ test('.human() pauses execution and returns waiting status', async () => {
   }
 });
 
-test('.human() with contextFn provides context in pause result', async () => {
+test('Human() with contextFn provides context in pause result', async () => {
   const handler = scripted(['my draft']);
   const dbPath = tmpLogger();
   try {
@@ -694,7 +718,7 @@ test('.human() with contextFn provides context in pause result', async () => {
   }
 });
 
-test('.human() emits context via onEmit before pausing', async () => {
+test('Human() emits context via onEmit before pausing', async () => {
   const handler = scripted(['my draft']);
   const dbPath = tmpLogger();
   try {
@@ -716,7 +740,7 @@ test('.human() emits context via onEmit before pausing', async () => {
   }
 });
 
-test('.human() without contextFn does not call onEmit', async () => {
+test('Human() without contextFn does not call onEmit', async () => {
   const handler = scripted(['draft']);
   const dbPath = tmpLogger();
   try {
@@ -736,7 +760,7 @@ test('.human() without contextFn does not call onEmit', async () => {
   }
 });
 
-test('.human() resumes with human input and continues execution', async () => {
+test('Human() resumes with human input and continues execution', async () => {
   const handler = scripted(['draft', 'final']);
   const dbPath = tmpLogger();
   try {
@@ -745,7 +769,7 @@ test('.human() resumes with human input and continues execution', async () => {
       , Human('approve')
       , Prompt(m => `finalize: ${m.branch.approve}, draft: ${m.branch['review#1']}`));
 
-    // First run — pauses at .human()
+    // First run — pauses at Human()
     const step1 = await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath }));
     assert.equal(step1.status, 'waiting');
     assert.equal(step1.humanSlot, 'approve');
@@ -766,7 +790,7 @@ test('.human() resumes with human input and continues execution', async () => {
   }
 });
 
-test('.human() preserves scope state across pause/resume', async () => {
+test('Human() preserves scope state across pause/resume', async () => {
   const handler = scripted(['hello', 'after']);
   const dbPath = tmpLogger();
   try {
@@ -792,7 +816,7 @@ test('.human() preserves scope state across pause/resume', async () => {
   }
 });
 
-test('.human() inside a branch — branch result is preserved on resume', async () => {
+test('Human() inside a branch — branch result is preserved on resume', async () => {
   const handler = scripted(['inner-prompt']);
   const dbPath = tmpLogger();
   try {
@@ -829,8 +853,8 @@ test('.human() inside a branch — branch result is preserved on resume', async 
   }
 });
 
-test('.human() as a leaf followed by a .branch() resumes cleanly', async () => {
-  // Regression: a root-level .human() whose NEXT sibling is a .branch() used
+test('Human() as a leaf followed by a Branch() resumes cleanly', async () => {
+  // Regression: a root-level Human() whose NEXT sibling is a Branch() used
   // to crash resume (resume re-descended into the branch with an
   // already-consumed stack entry). The branch must run fresh after resume.
   const handler = scripted([]);
@@ -858,8 +882,8 @@ test('.human() as a leaf followed by a .branch() resumes cleanly', async () => {
   }
 });
 
-test('.human() inside a .map() resumes from the paused item', async () => {
-  // Regression: .human() inside a .map() subtree used to lose the whole map
+test('Human() inside a Each() resumes from the paused item', async () => {
+  // Regression: Human() inside a Each() subtree used to lose the whole map
   // result on resume (returned undefined). The paused item must resume from
   // its saved position and the remaining items must run, producing the full
   // result array.
@@ -896,7 +920,7 @@ test('.human() inside a .map() resumes from the paused item', async () => {
   }
 });
 
-test('.human() with gate is skipped when gate is false', async () => {
+test('Human() with gate is skipped when gate is false', async () => {
   const handler = scripted(['draft', 'done']);
   const pattern = Tree(name('review')
     , Prompt(m => 'write')
@@ -908,7 +932,7 @@ test('.human() with gate is skipped when gate is false', async () => {
   assert.equal(handler.calls.length, 2); // both prompts ran, human skipped
 });
 
-test('.human() with .memory() writes human input to scope', async () => {
+test('Human() with Memory() writes human input to scope', async () => {
   const handler = scripted(['draft']);
   const dbPath = tmpLogger();
   try {
@@ -917,7 +941,7 @@ test('.human() with .memory() writes human input to scope', async () => {
       , Human('feedback')
       , Memory('saved_feedback', m => m.branch.feedback));
 
-    // Initial run — pauses at .human()
+    // Initial run — pauses at Human()
     const step1 = await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath }));
     assert.equal(step1.status, 'waiting');
 
@@ -934,7 +958,7 @@ test('.human() with .memory() writes human input to scope', async () => {
   }
 });
 
-test('.human() inside .until() loop pauses each iteration', async () => {
+test('Human() inside Until() loop pauses each iteration', async () => {
   const handler = scripted(['try-1']);
   const dbPath = tmpLogger();
   try {
@@ -969,7 +993,7 @@ test('.human() inside .until() loop pauses each iteration', async () => {
   }
 });
 
-test('.human() runId is preserved across pause/resume', async () => {
+test('Human() runId is preserved across pause/resume', async () => {
   const handler = scripted(['draft', 'final']);
   const dbPath = tmpLogger();
   try {
@@ -993,7 +1017,7 @@ test('.human() runId is preserved across pause/resume', async () => {
 
 // --- emit (non-blocking output) ---
 
-test('.emit() calls onEmit with computed value and continues', async () => {
+test('Emit() calls onEmit with computed value and continues', async () => {
   const emitted = [];
   const handler = scripted(['hello']);
   const pattern = Tree(name('agent')
@@ -1009,7 +1033,7 @@ test('.emit() calls onEmit with computed value and continues', async () => {
   assert.equal(result, 'hello');
 });
 
-test('.emit() does NOT write to m.prev', async () => {
+test('Emit() does NOT write to m.prev', async () => {
   const emitted = [];
   const prevs = [];
   const handler = scripted(['a', 'b']);
@@ -1026,7 +1050,7 @@ test('.emit() does NOT write to m.prev', async () => {
   assert.equal(emitted.length, 1);
 });
 
-test('.emit() with gate skips when false', async () => {
+test('Emit() with gate skips when false', async () => {
   const emitted = [];
   const handler = scripted(['a', 'b']);
   const pattern = Tree(name('agent')
@@ -1042,7 +1066,7 @@ test('.emit() with gate skips when false', async () => {
   assert.equal(result, 'b');
 });
 
-test('.emit() works without onEmit (no-op)', async () => {
+test('Emit() works without onEmit (no-op)', async () => {
   const handler = scripted(['x']);
   const pattern = Tree(name('agent')
     , Emit(m => 'ignored')
@@ -1052,7 +1076,7 @@ test('.emit() works without onEmit (no-op)', async () => {
   assert.equal(result, 'x');
 });
 
-test('.emit() inside .until() loop fires each iteration', async () => {
+test('Emit() inside Until() loop fires each iteration', async () => {
   const emitted = [];
   let i = 0;
   const handler = async () => {
@@ -1074,7 +1098,7 @@ test('.emit() inside .until() loop fires each iteration', async () => {
 
 // ── trees as tools ────────────────────────────────────────────────────────
 // A runtime tool entry may declare `tree: <name|def>` instead of execute().
-// The model (and .call()) invokes it like any tool; the engine runs the
+// The model (and Call()) invokes it like any tool; the engine runs the
 // subtree in a child scope seeded with the call args, and the subtree's
 // exported value becomes the tool result. A pause inside the subtree
 // suspends the whole run and resumes in place — the calling prompt round is
@@ -1185,7 +1209,7 @@ test('duplicate Register(...) names fail at knit() start', async () => {
     /duplicate Register\('lookup'\)/);
 });
 
-test('a .call() to a tree tool runs the subtree with seeded args', async () => {
+test('a Call() to a tree tool runs the subtree with seeded args', async () => {
   const child = Tree(name('greeter'), Needs('who'), Prompt(m => `hello ${m.who}`));
   const handler = scripted(['hi']);
   const pattern = Tree(name('host')
@@ -1258,7 +1282,7 @@ test('a pause inside a model-called tree resumes without re-calling the model', 
   assert.equal(second.memory.seen, 'got: purr', 'the subtree export came back as the tool result');
 });
 
-test('a pause inside a .call() tree resumes structurally', async () => {
+test('a pause inside a Call() tree resumes structurally', async () => {
   const child = Tree(name('asker')
     , Prompt(() => 'question')
     , Human('answer')
@@ -1505,7 +1529,7 @@ test('resume restores slots accumulated across several pauses', async () => {
   assert.deepEqual(fourth.memory.words, ['a', 'b', 'stop']);
 });
 
-test('resume after a pause inside a .map() keeps prior items', async () => {
+test('resume after a pause inside a Each() keeps prior items', async () => {
   const dbPath = tmpLogger();
   const handler = scripted(['rated-1', 'rated-2']);
   const item = Tree(name('item')
@@ -1548,12 +1572,12 @@ test('branch slot written before a pause survives resume', async () => {
   assert.deepEqual(emitted, [{ text: 'kept=value' }], 'the branch scope was reconstructed on resume');
 });
 
-test('a map item ending in .human() keeps its export across two resumes', async () => {
+test('a map item ending in Human() keeps its export across two resumes', async () => {
   // Regression: on resume, execTreeInner skipped state.pass++ for the
   // resumed pass. A scope created in a resumed life logged scope_init at
   // iteration 0 and its records at iteration 1, so the NEXT resume's
   // iteration-boundary heuristic wiped its prev — a map item whose last
-  // child is .human() then exported undefined.
+  // child is Human() then exported undefined.
   const dbPath = tmpLogger();
   const handler = scripted(['x1', 'x2']);
   const item = Tree(name('tail-item')
