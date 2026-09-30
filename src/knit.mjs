@@ -6,6 +6,7 @@ import { Scope, makeView, lookupChain, resetScopeIdCounter } from './memory.mjs'
 import { callLlm, normalizeMessages } from './llm.mjs';
 import { createLogger, createRunId, definitionId } from './logger.mjs';
 import { unwrap, Tree, registerTree } from './tree.mjs';
+import { DEFAULT_MAX } from './markers.mjs';
 
 export class PauseSignal {
   constructor(checkpointId, humanSlot, context) {
@@ -632,41 +633,28 @@ async function execPrompt(exec, child, scope, promptResume = null) {
   }
   if (replay) levelEntry.replay = null;
 
-  const record = { content: null, reasoning: null, toolCalls: [], toolResults: [], calls: [], model: null };
-  let response;
+  const view = makeView(scope);
+  const auto = child.auto ?? null;
+  const autoOn = auto?.disabled !== true;
+  const bound = auto?.max ?? { count: DEFAULT_MAX, errFn: null };
+  const hooksBefore = auto?.hooks?.before ?? [];
+  const hooksAfter = auto?.hooks?.after ?? [];
 
-  if (replay) {
-    // Resume path: the round already ran before the pause — rebuild its
-    // record from the log (no second LLM call) and continue with the tool
-    // call that paused inside a tree.
-    const rc = replay.llmCall;
-    response = { content: rc.content ?? '', reasoning: rc.reasoning ?? '', tool_calls: rc.toolCalls ?? null };
-    record.model = rc.model ?? null;
-    for (const tc of response.tool_calls ?? []) {
-      record.toolCalls.push({ id: tc.id, name: tc.function?.name, arguments: tc.function?.arguments });
-    }
-    record.calls.push({
-      round: 1,
-      messages: (rc.messages ?? []).map((m) => ({ ...m })),
-      response: { content: response.content, reasoning: response.reasoning, tool_calls: response.tool_calls ?? null },
-    });
-    for (const tr of replay.doneResults) {
-      record.toolResults.push({ name: tr.tool, result: tr.result, isError: tr.isError === true });
-    }
-  } else {
-    const view = makeView(scope);
-    const value = typeof child.prompt === 'function'
-      ? await callFn(child.prompt, view, `prompt fn of '${child.name}'`)
-      : child.prompt;
-    const messages = normalizeMessages(value);
+  const record = {
+    content: null, reasoning: null, toolCalls: [], toolResults: [], calls: [], model: null,
+    rounds: 0, thread: [],
+  };
 
+  // Model + tool schemas, resolved at most once per invocation. A replayed
+  // round needs neither until the loop reaches a fresh round.
+  let call = null;
+  const ensureCall = async () => {
+    if (call) return call;
     const modelName = (await resolveInherited(exec, 'models', view)) ?? runtimeDefaultModel(exec);
     const modelEntry = exec.runtime.models?.[modelName];
     if (!modelEntry) {
       throw new KnitError(`model '${modelName}' (used by '${child.name}') not found in runtime models`);
     }
-    record.model = modelName;
-
     const toolNames = child.options.tools ?? (await resolveInherited(exec, 'tools', view)) ?? [];
     const tools = toolNames.map((n) => {
       // Schemas come from whatever the name resolves to at THIS prompt's
@@ -683,77 +671,101 @@ async function execPrompt(exec, child, scope, promptResume = null) {
         },
       };
     });
+    call = { modelName, modelEntry, tools, offered: new Set(toolNames) };
+    return call;
+  };
 
-    // One LLM call. If the model returns tool calls, execute them — but do
-    // NOT loop. The tree controls retries via .check() + goback().
-    try {
-      response = await callLlm(modelEntry, messages, { tools });
-    } catch (err) {
-      // Record failed calls so they are diagnosable from the log DB — a
-      // thrown LLM error otherwise leaves no trace. Rethrow; the tree still
-      // decides how to recover.
-      logEvent(exec, 'llm_error', {
-        child: child.name,
-        round: 1,
-        model: modelName,
-        messages,
-        error: err instanceof Error ? err.message : String(err),
-      }, scope);
-      throw err;
+  // The prompt's local conversation: its messages, grown round by round and
+  // saved on the record for the tree (and reconstructible from the log).
+  let thread = [];
+  let response = null;
+  let rounds = 0;
+  let pendingReplay = replay;
+
+  if (replay) {
+    // Resume path: the round already ran before the pause — rebuild its
+    // record from the log (no second LLM call) and continue with the tool
+    // call that paused inside a tree.
+    const rc = replay.llmCall;
+    response = { content: rc.content ?? '', reasoning: rc.reasoning ?? '', tool_calls: rc.toolCalls ?? null };
+    thread = (rc.messages ?? []).map((m) => ({ ...m }));
+    rounds = 1;
+    record.model = rc.model ?? null;
+    for (const tc of response.tool_calls ?? []) {
+      record.toolCalls.push({ id: tc.id, name: tc.function?.name, arguments: tc.function?.arguments });
     }
     record.calls.push({
       round: 1,
-      messages: messages.map((m) => ({ ...m })),
+      messages: thread.map((m) => ({ ...m })),
       response: { content: response.content, reasoning: response.reasoning, tool_calls: response.tool_calls ?? null },
     });
-    logEvent(exec, 'llm_call', {
-      child: child.name, round: 1, model: modelName,
-      messages,
-      content: response.content, reasoning: response.reasoning, toolCalls: response.tool_calls ?? null,
-    }, scope);
+    for (const tr of replay.doneResults) {
+      record.toolResults.push({ name: tr.tool, result: tr.result, isError: tr.isError === true });
+    }
+  } else {
+    // Fresh path: the prompt value opens the local thread.
+    const value = typeof child.prompt === 'function'
+      ? await callFn(child.prompt, view, `prompt fn of '${child.name}'`)
+      : child.prompt;
+    thread = normalizeMessages(value);
   }
 
-  if (!response.tool_calls?.length) {
-    // No tool calls — text-only response.
-    record.content = response.content;
-    record.reasoning = response.reasoning || null;
-    return { value: response.content, record };
-  }
+  // Hooks: (m, thread, tool_call) per call, before and after execution.
+  // Returning a value replaces the tool-call shape (null keeps the current
+  // one); id/name stay fixed by routing; a throwing hook aborts the run. A
+  // when(cond) gate skips the hook for that call.
+  const runHooks = async (hooks, tc, phase) => {
+    let current = tc;
+    for (const h of hooks) {
+      if (h.gate != null && !(await callFn(h.gate, view, `toolHook${phase} gate of '${tc.name}'`))) continue;
+      const out = await callFn(h.fn, view, `toolHook${phase} of '${tc.name}'`, thread, current);
+      if (out == null) continue;
+      if (typeof out !== 'object' || Array.isArray(out)) {
+        throw new KnitError(`toolHook${phase} of '${tc.name}' must return an updated tool call object (or null)`);
+      }
+      if (out.name !== undefined && out.name !== tc.name) {
+        throw new KnitError(`toolHook${phase} of '${tc.name}' may not rename the tool to '${out.name}' — routing is fixed`);
+      }
+      current = { ...current, ...out, id: current.id, name: current.name };
+    }
+    return current;
+  };
 
-  // Execute tool calls (one round), then return. In replay mode the calls
-  // before the paused one already ran and are already logged (`doneResults`)
-  // — copy them instead of re-executing; the paused call (index ===
-  // doneResults.length) descends into its subtree with the resume state;
-  // later calls run fresh.
-  const toolCalls = response.tool_calls;
-  for (let ci = 0; ci < toolCalls.length; ci++) {
-    if (replay && ci < replay.doneResults.length) continue;
-    const tc = toolCalls[ci];
+  // One tool call: before-hooks → resolve + execute (+ register settle) →
+  // after-hooks. `resumeState` marks the call that paused inside a tree
+  // tool: its before-hook already ran pre-pause, so it is skipped here.
+  const runCall = async (tc, resumeState) => {
     const name = tc.function?.name;
-    if (!replay) record.toolCalls.push({ id: tc.id, name, arguments: tc.function?.arguments });
-    const args = (() => { try { return JSON.parse(tc.function.arguments); } catch { return tc.function.arguments; } })();
+    const parsed = (() => { try { return JSON.parse(tc.function.arguments); } catch { return tc.function.arguments; } })();
+    let ref = { id: tc.id, name, args: parsed };
+    if (!resumeState) ref = await runHooks(hooksBefore, ref, 'Before');
+
     let result;
     let isError = false;
     try {
-      const resolved = resolveTool(exec, scope, name);
-      if (!resolved) throw new KnitError(`unknown tool '${name}'`);
+      // Tools are scoped: the prompt's .tools() list (per-prompt options or
+      // inherited) is the whole offer, and a call outside it is refused
+      // before anything executes — a hallucinated or leaked name cannot
+      // reach the registry.
+      const c = await ensureCall();
+      if (!c.offered.has(ref.name)) {
+        throw new KnitError(`tool '${ref.name}' is not offered to prompt '${child.name}' — it must resolve from that prompt's .tools() scope`);
+      }
+      const resolved = resolveTool(exec, scope, ref.name);
+      if (!resolved) throw new KnitError(`unknown tool '${ref.name}'`);
       if (resolved.kind === 'tool' && resolved.tool.tree !== undefined) {
         // A tree tool: run the tree in a child scope seeded with the call
         // args; its exported value is the tool result. A .human() inside
         // pauses the whole run, and on resume the paused call receives the
         // resume state so the subtree continues exactly where it stopped.
-        const resume = replay && ci === replay.doneResults.length ? promptResume : null;
-        result = await runTreeTool(exec, name, resolved.tool, args, scope, resume);
+        result = await runTreeTool(exec, ref.name, resolved.tool, ref.args, scope, resumeState);
       } else {
-        // Tools return either a string or a plain JSON object (structured
-        // output). Objects flow through verbatim — patterns read them via
-        // m.raw.prev[0].toolResults / branch slots — so tools can hand back
-        // structured data without JSON-encoding it into a string. A register
-        // also gets the call-site view and its declared tools; its `memory`
-        // patch is applied and stripped (the stored result is { value }).
+        // A register gets the call-site view and its declared tools; its
+        // `memory` patch is applied and stripped (the stored result is
+        // { value }). Registry tools ignore the extra argument.
         result = resolved.kind === 'register'
-          ? await callRegister(exec, resolved, args, scope)
-          : await resolved.tool.execute(args, { view: makeView(scope) });
+          ? await callRegister(exec, resolved, ref.args, scope)
+          : await resolved.tool.execute(ref.args, { view: makeView(scope) });
         result = settleRegisterResult(exec, scope, resolved, result);
       }
       // Tools may return error-shaped results instead of throwing.
@@ -765,15 +777,121 @@ async function execPrompt(exec, child, scope, promptResume = null) {
       isError = true;
       result = `error: ${err.message}`;
     }
-    record.toolResults.push({ name, result, isError });
-    logEvent(exec, 'tool_result', { child: child.name, tool: name, args, result, isError }, scope);
+
+    const after = await runHooks(hooksAfter, { ...ref, result, isError }, 'After');
+    return { id: ref.id, name: ref.name, args: ref.args, result: after.result, isError: Boolean(after.isError) };
+  };
+
+  // The auto tool loop: call the model, execute every tool call, feed the
+  // results back on the local thread, and call again — until a round comes
+  // back without tool calls. `disableAuto()` stops after one round;
+  // `max(n)` bounds the rounds (exhaustion throws).
+  for (;;) {
+    if (!response) {
+      const c = await ensureCall();
+      record.model = c.modelName;
+      try {
+        response = await callLlm(c.modelEntry, thread, { tools: c.tools });
+      } catch (err) {
+        // Record failed calls so they are diagnosable from the log DB — a
+        // thrown LLM error otherwise leaves no trace. Rethrow; the tree still
+        // decides how to recover.
+        logEvent(exec, 'llm_error', {
+          child: child.name,
+          round: rounds + 1,
+          model: c.modelName,
+          messages: thread,
+          error: err instanceof Error ? err.message : String(err),
+        }, scope);
+        throw err;
+      }
+      rounds += 1;
+      record.calls.push({
+        round: rounds,
+        messages: thread.map((m) => ({ ...m })),
+        response: { content: response.content, reasoning: response.reasoning, tool_calls: response.tool_calls ?? null },
+      });
+      logEvent(exec, 'llm_call', {
+        child: child.name, round: rounds, model: c.modelName,
+        messages: thread,
+        content: response.content, reasoning: response.reasoning, toolCalls: response.tool_calls ?? null,
+      }, scope);
+    }
+
+    const toolCalls = response.tool_calls ?? [];
+    if (!toolCalls.length) {
+      // Text-only response — the loop is done; the final assistant message
+      // closes the saved thread.
+      record.content = response.content;
+      record.reasoning = response.reasoning || null;
+      thread.push({ role: 'assistant', content: response.content ?? '' });
+      break;
+    }
+
+    // In replay mode the calls before the paused one already ran and are
+    // already logged (`doneResults`) — copy them instead of re-executing;
+    // the paused call (index === doneResults.length) descends into its
+    // subtree with the resume state; later calls run fresh.
+    const replayState = pendingReplay;
+    pendingReplay = null;
+    const skipped = replayState ? replayState.doneResults.length : 0;
+    const wireCalls = toolCalls.map((tc) => ({
+      id: tc.id,
+      type: 'function',
+      function: { name: tc.function?.name, arguments: tc.function?.arguments },
+    }));
+
+    for (let ci = 0; ci < toolCalls.length; ci++) {
+      if (ci < skipped) continue;
+      const resumeState = replayState && ci === skipped ? promptResume : null;
+      const out = await runCall(toolCalls[ci], resumeState);
+      wireCalls[ci].function.name = out.name;
+      wireCalls[ci].function.arguments = typeof out.args === 'string' ? out.args : JSON.stringify(out.args ?? {});
+      if (!replayState) {
+        record.toolCalls.push({ id: out.id, name: out.name, arguments: wireCalls[ci].function.arguments });
+      }
+      record.toolResults.push({ name: out.name, result: out.result, isError: out.isError });
+      logEvent(exec, 'tool_result', {
+        child: child.name, round: rounds, tool: out.name, args: out.args, result: out.result, isError: out.isError,
+      }, scope);
+    }
+
+    // Append the round's exchange to the local thread: the assistant
+    // tool_calls message, then one tool message per call. Final (post-hook)
+    // values, so hook rewrites are what the model sees.
+    thread.push({ role: 'assistant', content: response.content || null, tool_calls: wireCalls });
+    const base = record.toolResults.length - toolCalls.length;
+    for (let ci = 0; ci < toolCalls.length; ci++) {
+      const tr = record.toolResults[base + ci];
+      thread.push({
+        role: 'tool',
+        tool_call_id: toolCalls[ci].id,
+        content: typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result ?? ''),
+      });
+    }
+
+    if (!autoOn) {
+      // disableAuto(): exactly one round — results are recorded, never fed
+      // back. The value is the text returned alongside the calls.
+      record.content = response.content || '';
+      record.reasoning = response.reasoning || null;
+      break;
+    }
+
+    if (rounds >= bound.count) {
+      const last = toolCalls.map((tc) => tc.function?.name).filter(Boolean).join(', ');
+      const message = await exhaustionMessage(bound, view,
+        `auto tool loop exhausted after ${rounds} round(s) — the model kept calling tools (last: ${last})`);
+      throw new KnitError(`prompt '${child.name}': ${message}`);
+    }
+
+    response = null; // next round: a fresh model call on the grown thread
   }
 
-  // The value is the text the model returned alongside the tool calls,
-  // or empty string if it only returned tool calls. The tree reads
-  // tool results via m.raw.prev[0].toolResults.
-  record.content = response.content || '';
-  record.reasoning = response.reasoning || null;
+  record.rounds = rounds;
+  record.thread = thread;
+  // The value is the final round's text (the tree reads tool results via
+  // m.raw.prev[0].toolResults and the whole exchange via .thread).
   return { value: record.content, record };
 }
 

@@ -133,7 +133,13 @@ keeps the notation-to-code mapping visible.
   is referenceable by name (`m.branch.<name>`). If no name is written, assign
   a stable translator-generated name. The BODY is expanded into
   `[{ system }, { user: <referenced memory + BODY + a strict answer-format
-  instruction> }]`.
+  instruction> }]`. The prompt runs the **auto tool loop** by default: every
+  tool call the model emits executes, the results feed back on the prompt's
+  thread, and the model is asked again until it answers without calls. A step
+  that must act on exactly one call per pass takes `disableAuto()`; `max(n)`
+  bounds the loop (exhaustion throws); `toolHookBefore(fn)` /
+  `toolHookAfter(fn)` observe and rewrite each call — all three pass through
+  as the same-named markers in `.prompt(…)`.
 - `** branch: if COND run:` → `.branch(when(m => EXPAND(COND)), SUBTREE)`.
   The COND is expanded into a predicate over the referenced slot. If COND
   says "above is true", bind it to the preceding `--` prompt's named result

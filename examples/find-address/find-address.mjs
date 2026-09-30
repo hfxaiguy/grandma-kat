@@ -52,7 +52,7 @@
 //   - Each step can use different tools — the address-checking step needs
 //     no tools at all, while the pick-action step needs navigate and click.
 
-import { Tree, when, goback, max } from '../../src/index.mjs';
+import { Tree, when, goback, max, disableAuto } from '../../src/index.mjs';
 
 // The system prompt tells the AI what kind of assistant it is. Think of it
 // as setting the AI's "job title" — it's a web navigation helper that
@@ -218,7 +218,11 @@ export const pattern = Tree.name("find-address")
       .branch(
         Tree.name("pick_action")
           .tools("navigate", "click")
-          .prompt((m) => {
+          // disableAuto: this step acts on exactly ONE choice per loop
+          // iteration — the tree drives the loop (check + goback below and
+          // the outer .until), it must not feed tool results back and let
+          // the model keep calling tools inside the prompt.
+          .prompt(disableAuto(), (m) => {
             const el = m.branch.try_element;
             if (!el)
               return [

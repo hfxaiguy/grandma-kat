@@ -854,14 +854,22 @@ prompt children (resolution up the scope chain, like `.model()`). Opt out
 per prompt via options bag: `.prompt(fn, { tools: [] })`. Per-prompt tool
 sets → use named branches.
 
-**Tool calls: single round (chosen).** When the LLM responds with
-tool calls, the prompt-leaf executes them once — no internal loop. The
-leaf's exported value = the text the model returned (empty string if it
-only returned tool calls). Tool calls, results, and errors are exposed
-via `m.raw.prev[0].toolCalls` and `m.raw.prev[0].toolResults`. The tree
-controls retries via `.check()` + `goback()` — visible, controllable,
-debuggable. Small models often make poor recovery choices in an opaque
-loop; the tree structure makes every decision explicit.
+**Tool calls: auto loop by default (chosen; supersedes "single round").**
+A prompt executes every tool call the model emits, appends the results to
+its local thread, and calls the model again — until a round returns no
+tool calls. See `docs/auto-tool-loop.md` for the full contract (record
+shape, resume, hooks). `disableAuto()` restores the single-round behaviour
+for steps that act on exactly one call per pass (`find-address`'s
+`pick_action` is the canonical example); `max(n)` bounds the loop and
+exhaustion throws; `toolHookBefore`/`toolHookAfter` observe and rewrite
+each call.
+
+The original single-round rationale — the tree controls retries, visible
+and debuggable; small models make poor recovery choices in an opaque loop —
+still applies to opted-out steps. The loop exists because every real tree
+was already hand-rolling it (`prompt → memory(buildToolMessages) →
+until(!toolCalls, max(12))`), which duplicated conversation plumbing in
+every pattern and dropped the tool exchange whenever the tree rewound.
 
 **Naming (chosen):** the direct tool-call leaf is `.call(name, argsFn)`,
 not `.tool()` — one letter from `.tools()`, too confusable.
@@ -995,7 +1003,9 @@ Resolved:
 - ~~Memory history~~ → `m.prev` rewinds (current-path log); named slots
   latest-only with overwrite; full history via `m.raw.calls` and logs (see
   Memory Model).
-- ~~Tool-call round-trips~~ → single round: prompt executes tool calls once,
-  tree controls retries via `.check()` + `goback()` (see Per-step tools).
+- ~~Tool-call round-trips~~ → auto loop by default: the prompt executes tool
+  calls, feeds results back, and keeps going until the model answers without
+  calls; `disableAuto()` + `.check()`/`goback()` for deliberate one-action
+  steps (see Per-step tools and `docs/auto-tool-loop.md`).
 - ~~`.tool()`/`.tools()` naming~~ → direct call is `.call()` (see Per-step
   tools).

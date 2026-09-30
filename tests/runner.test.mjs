@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import grandma, { Tree, when, update, goback, max, KnitError } from '../src/index.mjs';
+import grandma, { Tree, when, update, goback, max, KnitError, disableAuto } from '../src/index.mjs';
 import { scripted, mockRuntime, tool } from './helpers.mjs';
 
 function tmpLogger() {
@@ -170,7 +170,7 @@ test('prompt with tools: tool call executed, result in record', async () => {
   ]);
   const pattern = Tree.name('agent')
     .tools('search')
-    .prompt(m => 'find something');
+    .prompt(disableAuto(), m => 'find something');
 
   const { result } = await grandma.knit(pattern, mockRuntime(handler, { tools }));
   // One LLM call — tool was executed, result is in the record, not fed back.
@@ -184,7 +184,7 @@ test('tool errors are recorded, not fatal', async () => {
   const handler = scripted([
     { content: '', tool_calls: [{ id: '1', function: { name: 'boom', arguments: '{}' } }] },
   ]);
-  const pattern = Tree.name('agent').tools('boom').prompt(m => 'go');
+  const pattern = Tree.name('agent').tools('boom').prompt(disableAuto(), m => 'go');
 
   const { result } = await grandma.knit(pattern, mockRuntime(handler, { tools }));
   // One LLM call — tool error is recorded, not fed back to the model.
@@ -1210,7 +1210,7 @@ test('a model tool call to a tree tool returns the subtree export as the tool re
   ]);
   const pattern = Tree.name('host')
     .tools('finder_tool')
-    .prompt('act', () => 'go')
+    .prompt(disableAuto(), 'act', () => 'go')
     .memory('seen', m => m.raw.branch.act.toolResults[0].result);
 
   const { memory } = await grandma.knit(pattern, mockRuntime(handler, {
@@ -1239,7 +1239,7 @@ test('a pause inside a model-called tree resumes without re-calling the model', 
   });
   const pattern = Tree.name('host')
     .tools('ask')
-    .prompt('act', () => 'go')
+    .prompt(disableAuto(), 'act', () => 'go')
     .prompt('after', m => `tool said: ${m.raw.branch.act.toolResults[0].result}`)
     .memory('seen', m => m.raw.branch.act.toolResults[0].result);
 
@@ -1300,7 +1300,7 @@ test('completed sibling tool calls are replayed, not re-executed, after a pause'
   });
   const pattern = Tree.name('host')
     .tools('effect', 'ask')
-    .prompt('act', () => 'go')
+    .prompt(disableAuto(), 'act', () => 'go')
     .memory('first', m => m.raw.branch.act.toolResults[0].result)
     .memory('second', m => m.raw.branch.act.toolResults[1].result);
 
@@ -1347,7 +1347,7 @@ test('an unresolvable tree tool name is an isError result', async () => {
   const handler = scripted([{ content: '', tool_calls: [tc('ghost', {})] }]);
   const pattern = Tree.name('host')
     .tools('ghost')
-    .prompt('act', () => 'go')
+    .prompt(disableAuto(), 'act', () => 'go')
     .memory('err', m => m.raw.branch.act.toolResults[0].isError)
     .memory('msg', m => String(m.raw.branch.act.toolResults[0].result));
 
@@ -1398,7 +1398,7 @@ test('nested tree tools replay every prompt level on resume', async () => {
   const inner = Tree.name('inner').human('go').memory('out', () => 'inner done');
   const outer = Tree.name('outer')
     .tools('inner_tool')
-    .prompt('outer_act', () => 'call inner')
+    .prompt(disableAuto(), 'outer_act', () => 'call inner')
     .memory('outer_out', m => m.raw.branch.outer_act.toolResults[0].result);
   const handler = scripted([
     { content: '', tool_calls: [tc('outer_tool', {})] },
@@ -1413,7 +1413,7 @@ test('nested tree tools replay every prompt level on resume', async () => {
   });
   const pattern = Tree.name('host')
     .tools('outer_tool')
-    .prompt('act', () => 'go')
+    .prompt(disableAuto(), 'act', () => 'go')
     .memory('seen', m => m.raw.branch.act.toolResults[0].result);
 
   const first = await grandma.knit(pattern, runtime);

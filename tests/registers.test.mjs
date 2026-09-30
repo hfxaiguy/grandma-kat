@@ -8,7 +8,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import grandma, { Tree, calls } from '../src/index.mjs';
+import grandma, { Tree, calls, disableAuto } from '../src/index.mjs';
 import { scripted, mockRuntime, tool } from './helpers.mjs';
 
 const tc = (name, args) => ({ id: name, function: { name, arguments: JSON.stringify(args ?? {}) } });
@@ -191,7 +191,7 @@ test('a model-called register applies its patch and the tool result is { value }
       return { value: next, memory: { count: next } };
     })
     .tools('bump')
-    .prompt('main', () => 'go')
+    .prompt(disableAuto(), 'main', () => 'go')
     .memory('rec', (m) => ({ count: m.count, results: m.raw.branch.main.toolResults }));
 
   const { memory } = await grandma.knit(pattern, mockRuntime(handler));

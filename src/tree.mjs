@@ -1,7 +1,7 @@
 // Tree factory: chained builder methods accumulate an immutable definition
 // (plain data). Execution happens separately, via grandma.knit().
 
-import { isWhen, isUpdate, isGoback, isGoto, isMax, isCalls, isParameters, goback, goto, resolveMax } from './markers.mjs';
+import { isWhen, isUpdate, isGoback, isGoto, isMax, isCalls, isParameters, isDisableAuto, isToolHookBefore, isToolHookAfter, goback, goto, resolveMax } from './markers.mjs';
 
 const BUILDER = Symbol('grandma-kat/builder');
 const registry = new Map();
@@ -61,8 +61,45 @@ function makeBuilder(def) {
     },
 
     // Accumulative: append a prompt leaf (anonymous or named).
+    //   .prompt([when], [name], value, [options])
+    //   .prompt(disableAuto(), …)       — single round: results recorded, never fed back
+    //   .prompt(max(n), …)              — bound the auto tool loop (default DEFAULT_MAX)
+    //   .prompt(toolHookBefore(fn), …)  — hook per tool call, before it executes
+    //   .prompt(toolHookAfter(fn), …)   — hook per tool call, after it executed
     prompt(...rawArgs) {
       const { gate, args } = takeGate(rawArgs, '.prompt()');
+      // Auto-loop markers may sit anywhere among the arguments; splice them
+      // out before name/value/options parsing (same trick as .memory(update())).
+      const auto = {};
+      const before = [];
+      const after = [];
+      let sawDisable = false;
+      let sawMax = false;
+      for (let i = 0; i < args.length; ) {
+        const a = args[i];
+        if (isDisableAuto(a)) {
+          if (sawDisable) throw new TypeError('.prompt(): duplicate disableAuto()');
+          sawDisable = true;
+          auto.disabled = true;
+          args.splice(i, 1);
+          continue;
+        }
+        if (isToolHookBefore(a)) { before.push(a); args.splice(i, 1); continue; }
+        if (isToolHookAfter(a)) { after.push(a); args.splice(i, 1); continue; }
+        if (isMax(a)) {
+          if (sawMax) throw new TypeError('.prompt(): duplicate max()');
+          sawMax = true;
+          auto.max = resolveMax(a);
+          args.splice(i, 1);
+          continue;
+        }
+        i++;
+      }
+      if (before.length || after.length) {
+        auto.hooks = {};
+        if (before.length) auto.hooks.before = before.map((h) => ({ fn: h.fn, gate: h.gate }));
+        if (after.length) auto.hooks.after = after.map((h) => ({ fn: h.fn, gate: h.gate }));
+      }
       const name = takeName(args, '.prompt()');
       const value = args.shift();
       if (typeof value !== 'string' && !Array.isArray(value) && typeof value !== 'function') {
@@ -71,6 +108,9 @@ function makeBuilder(def) {
       const options = takeOptions(args, '.prompt()');
       if (args.length !== 0) throw new TypeError('.prompt(): too many arguments');
       const child = { kind: 'prompt', name, prompt: value, gate, options };
+      // Only written when configured: a plain prompt keeps its exact JSON
+      // shape, so definition ids / host session hashes do not churn.
+      if (Object.keys(auto).length) child.auto = auto;
       return next(def, (d) => { d.children.push(child); });
     },
 

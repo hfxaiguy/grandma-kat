@@ -307,10 +307,14 @@ const tools = {
 - `.tools('navigate', 'click')` on a container whitelists tools for its
   prompt children (inherited down the tree). Opt out per prompt:
   `.prompt(fn, { tools: [] })`. Default: no tools.
-- When a prompt's model responds with tool calls, they execute **once** —
-  no hidden internal loop. The text comes back as the value; calls and
-  results are at `m.raw.prev[0].toolCalls` / `.toolResults`. Retries are
-  your tree's job (`.check()` + `goback()`), visible and debuggable.
+- When a prompt's model responds with tool calls, the prompt runs the
+  **auto tool loop**: every call executes, the results feed back on the
+  prompt's local thread, and the model is called again until it answers
+  without calls. `disableAuto()` on the prompt stops after one round,
+  `max(n)` bounds the loop, and `toolHookBefore()` / `toolHookAfter()`
+  observe and rewrite each call (see the `.prompt()` reference and
+  *Tool hooks*). Calls and results are at `m.raw.prev[0].toolCalls` /
+  `.toolResults` (union across rounds); the whole exchange at `.thread`.
 - `.call('navigate', m => ({ url: m.branch.best }))` calls a tool directly,
   no LLM involved.
 
@@ -556,18 +560,54 @@ A leading string counts as a name only if a value follows it, so
 `.prompt('just a static string')` is a value, and
 `.prompt('outline', m => ...)` is a named prompt.
 
-Execution: resolves the model (nearest `.model()` rule up the tree stack,
-else the runtime default), resolves tools (per-prompt option, else
-inherited `.tools()`, else none), makes **one** LLM call. If the model
-returns tool calls, they execute **once**, sequentially — no internal
-agent loop. The leaf's value is the response **text** (`''` if the model
-only made tool calls); everything else is in the record:
-`m.raw.prev[0].toolCalls` / `.toolResults` / `.reasoning` / `.calls`.
-Retries are the tree's job (`.check()` + `goback()`).
+Execution runs the **auto tool loop** (default): resolves the model
+(nearest `.model()` rule up the tree stack, else the runtime default) and
+the tools (per-prompt option, else inherited `.tools()`, else none), then
+keeps a local conversation — every tool call the model emits executes (the
+same resolution and call path as `.call()`), the results are appended to
+the prompt's thread and sent back, and the model is called again until a
+round returns no tool calls. The leaf's value is the **final** round's
+text; the exchange is on the record: `m.raw.prev[0].calls` (per round),
+`.toolCalls` / `.toolResults` (union across rounds, call order), `.rounds`,
+`.thread` (the final messages). Tool errors are fed back so the model can
+recover — bounded by `max()`.
+
+Prompt-argument markers tune it:
+
+- **`disableAuto()`** — no loop: one round, calls execute once, results are
+  recorded but never fed back.
+- **`max(n[, errFn])`** — bound the rounds (default `DEFAULT_MAX`, 3);
+  exhaustion throws `KnitError` with the `errFn(m)` message.
+- **`toolHookBefore(fn)`** / **`toolHookAfter(fn)`** — per-call hooks (see
+  *Tool hooks* below); optional `when(cond)` first argument skips the hook
+  for a call.
 
 Options: `{ tools: [...] }` — per-prompt tool whitelist, replacing the
 inherited one (`{ tools: [] }` opts out of tools entirely). Unknown option
 keys throw at build time.
+
+### `toolHookBefore(...)` / `toolHookAfter(...)` — prompt markers
+
+Hooks run for every tool call the prompt executes (with or without
+`disableAuto()`), `fn(m, thread, tool_call)`:
+
+- `m` — the memory view at the prompt.
+- `thread` — the live message array; hook edits are respected.
+- `tool_call` — `{ id, name, args }` before the call,
+  `{ id, name, args, result, isError }` after. Return an object to replace
+  it (fields merge; `null`/`undefined` keeps the current shape; `id` and
+  `name` are fixed by routing); a throwing hook aborts the run.
+
+```js
+.tools('lookup')
+.prompt(
+  toolHookBefore((m, thread, tc) => console.log('→', tc.name, tc.args)),
+  toolHookAfter((m, thread, tc) => {
+    if (tc.isError) tc.result = { error: `${tc.result} (tell the user to retry)` };
+  }),
+  m => 'find Ada',
+)
+```
 
 ### `.call([when], [name], tool, argsOrFn)` — accumulative
 
@@ -745,12 +785,15 @@ the only entry). Every referenced name is validated against the runtime
 
 ### `.tools([when], ...names)` — selective (last match wins)
 
-Adds a tool-whitelist rule for prompt children (tool names from the runtime
-registry; default is no tools). Inherited down the tree like `.model()`;
+Adds a tool-whitelist rule for prompt children (names resolve at the
+prompt's scope — the tree's registers first, then the runtime registry;
+default is no tools). Inherited down the tree like `.model()`;
 override per prompt with `.prompt(fn, { tools: [...] })`. All referenced
 names are validated at `knit()` start: one error listing every unknown
-name with its branch path. Note the sibling method `.call()` (direct tool
-call) — one letter apart, deliberately different jobs.
+name with its branch path. The offer is **enforced**: a tool call the
+prompt never offered is refused (as an error result) before it can
+execute. Note the sibling method `.call()` (direct tool call) — one letter
+apart, deliberately different jobs.
 
 ### `.needs(...names)` — accumulative
 
@@ -768,36 +811,46 @@ Consequence: declare needs only for inputs present at **first execution**.
 Loop-carried reads (draft reading `m.branch.verify` on pass 1) must stay
 undeclared and defensive: `${m.branch.verify ?? ''}`.
 
-### `.register(name, description, fn, [options])` — declaration
+### `.register(name, description, fn, [calls(...), parameters(...)])` — declaration
 
 Declares an **inline tool** that lives in the tree itself — no runtime
-registry entry needed:
+registry entry needed — and is **scoped like a memory slot**: visible to
+the whole subtree of the tree it is declared on, overridable by a child,
+invisible to the parent and to siblings (duplicate names on one tree are a
+build error). The runtime's tool table is the bottom layer of resolution,
+so a register also wins over a same-named runtime tool in its subtree (a
+warning is printed at `knit()` start).
 
 ```js
 .register("lookup", "Find a person by name and return their phone",
   (m, args) => findPerson(m.workspace, args.name))
 ```
 
-- `fn(memory, args)` is the tool body; `memory` is the view of the scope
-  where the tool is **called** (not where it was registered), `args` the
-  parsed arguments. The return value is the tool result: a string or a
-  plain JSON object, with the same error conventions as registry tools (an
-  object with an `error` key, or a string starting with "error", is a tool
-  error).
+- `fn(memory, args, tools)` is the tool body; `memory` is the view of the
+  scope where the tool is **called**, `args` the parsed arguments. With
+  `calls("sql_query")` the fn also gets `tools` — the declared host
+  function tools, resolved on the register's home path at call time
+  (`await tools.sql_query({ ... })`); each nested call is logged like any
+  other tool result.
 - Write the body **inline** at the `.register()` call site — multi-line and
   `async` are fine. Like prompt text, don't hoist the handler into a
   separate constant or module: keeping it beside the tree is what makes the
   tool's dataflow readable.
-- `options.parameters` is the JSON schema the model sees; the default is an
-  empty object schema.
-- A register is a **declaration, not a step**: it installs into the run's
-  tool table at `knit()` start and is available to every step and every
-  pass — fresh, rewound, and resumed alike. Its position in the chain is
-  readability only, and it does not take `when()`.
+- The return value is the tool result: a string or a plain object. An
+  object may carry a **memory patch** — `return { value, memory: { slot:
+  v } }` — written to the existing slots as memory updates and stripped, so
+  the stored result (and what the model sees) is `{ value }`. A patch for a
+  slot that does not exist in the scope chain fails the call; an `error`
+  result skips the patch. The usual error conventions apply (an object with
+  an `error` key, or a string starting with "error", is a tool error).
+- `parameters(schema)` supplies the JSON schema the model sees (default: an
+  empty object schema); `calls(...)` and `parameters(...)` may each appear
+  once.
+- A register is a **declaration, not a step**: it does not take `when()`,
+  and its position in the chain is readability only — resolution is
+  lexical, not positional.
 - Model visibility is unchanged: whitelist the name on a prompt
   (`.tools('lookup')`) or call it directly (`.call('lookup', m => …)`).
-  A register shadows a same-named runtime tool for that run; a warning is
-  printed at `knit()` start.
 
 ### `.until([when], cond, [max])` — selective (last match wins)
 
@@ -819,13 +872,19 @@ with `goback(<all children>, max)` — same primitive, two scopes.
 ### Markers
 
 ```js
-import { when, goback, max, DEFAULT_MAX } from 'grandma-kat';
+import { when, goback, max, calls, parameters, DEFAULT_MAX } from 'grandma-kat';
 ```
 
 - **`when(cond)`** — wraps a gate function `(memory) => boolean` for use as
   the first/second argument of any builder method. The wrapper is a
   distinct type, which is how the builder catches a bare function in the
   condition slot at build time.
+- **`disableAuto()`**, **`toolHookBefore(fn)`**, **`toolHookAfter(fn)`** —
+  prompt-argument markers for the auto tool loop; see the `.prompt()`
+  reference and *Tool hooks* above.
+- **`calls(...)`**, **`parameters(schema)`** — `.register()` arguments: the
+  host function tools the register body may invoke, and the JSON schema the
+  model sees for the inline tool.
 - **`goback(n, max?)`** — the flow marker for `.check()`: rewind `n`
   children (positive integer). `n` counts children, not the check.
 - **`max(count, errFn?)`** — bounds a backward edge: `count` = maximum

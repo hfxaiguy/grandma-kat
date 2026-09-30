@@ -232,13 +232,18 @@ test('find-address: until loop exhausts after max iterations', async () => {
   // Pass 1: check + company + try_element ask + pick = 4 calls.
   // Passes 2-4: check + try_element ask + pick = 3 calls each (company skipped).
   // 4 + (3 × 3) = 13 calls total.
-  const handler = async (messages) => {
+  const handler = async (messages, { tools } = {}) => {
     const n = i++;
     const last = messages[messages.length - 1];
     if (last.content.startsWith('Below is the text content')) return { content: 'no' };
     if (last.content.includes('What is the name of the company')) return { content: 'X Corp' };
     if (last.content.includes('Would clicking this element')) return { content: 'yes' };
-    return { tool_calls: [{ id: `tc${n}`, function: { name: 'navigate', arguments: `{"url":"https://p${Math.floor(n/4)}"}` } }] };
+    // Only a prompt that OFFERS navigate may call it — a no-tools step (the
+    // try_interact ask once the elements run out) answers in text.
+    if ((tools ?? []).some((t) => t.function?.name === 'navigate')) {
+      return { tool_calls: [{ id: `tc${n}`, function: { name: 'navigate', arguments: `{"url":"https://p${Math.floor(n/4)}"}` } }] };
+    }
+    return { content: 'no candidates' };
   };
 
   await assert.rejects(

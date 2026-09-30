@@ -1,5 +1,5 @@
 // Marker factories: when(), update(), goback(), goto(), max(), calls(),
-// parameters().
+// parameters(), disableAuto(), toolHookBefore(), toolHookAfter().
 // Each marker is a distinct type so the builder can validate argument slots
 // at build time (e.g. reject a bare function in a condition slot).
 
@@ -104,3 +104,54 @@ export function parameters(schema) {
 }
 
 export const isParameters = (v) => v != null && v[PARAMETERS] === true;
+
+const DISABLE_AUTO = Symbol('grandma-kat/disableAuto');
+const TOOL_HOOK_BEFORE = Symbol('grandma-kat/toolHookBefore');
+const TOOL_HOOK_AFTER = Symbol('grandma-kat/toolHookAfter');
+
+/**
+ * Marker for `.prompt(disableAuto(), …)` — keep that prompt single-round:
+ * tool calls execute and are recorded, but their results are never fed back
+ * to the model. The default is the auto tool-execution loop.
+ */
+export function disableAuto() {
+  return Object.freeze({ [DISABLE_AUTO]: true });
+}
+
+export const isDisableAuto = (v) => v != null && v[DISABLE_AUTO] === true;
+
+/**
+ * Markers for `.prompt(toolHookBefore([when(cond)], fn), …)` — hooks run per
+ * tool call of that prompt, `fn(m, thread, tool_call)`, before and after the
+ * call executes. Returning a value replaces the tool-call shape (null keeps
+ * the current one); a throwing hook aborts the run. An optional when() gate
+ * skips the hook for that call.
+ */
+export function toolHookBefore(...rawArgs) {
+  return makeToolHook(TOOL_HOOK_BEFORE, 'toolHookBefore', rawArgs);
+}
+
+export function toolHookAfter(...rawArgs) {
+  return makeToolHook(TOOL_HOOK_AFTER, 'toolHookAfter', rawArgs);
+}
+
+function makeToolHook(kind, label, rawArgs) {
+  const args = [...rawArgs];
+  const whenIndex = args.findIndex(isWhen);
+  if (whenIndex === -1) {
+    if (args.length !== 1) {
+      throw new TypeError(`${label}([when(cond)], fn): expects exactly one hook function`);
+    }
+  } else if (whenIndex > 1 || args.length !== 2) {
+    throw new TypeError(`${label}([when(cond)], fn): when() must be first or second, followed by the hook function`);
+  }
+  const gate = whenIndex === -1 ? null : args.splice(whenIndex, 1)[0].cond;
+  const fn = args[0];
+  if (typeof fn !== 'function') {
+    throw new TypeError(`${label}([when(cond)], fn): hook must be a function`);
+  }
+  return Object.freeze({ [kind]: true, fn, gate });
+}
+
+export const isToolHookBefore = (v) => v != null && v[TOOL_HOOK_BEFORE] === true;
+export const isToolHookAfter = (v) => v != null && v[TOOL_HOOK_AFTER] === true;
