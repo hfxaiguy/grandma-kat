@@ -35,7 +35,7 @@
 
 import { describeField, LISTS, SCALARS, parseLocationString } from "./src/fields.js";
 import { transformImportValue } from "./src/import-values.js";
-import { Tree, when, max, update, calls, parameters, disableAuto, Name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Map, Call, Check, Emit, Return, Until } from "../../../src/index.mjs";
+import { Tree, when, max, update, calls, parameters, disableAuto, name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until } from "../../../src/index.mjs";
 
 // What a mapped column may become, straight from the schema. Locations are
 // excluded from the keyed vocabulary: city/region/country columns combine
@@ -526,7 +526,7 @@ function summarizeUpdate(result) {
 }
 
   //   || -- inspect input for people or an attached CSV/TSV import
-  const classify = Tree(Name("classify"), Prompt("mode", (m) => [
+  const classify = Tree(name("classify"), Prompt("mode", (m) => [
     {
       role: "system",
       content: `You extract contact information and select the contact-work mode for the input.
@@ -545,9 +545,9 @@ Do not call tools and do not add commentary.`,
 
   //   || || -- extract each person and every stated field
   //   || || << emit the extracted people
-  const peopleWork = Tree(Name("people_work")
+  const peopleWork = Tree(name("people_work")
     , Branch(
-      Tree(Name("extract_people"), Prompt((m) => [
+      Tree(name("extract_people"), Prompt((m) => [
         {
           role: "system",
           content: `You extract contact information from a message.
@@ -569,7 +569,7 @@ If the message mentions no person, reply with exactly: NONE`,
     //   || || || << emit the update output
     //   || || () prompt(max(12)) — the native auto tool loop saves each person
     , Branch(
-      Tree(Name("save_people")
+      Tree(name("save_people")
         , Tools("upsert_contact")
         // Auto tool loop: one upsert_contact call per person, the results
         // feed back on the prompt's thread, and the model confirms in a
@@ -610,7 +610,7 @@ If the list is empty or says NONE, reply "nothing to save" and do not call the t
   //
   // No tools: the profile (every column with type, non-empty count, and one
   // sample) is deterministic, so a single prompt judges the file and maps it.
-  const explore = Tree(Name("explore")
+  const explore = Tree(name("explore")
     , Prompt("explore_prompt", (m) => [
       {
         role: "system",
@@ -651,7 +651,7 @@ Do not call tools and do not add commentary.`,
   // The per-row subtree: ONE direct upsert_contact call, no model. The gate
   // drops rows that map to nothing (no name and no email); a skipped item
   // contributes undefined to the collected results.
-  const saveRow = Tree(Name("save_row")
+  const saveRow = Tree(name("save_row")
     , Call(
       when((m) => rowToContact(m.item, m) !== null),
       "save_row",
@@ -659,8 +659,8 @@ Do not call tools and do not add commentary.`,
       (m) => rowToContact(m.item, m),
     ));
 
-  const upsertBatch = Tree(Name("upsert_batch")
-    , Map("upsert_rows", (m) => (Array.isArray(m.batch_rows) ? m.batch_rows : []), saveRow)
+  const upsertBatch = Tree(name("upsert_batch")
+    , Each("upsert_rows", (m) => (Array.isArray(m.batch_rows) ? m.batch_rows : []), saveRow)
     , Emit(
       when((m) => (m.branch.upsert_rows ?? []).filter(Boolean).length > 0),
       (m) => ({
@@ -678,7 +678,7 @@ Do not call tools and do not add commentary.`,
   //   || || || ++ batch_rows
   //   || || || ** if the batch has rows
   //   || || || () until the batch is empty
-  const importLoop = Tree(Name("import_loop")
+  const importLoop = Tree(name("import_loop")
     , Call("query_batch", "duckdb_query", (m) => ({
       path: planPath(m),
       query: buildBatchQuery(planFieldMap(m), m.import_cursor, m),
@@ -695,7 +695,7 @@ Do not call tools and do not add commentary.`,
 
   //   || || || -- draft or revise the import plan from the field map and the latest reply
   //   || || || ++ import_plan, plan_confirmed
-  const draftPlan = Tree(Name("draft_plan")
+  const draftPlan = Tree(name("draft_plan")
     , Prompt("plan_prompt", (m) => [
       {
         role: "system",
@@ -743,7 +743,7 @@ Reply with JSON only:
   //   || || || ** if the plan is not confirmed
   //   || || || || << emit the plan and ask the user to confirm or correct it
   //   || || || || >> plan_reply
-  const planReview = Tree(Name("plan_review")
+  const planReview = Tree(name("plan_review")
     // Emit first (the full plan, or just what changed since plan_shown), then
     // remember what the user has seen so the next round can diff against it.
     , Emit((m) => ({ text: formatPlan(m) }))
@@ -753,7 +753,7 @@ Reply with JSON only:
   //   || || ()
   //   || || || -- draft or revise the import plan from the field map and the latest reply
   //   || || () until the plan is confirmed
-  const planLoop = Tree(Name("plan_loop")
+  const planLoop = Tree(name("plan_loop")
     , Branch(draftPlan)
     // The plan slots are DECLARED in import_work (below) so the sibling
     // import loop can read them; memoryUpdate writes them in the declaring
@@ -782,7 +782,7 @@ Reply with JSON only:
   //
   // Both profile queries page at the duckdb tool's 100-row cap, so files with
   // more columns than that are still profiled end to end.
-  const columnsLoop = Tree(Name("csv_columns_loop")
+  const columnsLoop = Tree(name("csv_columns_loop")
     , Call("columns_page", "duckdb_query", (m) => ({
       path: planPath(m),
       query: columnsQuery(m.columns_cursor),
@@ -796,7 +796,7 @@ Reply with JSON only:
       max(20, (m) => `column profile limit: ${m.error ?? "stuck"}`),
     ));
 
-  const profileLoop = Tree(Name("csv_profile_loop")
+  const profileLoop = Tree(name("csv_profile_loop")
     , Call("profile_page", "duckdb_query", (m) => ({
       path: planPath(m),
       query: profileQuery(m.profile_cursor),
@@ -815,7 +815,7 @@ Reply with JSON only:
   //   || || -- explore the profile: map it to schema fields, or flag the file as not contact data
   //   || || ++ field_map
   //   || || ++ import_cursor: 0
-  const importWork = Tree(Name("import_work")
+  const importWork = Tree(name("import_work")
     , Memory("document_path", (m) => m.branch.classify?.path ?? m.import_path ?? "(missing)")
     // No invisible default: when the request names no group, planGroup() is
     // empty and the review must get one from the user before importing.
@@ -862,7 +862,7 @@ Reply with JSON only:
         : { contacts: false, text: planOutcome(m) }));
 
 export default (
-  Tree(Name("contacts")
+  Tree(name("contacts")
       , Model("strong")
 
       // !! input — the tree requires `input` (the user's message): a parent

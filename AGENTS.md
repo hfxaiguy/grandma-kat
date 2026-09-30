@@ -1,4 +1,4 @@
-> **The chain form is gone.** Elements are the only authoring surface — `.name()`, `.prompt()`, `.branch()` … were removed. Read every example below as element form: `.method(args)` → `Method(args)` and `Tree.name('x')` → `Tree(Name('x'), …)`. See `examples/notation/README.md` for the spec.
+> **The chain form is gone.** Elements are the only authoring surface — `.name()`, `.prompt()`, `.branch()` … were removed. Read every example below as element form: `.method(args)` → `Method(args)` and `Tree.name('x')` → `Tree(name('x'), …)`. See `examples/notation/README.md` for the spec.
 
 # Grandma KAT
 

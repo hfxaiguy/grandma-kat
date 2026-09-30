@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import grandma, { Tree, Name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Map, Call, Check, Emit, Return, Until, when, max, update, calls, parameters, disableAuto, toolHookBefore, toolHookAfter, goback, goto } from '../src/index.mjs';
+import grandma, { Tree, name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until, when, max, update, calls, parameters, disableAuto, toolHookBefore, toolHookAfter, goback, goto } from '../src/index.mjs';
 import { scripted, mockRuntime, tool } from './helpers.mjs';
 
 // ── the def shape is the contract ──────────────────────────────────────────
@@ -35,10 +35,10 @@ test('the kitchen sink builds one tree with the exact shape', () => {
   };
   const schema = { type: 'object', properties: { q: { type: 'string' } } };
   const flow = goback(1, max(3));
-  const sub = Tree(Name('sub'), Prompt('leaf', f.text));
+  const sub = Tree(name('sub'), Prompt('leaf', f.text));
 
   const tree = Tree(
-    Name('sink'),
+    name('sink'),
     Model('strong'),
     Model(when(f.cond), 'cheap'),
     Tools('a', 'b'),
@@ -57,7 +57,7 @@ test('the kitchen sink builds one tree with the exact shape', () => {
     Check(f.check, flow),
     Register('lookup', 'find one', f.body, calls('echo'), parameters(schema)),
     Branch(when(f.cond), sub),
-    Map('items', f.array, sub),
+    Each('items', f.array, sub),
     Return(f.give),
     Until(f.until, max(5)),
     Until(goto('ask'), f.until, max(5)),
@@ -101,15 +101,15 @@ test('the kitchen sink builds one tree with the exact shape', () => {
 
 test('a def without registers never grows the registers key', () => {
   const text = () => 'x';
-  const bare = Tree(Name('plain'), Prompt('p', text));
-  const tooled = Tree(Name('plain'), Prompt('p', text), Register('lookup', 'd', () => 'x'));
+  const bare = Tree(name('plain'), Prompt('p', text));
+  const tooled = Tree(name('plain'), Prompt('p', text), Register('lookup', 'd', () => 'x'));
   assert.ok(!('registers' in bare), 'a def that never registers keeps its exact JSON shape');
   assert.equal(tooled.registers.length, 1);
 });
 
 test('element directives patch the definition', () => {
-  const tree = Tree(Name('el_directives'), Model('cheap'), Tools('a', 'b'), Needs('input'));
-  assert.ok(Tree.has('el_directives'), 'Name(...) registers the tree');
+  const tree = Tree(name('el_directives'), Model('cheap'), Tools('a', 'b'), Needs('input'));
+  assert.ok(Tree.has('el_directives'), 'name(...) registers the tree');
   assert.equal(Tree.from('el_directives'), tree);
   assert.deepEqual(tree.models, [{ cond: null, value: 'cheap' }]);
   assert.deepEqual(tree.tools, [{ cond: null, value: ['a', 'b'] }]);
@@ -125,7 +125,7 @@ test('nonsense is rejected where it is written', () => {
   assert.throws(() => Prompt(when(() => true), when(() => true), 'x', () => 'y'), /when\(\) may appear only once/);
   assert.throws(() => Branch(), /expects a single tree argument/);
   assert.throws(() => Model('a', 'b'), /expects a model name/);
-  assert.throws(() => Name('bad#name'), /'#' is reserved/);
+  assert.throws(() => name('bad#name'), /'#' is reserved/);
   assert.throws(() => Memory('slot'), /second argument must be a function/);
 });
 
@@ -136,7 +136,7 @@ test('an element tree knots end to end (human → memory → emit → loop)', as
   try {
     const emitted = [];
     const tree = Tree(
-      Name('el_demo'),
+      name('el_demo'),
       Memory('seen', () => []),
       // The loop lives inside a branch so the seed above runs once.
       Branch(Tree(
@@ -166,7 +166,7 @@ test('an element tree knots end to end (human → memory → emit → loop)', as
 test('an element Prompt runs the model and records its branch result', async () => {
   const handler = scripted(['42']);
   const tree = Tree(
-    Name('el_prompt'),
+    name('el_prompt'),
     Prompt('ask', () => 'what is the answer?'),
     Memory('answer', (m) => m.branch.ask),
   );
@@ -178,7 +178,7 @@ test('an element Prompt runs the model and records its branch result', async () 
 test('element Register + Call resolve calls(...) at knit start', async () => {
   const seen = [];
   const tree = Tree(
-    Name('el_reg'),
+    name('el_reg'),
     Register(
       'echo_it',
       'echo it back',

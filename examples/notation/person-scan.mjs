@@ -32,7 +32,7 @@
 //     bare Prompt(...), so the `**` condition can reference its result by name
 //     instead of a fragile auto-name like `#1`.
 
-import grandma, { Tree, when, Name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Map, Call, Check, Emit, Return, Until } from "../../src/index.mjs";
+import grandma, { Tree, when, name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until } from "../../src/index.mjs";
 
 // System prompt for the yes/no detection step: the model only judges
 // presence of personal information, nothing else.
@@ -52,7 +52,7 @@ const isYes = (v) => typeof v === "string" && /^\s*yes\b/i.test(v.trim());
 // The tree. Pass it to `grandma.knit(pattern, runtime)`. The runtime must
 // provide the model(s) and, when several greeting turns run in one session,
 // the `mem_global` seed (see the runner/smoke test).
-export const pattern = Tree(Name("person-scan")
+export const pattern = Tree(name("person-scan")
   , Model("default")
 
   // `<< output_msg: "Hi. This is grandpa-bob"` → Emit(...) the verbatim text.
@@ -66,7 +66,7 @@ export const pattern = Tree(Name("person-scan")
   // expanded here: a system prompt, the injected input_1, and a strict
   // yes/no format the next gate depends on.
   , Branch(
-    Tree(Name("scan_input"), Prompt((m) => [
+    Tree(name("scan_input"), Prompt((m) => [
       { role: "system", content: DETECT_SYSTEM },
       {
         role: "user",
@@ -79,7 +79,7 @@ export const pattern = Tree(Name("person-scan")
   // "yes". "above" binds to scan_input; isYes normalizes the answer.
   , Branch(
     when((m) => isYes(m.branch.scan_input)),
-    Tree(Name("summarize_people")
+    Tree(name("summarize_people")
       // `|| prompt: how many people and what kind of information...` →
       // the child prompt, expanded to extract counts + per-person info.
       , Prompt((m) => [

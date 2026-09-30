@@ -1,9 +1,9 @@
 // Grandma KAT — Grandma Knits Agent Trees.
 //
-//   import grandma, { Tree, Name, Prompt, Check, goback, max } from 'grandma-kat';
+//   import grandma, { Tree, name, Prompt, Check, goback, max } from 'grandma-kat';
 //
 //   const pattern = Tree(
-//     Name('agent'),
+//     name('agent'),
 //     Prompt(m => `Define success conditions for: ${m.task}`),
 //     Prompt(m => `Attempt: ${m.prev[0]}`),
 //     Check(m => m.prev[0] === 'yes' || 'Answer only yes or no.',
@@ -29,9 +29,9 @@
 import { knit, resume, KnitError, PauseSignal } from './knit.mjs';
 
 export { Tree } from './tree.mjs';
-// The element surface: Tree(Name('agent'), Prompt('ask', …), Branch(sub), …)
+// The element surface: Tree(name('agent'), Prompt('ask', …), Branch(sub), …)
 // — markers may sit anywhere among an element's arguments.
-export { Name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Map, Call, Check, Emit, Return, Until } from './records.mjs';
+export { name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until } from './records.mjs';
 export { when, update, goback, goto, max, calls, parameters, disableAuto, toolHookBefore, toolHookAfter, isWhen, isUpdate, isGoback, isGoto, isMax, isCalls, isParameters, isDisableAuto, isToolHookBefore, isToolHookAfter, DEFAULT_MAX } from './markers.mjs';
 export { knit, resume, KnitError, PauseSignal } from './knit.mjs';
 export { createLogger } from './logger.mjs';

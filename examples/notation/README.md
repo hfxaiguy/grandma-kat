@@ -23,7 +23,7 @@ tracking method boundaries.
 | `->` | `-> query_batch: duckdb_query ...` | fixed/direct tool call, no model | `Call("query_batch", "duckdb_query", argsFn)` | call name and tool name literal; arguments **expanded** from context |
 | `#->` | `#-> lookup: "Find a person by name"` | register an inline tool, scoped like a memory slot (inherited by its subtree, overridable by a child) | `Register("lookup", "Find a person by name", (m, args, tools) => …, calls(...), parameters({ … }))` | name literal; the description `"..."` verbatim; the body is JavaScript at the call site; `calls(...)` and `parameters(...)` are markers |
 | `??` | `?? check: X holds; else goto draft_plan (max 3)` | guard the chunk above; on failure jump to a named child | `Check(m => EXPAND(COND), goto("NAME", max(k)))` | condition **expanded**; the `goto` target and max are literal |
-| `@@` | `@@ upsert_rows: batch_rows` | run the subtree once per array element | `Map("upsert_rows", m => m.batch_rows, SUBTREE)` | name literal; the array is a memory/branch reference |
+| `@@` | `@@ upsert_rows: batch_rows` | run the subtree once per array element | `Each("upsert_rows", m => m.batch_rows, SUBTREE)` | name literal; the array is a memory/branch reference |
 | `**` | `** branch: if X is true, run:` or `**` | conditional or unconditional subtree | `Branch(when(cond), SUBTREE)` or `Branch(SUBTREE)` — the subtree may be unnamed | condition text **expanded** when present |
 | `##` | `## contacts: app/contacts/tree.mjs` | import and attach another tree | import its default tree, then `Branch(importedTree)` | tree name and module path are literal |
 | `\|\|` | `\|\| prompt: ...` | child of the `**`/`()` block above | whatever the indented kind says | — |
@@ -96,8 +96,8 @@ the `.mjs` from it rather than hand-patching the code, so the two stay in sync.
 
 A translated tree is one call: `export default Tree(...)` with one element per
 chunk, in order. Elements are the constructors from grandma-kat:
-`Tree, Name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch,
-Map, Call, Check, Emit, Return, Until`.
+`Tree, name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch,
+Each, Call, Check, Emit, Return, Until`.
 
 ```js
 // chain of chunks…
@@ -106,7 +106,7 @@ Map, Call, Check, Emit, Return, Until`.
 //   >> confirm
 // …becomes, in order:
 export default Tree(
-  Name('caller_list'),
+  name('caller_list'),
   Model('strong'),
   Prompt('draft_sql', () => [{ role: 'system', content: '…' }, { role: 'user', content: '…' }]),
   Memory(update(), 'selection_sql', (m) => parse(m.branch.draft_sql).sql),
@@ -118,11 +118,11 @@ export default Tree(
 Chunks fall into three member classes, and the elements mirror them:
 
 - **Steps** run in sequence and carry the flow (`Prompt`, `Human`, `Emit`,
-  `Call`, `Check`, `Memory` writes, `Branch`, `Map`, `Return`, `Until`).
+  `Call`, `Check`, `Memory` writes, `Branch`, `Each`, `Return`, `Until`).
 - **Declarations** belong to the whole subtree: `Register` (per `#->`) and
   `Needs` (per `!!`). A `Register` never takes `when()`.
 - **Directives** apply from the position where they appear (last match wins up
-  the execution path): `Name`, `Model`, `Tools`. Write them where the covered
+  the execution path): `name`, `Model`, `Tools`. Write them where the covered
   steps start — never as a tree header.
 
 Rules of the translation:
@@ -135,7 +135,7 @@ Rules of the translation:
 - `Register(...)` is a declaration (like `#->`): may sit anywhere in the
   sequence and is collected onto the def — visible to the whole subtree,
   overridable by a child.
-- Unnamed subtrees are just `Tree(...)` without `Name(...)`: knit() auto-names
+- Unnamed subtrees are just `Tree(...)` without `name(...)`: knit() auto-names
   them (`${parent}#${k}`) and registers them so resume can find them. Name a
   subtree only when the sketch names it or the parent reads its result.
 - A `--` prompt is a `Branch` wrapping a named `Prompt` when the sketch needs
@@ -188,10 +188,10 @@ Rules of the translation:
   have a stable name and communicate through ordinary memory, branch results,
   and visible Grandma KAT events.
 - Bare `**` → an unconditional grouping branch: `Branch(SUBTREE)`. Subtrees do
-  **not** need `Name()`: an unnamed subtree takes its child's auto name
+  **not** need `name()`: an unnamed subtree takes its child's auto name
   (`${parent}#${k}`, k = 1-based child position) and is registered so resume
   can find it. Name the subtree only when the sketch names it or the parent
-  reads its result (`m.branch.<name>`): `Branch(Tree(Name("<name>"), SUBTREE))`.
+  reads its result (`m.branch.<name>`): `Branch(Tree(name("<name>"), SUBTREE))`.
 - `|| KIND ...` → a child of the enclosing branch, at the matching depth.
 - `?? check: COND; else goto NAME (max k)` → `Check(m => EXPAND(COND),
   goto("NAME", max(k)))`. The expanded condition returns `true` to pass, or a
@@ -253,7 +253,7 @@ Rules of the translation:
     calls("search_contacts"),
     parameters({ type: "object", properties: { name: { type: "string" } }, required: ["name"] }))
   ```
-- `@@ NAME: ARRAY` → `Map('NAME', m => m.ARRAY, SUBTREE)`. It opens a level:
+- `@@ NAME: ARRAY` → `Each('NAME', m => m.ARRAY, SUBTREE)`. It opens a level:
   the `||` lines below form the per-item subtree. The current element is
   `m.item`, and the per-item results collect under `m.branch.NAME` in the
   parent scope.

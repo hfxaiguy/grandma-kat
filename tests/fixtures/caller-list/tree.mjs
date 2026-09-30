@@ -30,7 +30,7 @@
 // marker form Memory(update(), …).
 
 import { findStoredPhone, openFollowups, splitPhones, targetFrom } from "./src/walk.js";
-import { Tree, when, max, update, calls, parameters, disableAuto, Name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Map, Call, Check, Emit, Return, Until } from "../../../src/index.mjs";
+import { Tree, when, max, update, calls, parameters, disableAuto, name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until } from "../../../src/index.mjs";
 
 const CONTACTS_DB = "contacts.db";
 const SAMPLE_LIMIT = 5;
@@ -576,7 +576,7 @@ Do not add commentary outside the JSON.`,
   //   || -- advance: complete or skip based on the caller's report, plus any
   //   numbers, follow-ups or new people the same words carry, on the current
   //   target or an earlier contact named in the conversation.
-  const advance = Tree(Name("advance")
+  const advance = Tree(name("advance")
     , Tools(
       "complete_call_target",
       "try_next_phone",
@@ -694,7 +694,7 @@ line about what you need. Never skip a person unless the caller asked to skip th
   //   || -- fix: draft one corrective statement against contacts.db, show it
   //   with the rows it will affect, and apply it only after the caller
   //   confirms. The queue does not move — the walk re-presents the number.
-  const fixFlow = Tree(Name("fix")
+  const fixFlow = Tree(name("fix")
     , Memory("fix_sql", () => "")
     , Memory("fix_check", () => "")
     , Memory("fix_notes", () => "")
@@ -798,7 +798,7 @@ Do not add commentary outside the JSON.`,
     })));
 
 export default (
-  Tree(Name("caller_list")
+  Tree(name("caller_list")
       , Model("strong")
 
       // ── registers ────────────────────────────────────────────────────────

@@ -167,7 +167,7 @@ export async function resume(checkpointId, runtime) {
     if (!humanEvent) throw new KnitError(`checkpoint '${checkpointId}': no human event found at seq ${cp.seq}`);
     const treeNames = humanEvent.branch_path.split('/');
 
-    // Reconstruct completed Map() item results (keyed by the map's location
+    // Reconstruct completed Each() item results (keyed by the map's location
     // so a paused map can resume from the right item index with its prior
     // results intact). Each completed item logs a `map_item` event with its
     // index + value in the map child's parent scope.
@@ -260,7 +260,7 @@ export async function resume(checkpointId, runtime) {
       // Which slot is paused — carried so execTree's resume path can route
       // a raw human reply without the caller naming it.
       humanSlot: humanEvent.content?.child ?? "main_input",
-      // Prior Map() items' results, keyed by `${branch_path}/${child}`.
+      // Prior Each() items' results, keyed by `${branch_path}/${child}`.
       // Lets a paused map resume from the paused item instead of restarting.
       mapItemResults,
     };
@@ -517,7 +517,7 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         i++;
         continue;
       } else if (child.kind === 'map') {
-        // On resume, a Map() that is (or contains) the paused element must
+        // On resume, a Each() that is (or contains) the paused element must
         // resume from the paused item rather than restart. Same guard as
         // branches: only descend with savedResume when a deeper level exists.
         const mapResume =

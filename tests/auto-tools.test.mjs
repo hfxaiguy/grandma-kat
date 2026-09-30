@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import grandma, { Tree, when, max, disableAuto, toolHookBefore, toolHookAfter, Name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Map, Call, Check, Emit, Return, Until } from '../src/index.mjs';
+import grandma, { Tree, when, max, disableAuto, toolHookBefore, toolHookAfter, name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until } from '../src/index.mjs';
 import { scripted, mockRuntime, tool } from './helpers.mjs';
 
 const tc = (name, args, id = name) => ({
@@ -39,21 +39,21 @@ test('markers validate their arguments', () => {
 test('Prompt() parses auto markers; plain prompts keep their exact JSON shape', () => {
   const hb = () => {};
   const ha = () => {};
-  const t = Tree(Name('p'), Prompt(toolHookBefore(hb), toolHookAfter(ha), disableAuto(), max(5), m => 'x'));
+  const t = Tree(name('p'), Prompt(toolHookBefore(hb), toolHookAfter(ha), disableAuto(), max(5), m => 'x'));
   const child = t.children[0];
   assert.equal(child.auto.disabled, true);
   assert.equal(child.auto.max.count, 5);
   assert.deepEqual(child.auto.hooks.before.map((h) => h.fn), [hb]);
   assert.deepEqual(child.auto.hooks.after.map((h) => h.fn), [ha]);
 
-  const plain = Tree(Name('p2'), Prompt(m => 'x'));
+  const plain = Tree(name('p2'), Prompt(m => 'x'));
   assert.ok(!('auto' in plain.children[0]), 'no auto key when nothing was configured — def hashes stay stable');
 
-  const t2 = Tree(Name('p3'), Prompt(toolHookBefore(hb), toolHookBefore(ha), m => 'x'));
+  const t2 = Tree(name('p3'), Prompt(toolHookBefore(hb), toolHookBefore(ha), m => 'x'));
   assert.deepEqual(t2.children[0].auto.hooks.before.map((h) => h.fn), [hb, ha], 'multiple hooks keep argument order');
 
-  assert.throws(() => Tree(Name('p4'), Prompt(disableAuto(), disableAuto(), m => 'x')), /duplicate disableAuto/);
-  assert.throws(() => Tree(Name('p4'), Prompt(max(2), max(3), m => 'x')), /duplicate max/);
+  assert.throws(() => Tree(name('p4'), Prompt(disableAuto(), disableAuto(), m => 'x')), /duplicate disableAuto/);
+  assert.throws(() => Tree(name('p4'), Prompt(max(2), max(3), m => 'x')), /duplicate max/);
 });
 
 // ── runner: the loop ──────────────────────────────────────────────────────
@@ -64,7 +64,7 @@ test('auto loop: executes tool calls, feeds results back, ends on the answer rou
     { content: '', tool_calls: [tc('search', { q: 'x' })] },
     'final answer',
   ]);
-  const pattern = Tree(Name('agent')
+  const pattern = Tree(name('agent')
     , Tools('search')
     , Prompt('main', m => 'find it')
     , Memory('rec', m => m.raw.branch.main));
@@ -92,7 +92,7 @@ test('auto loop: executes tool calls, feeds results back, ends on the answer rou
 
 test('disableAuto(): stays single-round — results recorded, never fed back', async () => {
   const handler = scripted([{ content: 'noted it', tool_calls: [tc('search', { q: 'x' })] }]);
-  const pattern = Tree(Name('agent')
+  const pattern = Tree(name('agent')
     , Tools('search')
     , Prompt(disableAuto(), 'main', m => 'find it')
     , Memory('rec', m => m.raw.branch.main));
@@ -112,7 +112,7 @@ test('tool errors are fed back so the model can recover', async () => {
     { content: '', tool_calls: [tc('flaky', {})] },
     'recovered',
   ]);
-  const pattern = Tree(Name('agent')
+  const pattern = Tree(name('agent')
     , Tools('flaky')
     , Prompt('main', m => 'go'));
 
@@ -130,7 +130,7 @@ test('tool errors are fed back so the model can recover', async () => {
 
 test('max() bounds the loop; exhaustion throws with the errFn message', async () => {
   const handler = scripted([{ content: '', tool_calls: [tc('search', { q: 'x' })] }]); // repeats forever
-  const pattern = Tree(Name('agent')
+  const pattern = Tree(name('agent')
     , Tools('search')
     , Prompt(max(2, () => 'custom-limit-hit'), m => 'go'));
 
@@ -153,7 +153,7 @@ test('a model-called register patches memory mid-loop and feeds back its { value
     { content: '', tool_calls: [tc('bump', {})] },
     'final',
   ]);
-  const pattern = Tree(Name('agent')
+  const pattern = Tree(name('agent')
     , Memory('count', () => 0)
     , Register('bump', 'bump it', (m) => {
       const next = (m.count ?? 0) + 1;
@@ -177,7 +177,7 @@ test('a call outside the prompt whitelist is refused, not executed', async () =>
     { content: '', tool_calls: [tc('sneaky', {})] },
     'recovered',
   ]);
-  const pattern = Tree(Name('agent')
+  const pattern = Tree(name('agent')
     , Tools('search')
     , Prompt('main', () => 'go'));
 
@@ -203,7 +203,7 @@ test('hooks run per tool call, in order: before → execute → after', async ()
     'done',
   ]);
   const mk = (name) => tool(async (args) => { seq.push(`exec:${name}:${args.q}`); return `r-${name}`; });
-  const pattern = Tree(Name('agent')
+  const pattern = Tree(name('agent')
     , Tools('a', 'b')
     , Prompt(
       toolHookBefore((m, thread, t) => { seq.push(`before:${t.name}:${t.args.q}`); assert.ok(Array.isArray(thread)); }),
@@ -225,7 +225,7 @@ test('hook return values replace the call shape (null keeps the current one)', a
     { content: '', tool_calls: [tc('search', { q: 'raw' })] },
     'done',
   ]);
-  const pattern = Tree(Name('agent')
+  const pattern = Tree(name('agent')
     , Tools('search')
     , Prompt(
       toolHookBefore(() => null), // null → keep the current shape
@@ -245,7 +245,7 @@ test('hook return values replace the call shape (null keeps the current one)', a
 
 test('a throwing hook aborts the run loudly', async () => {
   const handler = scripted([{ content: '', tool_calls: [tc('search', {})] }]);
-  const pattern = Tree(Name('agent')
+  const pattern = Tree(name('agent')
     , Tools('search')
     , Prompt(toolHookBefore(() => { throw new Error('boom'); }), m => 'go'));
 
@@ -258,7 +258,7 @@ test('a throwing hook aborts the run loudly', async () => {
 test('hook gates: when() skips the hook for that call', async () => {
   let called = 0;
   const handler = scripted([{ content: '', tool_calls: [tc('search', {})] }, 'done']);
-  const pattern = Tree(Name('agent')
+  const pattern = Tree(name('agent')
     , Tools('search')
     , Prompt(toolHookBefore(when(() => false), () => { called++; }), m => 'go'));
 
@@ -266,7 +266,7 @@ test('hook gates: when() skips the hook for that call', async () => {
   assert.equal(called, 0);
 
   const handler2 = scripted([{ content: '', tool_calls: [tc('search', {})] }, 'done']);
-  const pattern2 = Tree(Name('agent2')
+  const pattern2 = Tree(name('agent2')
     , Tools('search')
     , Prompt(toolHookBefore(when(() => true), () => { called++; }), m => 'go'));
   await grandma.knit(pattern2, mockRuntime(handler2, { tools: { search: tool(async () => 'x') } }));
@@ -276,7 +276,7 @@ test('hook gates: when() skips the hook for that call', async () => {
 test('hooks run with disableAuto() too — they observe calls, not the loop', async () => {
   let called = 0;
   const handler = scripted([{ content: '', tool_calls: [tc('search', {})] }]);
-  const pattern = Tree(Name('agent')
+  const pattern = Tree(name('agent')
     , Tools('search')
     , Prompt(disableAuto(), toolHookAfter(() => { called++; }), m => 'go'));
 
@@ -290,7 +290,7 @@ test('resume: replayed calls do not re-run hooks, and the loop continues past th
   const dbPath = tmpLogger();
   try {
     const counts = { before: 0, after: 0 };
-    const inner = Tree(Name('interviewer')
+    const inner = Tree(name('interviewer')
       , Prompt(m => `ask about ${m.topic}`)
       , Human('reply')
       , Memory('done', () => true));
@@ -300,7 +300,7 @@ test('resume: replayed calls do not re-run hooks, and the loop continues past th
       { content: '', tool_calls: [tc('interviewer', { topic: 'cats' })] },
       'inner question', // consumed by the inner prompt
     ]);
-    const pattern = Tree(Name('outer')
+    const pattern = Tree(name('outer')
       , Tools('interviewer')
       , Prompt(
         toolHookBefore(() => { counts.before++; }),
@@ -330,7 +330,7 @@ test('resume: replayed calls do not re-run hooks, and the loop continues past th
 test('resume: the rebuilt thread carries replayed and fresh tool results', async () => {
   const dbPath = tmpLogger();
   try {
-    const inner = Tree(Name('asker')
+    const inner = Tree(name('asker')
       , Prompt(m => 'inner question')
       , Human('reply'));
     const tools = {
@@ -342,7 +342,7 @@ test('resume: the rebuilt thread carries replayed and fresh tool results', async
       { content: '', tool_calls: [tc('search', { q: 'x' }), tc('asker', {})] },
       'inner-output', // consumed by the inner prompt
     ]);
-    const pattern = Tree(Name('outer')
+    const pattern = Tree(name('outer')
       , Tools('search', 'asker')
       , Prompt('main', m => 'go'));
 

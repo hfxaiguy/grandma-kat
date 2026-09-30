@@ -32,10 +32,10 @@ tree up front and then executes it, calling the model only for the parts
 that actually need a model.
 
 ```js
-import grandma, { Tree, Name, Prompt, Until, max } from 'grandma-kat';
+import grandma, { Tree, name, Prompt, Until, max } from 'grandma-kat';
 
 const pattern = Tree(
-  Name('draft-and-verify'),
+  name('draft-and-verify'),
   Prompt(m => `Write one paragraph about ${m.task}.`),
   Prompt(m => `Does this paragraph stay on topic? Answer "pass" or "fail".\n\n${m.prev[0]}`),
   Until(m => m.prev[0]?.trim() === 'pass', max(3)),
@@ -97,7 +97,7 @@ SQLite logging, and mock-model testing, for one import and no dependencies.
 **Alpha** (v0.1.0). Implemented and tested: the element surface
 (`Tree(...)`), markers, runner, memory scope chain, the auto tool loop with
 hooks, gates, checks/goback/until, `Memory` (plain and `update()` form),
-`Return`, `Emit`, `Human` (pause/resume with DB-backed checkpoints), `Map`,
+`Return`, `Emit`, `Human` (pause/resume with DB-backed checkpoints), `Each`,
 `Register`, validation, SQLite + console logging.
 
 Deferred (designed, not built): tool-call pause mode, escalation promotion,
@@ -125,10 +125,10 @@ A tree that asks a small model to judge a yes/no question, and retries with
 feedback until the model actually answers in the required format:
 
 ```js
-import grandma, { Tree, Name, Prompt, Check, goback, max } from 'grandma-kat';
+import grandma, { Tree, name, Prompt, Check, goback, max } from 'grandma-kat';
 
 const pattern = Tree(
-  Name('judge'),
+  name('judge'),
   Prompt(m => `Is ${m.topic} a good first programming language? Answer ONLY "yes" or "no".`),
   Check(
     m => ['yes', 'no'].includes(m.prev[0].trim().toLowerCase())
@@ -164,7 +164,7 @@ result explicit with a `Return(...)` after that bookkeeping:
 
 ```js
 const answer = Tree(
-  Name('answer'),
+  name('answer'),
   Prompt('response', m => `Answer: ${m.question}`),
   Memory('audit', m => ({ length: m.branch.response.length })),
   Return(m => m.branch.response),
@@ -176,7 +176,7 @@ instead. `Return(...)` is also the stable way for a parent to consume a named
 child's intended result via `m.branch.<name>`.
 
 ```js
-Tree(Name('draft'), Prompt(m => `Write about ${m.task}`))
+Tree(name('draft'), Prompt(m => `Write about ${m.task}`))
 
 // draft        ← container (named tree)
 //  └─ draft#1  ← anonymous prompt child (auto-named at build time)
@@ -203,7 +203,7 @@ elements both run. Two `Model(...)` rules resolve to the last match.
 | `Return(fn)` | early exit | stops the tree if `fn` returns non-null |
 | `Emit(fn)` | non-blocking output | calls `runtime.onEmit(value)`, continues |
 | `Human(name, contextFn?)` | human-in-the-loop | pauses execution, waits for input |
-| `Map(name, arrayFn, tree)` | run a subtree per element | array of results, stored under `name` |
+| `Each(name, arrayFn, tree)` | run a subtree per element | array of results, stored under `name` |
 
 Any element may take a `when(cond)` gate, anywhere among its arguments:
 
@@ -226,7 +226,7 @@ Inside any prompt/gate/check function, the memory view `m` gives you:
 | `m.prev` | completed siblings' outputs, **most-recent-first** (positional) |
 | `m.raw.branch.X` / `m.raw.prev[i]` | the full **record**: `{ content, reasoning, toolCalls, toolResults, calls }` (container records may also include `children`) |
 | `m.error` | feedback from the last failed check (cleared on pass) |
-| `m.item` | current element inside a `Map(...)` subtree |
+| `m.item` | current element inside a `Each(...)` subtree |
 | `m.<anything>` | any other name resolves up the scope chain (root inputs, ancestor slots) |
 
 Root inputs come from `memory:` in the runtime. Sessions are just the root
@@ -265,9 +265,9 @@ different model" are one concept:
 
 ```js
 const pattern = Tree(
-  Name('agent'),
+  name('agent'),
   Model('cheap'),                                                   // default for this tree
-  Branch(Tree(Name('summarize'), Model('strong'), Prompt(...))),    // override per branch
+  Branch(Tree(name('summarize'), Model('strong'), Prompt(...))),    // override per branch
 );
 ```
 
@@ -287,13 +287,13 @@ switch models between loop passes as memory changes:
 
 ```js
 Tree(
-  Name('agent'),
+  name('agent'),
   Model('cheap'),                                                   // default first
   Model(when(m => m.branch.plan?.trim().toLowerCase() === 'hard'),  // gated override
     'strong'),
-  Branch(Tree(Name('plan'), Prompt(m =>
+  Branch(Tree(name('plan'), Prompt(m =>
     `Is this task "easy" or "hard" for a small model? One word: ${m.task}`))),
-  Branch(Tree(Name('solve'), Prompt(m => `Solve: ${m.task}`))),
+  Branch(Tree(name('solve'), Prompt(m => `Solve: ${m.task}`))),
 )
 // 'plan' runs on 'cheap' (the gate is false before plan exists — note
 // the defensive `?.`); if plan says "hard", 'solve' runs on 'strong'
@@ -370,15 +370,15 @@ runtime error if they don't resolve when the step runs.
 
 ### Reuse
 
-A `Name(id)` element registers the tree into a global registry. Definitions
+A `name(id)` element registers the tree into a global registry. Definitions
 are plain immutable data — building applies each element copy-on-write — so a
 tree dropped into multiple parents can never be mutated through one
 reference:
 
 ```js
-const navigate = Tree(Name('navigate'), Prompt(...));
-const a = Tree(Name('a'), Branch(navigate));
-const b = Tree(Name('b'), Branch(Tree.from('navigate')));
+const navigate = Tree(name('navigate'), Prompt(...));
+const a = Tree(name('a'), Branch(navigate));
+const b = Tree(name('b'), Branch(Tree.from('navigate')));
 ```
 
 ## Runtime options
@@ -502,7 +502,7 @@ a `when(cond)` gate.**
 - **Two flavors of elements.**
   - *Steps (accumulative)* — every element applies, in declared order:
     `Branch`, `Prompt`, `Call`, `Check`, `Memory` (plain and `update()`
-    form), `Return`, `Emit`, `Human`, `Map`.
+    form), `Return`, `Emit`, `Human`, `Each`.
   - *Rules (selective)* — one value is chosen; the **last matching rule
     wins**: `Model`, `Tools`, `Until`. Put defaults first, gated overrides
     later. An unconditional rule after conditional ones shadows them →
@@ -526,15 +526,15 @@ a `when(cond)` gate.**
 import { Tree } from 'grandma-kat';
 ```
 
-- **`Tree(Name('id'), …)`** — build a tree and register it in the global
+- **`Tree(name('id'), …)`** — build a tree and register it in the global
   registry under `id`. The registry is what makes reuse by name possible.
-- A tree without `Name(...)` is anonymous: fine for branch/map subtrees
+- A tree without `name(...)` is anonymous: fine for branch/map subtrees
   nobody references.
 - **`Tree.from(id)`** — retrieve a registered definition (throws if unknown).
   Useful for dropping the same subtree into multiple parents.
 - **`Tree.has(id)`** — `true` if `id` is registered.
 
-### `Name(id)` — directive
+### `name(id)` — directive
 
 Names the tree. The root you pass to `knit()` must be named; a `Branch` or
 `Map` subtree may be unnamed. The name is also the memory key: a completed
@@ -549,9 +549,9 @@ and its **exported value** — its last executed child's result — is written
 to the current scope under the child's name.
 
 ```js
-Branch(Tree(Name('draft'), Prompt(m => `Write about ${m.task}`)))
+Branch(Tree(name('draft'), Prompt(m => `Write about ${m.task}`)))
 Branch(when(m => m.branch.verify === 'fail'), reviseTree)
-// Unnamed: no Name() needed.
+// Unnamed: no name() needed.
 Branch(Tree(Prompt(m => `Check ${m.branch.draft}`)))
 ```
 
@@ -671,7 +671,7 @@ Memory('tried', (m, cur) => [...(cur ?? []), m.prev[0]])
 `fn(memory, currentValue)` returns the value to store under `name` **in the
 current tree's scope** (`currentValue` is `undefined` on first write). The
 written value also appears in `m.prev`, like a prompt's output — which
-makes `Memory(...)` usable as the collecting final step of a `Map(...)`
+makes `Memory(...)` usable as the collecting final step of a `Each(...)`
 subtree. Placement matters: a slot written inside a branch stays local to
 that branch; put the `Memory(...)` at the level where the value needs to
 live (e.g. at loop level to accumulate across `Until(...)` passes).
@@ -738,7 +738,7 @@ input is injected into the scope chain and readable as `m.branch.<name>`.
 
 ```js
 const pattern = Tree(
-  Name('chat'),
+  name('chat'),
   Prompt(m => `Draft a response to: ${m.user_input}`),
   Human('approve', m => ({ draft: m.prev[0] })),
   Prompt(m => `Finalize: ${m.branch.approve}`),
@@ -767,7 +767,7 @@ logging). The continuation is a checkpoint ID string, not serialized state.
 State is reconstructed from the event log on resume. Checkpoints are
 single-use — deleted after resume.
 
-### `Map([when], name, arrayFn, tree)` — step
+### `Each([when], name, arrayFn, tree)` — step
 
 Appends a per-element iteration leaf. `arrayFn(memory)` returns an array;
 the subtree runs fully, once per element, **sequentially**, each time in a
@@ -778,8 +778,8 @@ leaf's own value). Empty (or non-array) input → no invocations,
 collection `name` (or the child's auto name for `Branch`).
 
 ```js
-Map('ratings', m => m.branch.candidates,
-  Tree(Name('rate'),
+Each('ratings', m => m.branch.candidates,
+  Tree(name('rate'),
     Prompt(m => `Rate "${m.item.text}": likely/unlikely`),
     Check(m => ['likely', 'unlikely'].includes(m.prev[0]) || 'One word.',
       goback(1, max(2)))))

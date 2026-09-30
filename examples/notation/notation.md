@@ -21,8 +21,8 @@ form. This file shows line → chunk → the element it becomes and why.
 | `++ memory: mem_global` | root session seed | runtime `memory: { mem_global }` | No value here, so it's seeded by the caller, not written in-tree. |
 | `<< output_msg: "..."` | emit greeting | `Emit(m => ({ text: "Hi. This is grandpa-bob" }))` | Quoted → verbatim `text`. |
 | `>> human: input_1` | pause | `Human("input_1")` | Reply read as `m.branch.input_1`. |
-| `-- prompt: ...` | detect person | `Branch(Tree(Name("scan_input"), Prompt(...)))` | Named branch so `**` can reference it; prompt expanded to force `yes/no`. |
-| `** branch: if above is true` | gated branch | `Branch(when(m => isYes(m.branch.scan_input)), Tree(Name("summarize_people"), …))` | "above" binds to `scan_input`. |
+| `-- prompt: ...` | detect person | `Branch(Tree(name("scan_input"), Prompt(...)))` | Named branch so `**` can reference it; prompt expanded to force `yes/no`. |
+| `** branch: if above is true` | gated branch | `Branch(when(m => isYes(m.branch.scan_input)), Tree(name("summarize_people"), …))` | "above" binds to `scan_input`. |
 | `\|\| prompt: ...` | summarize | inner `Prompt(...)` | Child of `summarize_people`. |
 
 ## The translation decisions, spelled out
@@ -33,7 +33,7 @@ form. This file shows line → chunk → the element it becomes and why.
 
 2. **`--` becomes a named branch, not a bare `Prompt(...)`.** The notation
    refers to results *by name*, and a top-level `Prompt(...)` is anonymous
-   (`#1`). Wrapping it in `Tree(Name("scan_input"), …)` gives the result a stable
+   (`#1`). Wrapping it in `Tree(name("scan_input"), …)` gives the result a stable
    name the `**` condition can use.
 
 3. **The `--` prompt is expanded, not literal.** The seed "does `input_1`

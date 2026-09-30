@@ -8,7 +8,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import grandma, { Tree, calls, disableAuto, Name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Map, Call, Check, Emit, Return, Until } from '../src/index.mjs';
+import grandma, { Tree, calls, disableAuto, name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until } from '../src/index.mjs';
 import { scripted, mockRuntime, tool } from './helpers.mjs';
 
 const tc = (name, args) => ({ id: name, function: { name, arguments: JSON.stringify(args ?? {}) } });
@@ -16,12 +16,12 @@ const tc = (name, args) => ({ id: name, function: { name, arguments: JSON.string
 // ── visibility ─────────────────────────────────────────────────────────────
 
 test('a register is visible to its def’s subtree', async () => {
-  const pattern = Tree(Name('vis1')
+  const pattern = Tree(name('vis1')
     , Register('peek', 'read a slot', (m) => `peeked:${m.seed}`)
     , Memory('seed', () => 's')
     , Call('direct', 'peek', () => ({}))
     , Branch(
-      Tree(Name('inner')
+      Tree(name('inner')
         , Call('nested', 'peek', () => ({})))
     )
     , Memory('got', (m) => ({ direct: m.branch.direct, nested: m.branch.inner })));
@@ -32,17 +32,17 @@ test('a register is visible to its def’s subtree', async () => {
 });
 
 test('a register declared on a child is invisible to the parent and to siblings', async () => {
-  const parentCannot = Tree(Name('vis2')
+  const parentCannot = Tree(name('vis2')
     , Call('x', 'child_only', () => ({}))
-    , Branch(Tree(Name('kid'), Register('child_only', 'hidden', () => 'nope'), Memory('marker', () => true))));
+    , Branch(Tree(name('kid'), Register('child_only', 'hidden', () => 'nope'), Memory('marker', () => true))));
   await assert.rejects(
     grandma.knit(parentCannot, mockRuntime(scripted([]))),
     /unknown tool 'child_only'/,
   );
 
-  const siblingCannot = Tree(Name('vis3')
-    , Branch(Tree(Name('a'), Register('only_a', 'x', () => 'a'), Memory('marker', () => true)))
-    , Branch(Tree(Name('b'), Call('x', 'only_a', () => ({})))));
+  const siblingCannot = Tree(name('vis3')
+    , Branch(Tree(name('a'), Register('only_a', 'x', () => 'a'), Memory('marker', () => true)))
+    , Branch(Tree(name('b'), Call('x', 'only_a', () => ({})))));
   await assert.rejects(
     grandma.knit(siblingCannot, mockRuntime(scripted([]))),
     /unknown tool 'only_a'/,
@@ -50,11 +50,11 @@ test('a register declared on a child is invisible to the parent and to siblings'
 });
 
 test('a child may override a parent register for its own subtree', async () => {
-  const pattern = Tree(Name('vis4')
+  const pattern = Tree(name('vis4')
     , Register('who', 'name it', () => 'parent')
     , Call('before', 'who', () => ({}))
     , Branch(
-      Tree(Name('kid')
+      Tree(name('kid')
         , Register('who', 'override', () => 'child')
         , Call('inside', 'who', () => ({})))
     )
@@ -66,7 +66,7 @@ test('a child may override a parent register for its own subtree', async () => {
 });
 
 test('duplicate register names on one tree are a build error', async () => {
-  const dup = Tree(Name('vis5')
+  const dup = Tree(name('vis5')
     , Register('x', 'one', () => 'a')
     , Register('x', 'two', () => 'b')
     , Call('go', 'x', () => ({})));
@@ -78,10 +78,10 @@ test('duplicate register names on one tree are a build error', async () => {
 
 test('a prompt sees the register that resolves at its own scope', async () => {
   const handler = scripted([{ content: 'asked', tool_calls: null }]);
-  const pattern = Tree(Name('vis6')
+  const pattern = Tree(name('vis6')
     , Register('who', 'parent description', () => 'parent')
     , Branch(
-      Tree(Name('kid')
+      Tree(name('kid')
         , Register('who', 'child description', () => 'child')
         , Tools('who')
         , Prompt('main', () => 'go'))
@@ -97,7 +97,7 @@ test('a prompt sees the register that resolves at its own scope', async () => {
 
 test('a register body receives the host tools it declares with calls(...)', async () => {
   const seen = [];
-  const pattern = Tree(Name('calls1')
+  const pattern = Tree(name('calls1')
     , Register(
       'fetch',
       'fetch through the host',
@@ -120,7 +120,7 @@ test('a register body receives the host tools it declares with calls(...)', asyn
 });
 
 test('calls(...) names must resolve at knit start, and only to function tools', async () => {
-  const missing = Tree(Name('calls2')
+  const missing = Tree(name('calls2')
     , Register('x', 'x', () => 'x', calls('nope'))
     , Call('go', 'x', () => ({})));
   await assert.rejects(
@@ -128,12 +128,12 @@ test('calls(...) names must resolve at knit start, and only to function tools', 
     /calls\('nope'\) is not resolvable/,
   );
 
-  const treeKind = Tree(Name('calls3')
+  const treeKind = Tree(name('calls3')
     , Register('x', 'x', () => 'x', calls('treeish'))
     , Call('go', 'x', () => ({})));
   await assert.rejects(
     grandma.knit(treeKind, mockRuntime(scripted([]), {
-      tools: { treeish: { description: 't', tree: Tree(Name('inner3'), Prompt('p', () => 'x')) } },
+      tools: { treeish: { description: 't', tree: Tree(name('inner3'), Prompt('p', () => 'x')) } },
     })),
     /may only call function tools/,
   );
@@ -142,7 +142,7 @@ test('calls(...) names must resolve at knit start, and only to function tools', 
 // ── the { value, memory } result shape ─────────────────────────────────────
 
 test('a memory patch writes the slots and is stripped from the stored result', async () => {
-  const pattern = Tree(Name('patch1')
+  const pattern = Tree(name('patch1')
     , Memory('count', () => 0)
     , Memory('label', () => 'start')
     , Register('bump', 'bump the count', (m) => {
@@ -159,7 +159,7 @@ test('a memory patch writes the slots and is stripped from the stored result', a
 });
 
 test('an error result skips the patch but still loses the memory key', async () => {
-  const pattern = Tree(Name('patch2')
+  const pattern = Tree(name('patch2')
     , Memory('count', () => 0)
     , Register('bad', 'fails', () => ({ error: 'nope', memory: { count: 9 } }))
     , Call('x', 'bad', () => ({}))
@@ -171,7 +171,7 @@ test('an error result skips the patch but still loses the memory key', async () 
 });
 
 test('a patch for an undeclared slot fails the call', async () => {
-  const pattern = Tree(Name('patch3')
+  const pattern = Tree(name('patch3')
     , Register('bad', 'bad patch', () => ({ value: 1, memory: { nope: 1 } }))
     , Call('x', 'bad', () => ({})));
   await assert.rejects(
@@ -184,7 +184,7 @@ test('a model-called register applies its patch and the tool result is { value }
   const handler = scripted([
     { content: '', tool_calls: [tc('bump', {})] },
   ]);
-  const pattern = Tree(Name('patch4')
+  const pattern = Tree(name('patch4')
     , Memory('count', () => 0)
     , Register('bump', 'bump it', (m) => {
       const next = (m.count ?? 0) + 1;

@@ -3,7 +3,7 @@
 // separately, via grandma.knit().
 //
 //   export default Tree(
-//     Name('call_outcome'), Model('strong'),
+//     name('call_outcome'), Model('strong'),
 //     Prompt('response', textFn, when(cond), max(6)),
 //     Register('note_phone', 'Save a phone note', body, calls('contacts__get_contact')),
 //     Branch(outcomeTree),
@@ -46,8 +46,8 @@ function next(def, patch) {
 function applyElement(def, el) {
   if (!isElement(el)) {
     throw new TypeError(
-      'Tree(...): every argument must be an element — Name(), Model(), Tools(), Needs(), Human(), ' +
-      'Prompt(), Memory(), Register(), Branch(), Map(), Call(), Check(), Emit(), Return(), Until()',
+      'Tree(...): every argument must be an element — name(), Model(), Tools(), Needs(), Human(), ' +
+      'Prompt(), Memory(), Register(), Branch(), Each(), Call(), Check(), Emit(), Return(), Until()',
     );
   }
   switch (el.element) {
@@ -69,7 +69,7 @@ function applyElement(def, el) {
 }
 
 // Tree is the factory AND the namespace: Tree(element, …) builds a tree;
-// Tree.from()/Tree.has() use the registry. An unnamed tree needs no Name():
+// Tree.from()/Tree.has() use the registry. An unnamed tree needs no name():
 // knit() auto-names subtrees after their child (see autoname in knit.mjs) and
 // registers them so resume can find them.
 export function Tree(...elements) {

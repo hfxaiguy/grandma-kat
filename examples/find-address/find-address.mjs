@@ -52,7 +52,7 @@
 //   - Each step can use different tools — the address-checking step needs
 //     no tools at all, while the pick-action step needs navigate and click.
 
-import grandma, { Tree, when, goback, max, update, disableAuto, Name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Map, Call, Check, Emit, Return, Until } from '../../src/index.mjs';
+import grandma, { Tree, when, goback, max, update, disableAuto, name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until } from '../../src/index.mjs';
 
 // The system prompt tells the AI what kind of assistant it is. Think of it
 // as setting the AI's "job title" — it's a web navigation helper that
@@ -102,7 +102,7 @@ Answer: yes or no
 // 5. On "yes" → act on that element. On "no" → try the next one.
 // 6. Loop until the address is found or we've tried 3 times
 
-export const pattern = Tree(Name("find-address")
+export const pattern = Tree(name("find-address")
   , Model("default")
 
   // STEP 1: Navigate to the starting URL (if one was provided).
@@ -117,7 +117,7 @@ export const pattern = Tree(Name("find-address")
 
   // STEP 3: Ask the AI "Is there an address on this page?"
   , Branch(
-    Tree(Name("check_address"), Prompt((m) => [
+    Tree(name("check_address"), Prompt((m) => [
       { role: "system", content: SYSTEM_PROMPT_NO_TOOLS },
       {
         role: "user",
@@ -129,7 +129,7 @@ export const pattern = Tree(Name("find-address")
 
   , Branch(
     when((m) => isNo(m.branch.check_address) && !m.branch.get_company_start),
-    Tree(Name("get_company_start"), Prompt((m) => [
+    Tree(name("get_company_start"), Prompt((m) => [
       { role: "system", content: SYSTEM_PROMPT_NO_TOOLS },
       {
         role: "user",
@@ -144,7 +144,7 @@ export const pattern = Tree(Name("find-address")
   // STEP 4: If the address wasn't found, try to find it by clicking around.
   , Branch(
     when((m) => isNo(m.branch.check_address)),
-    Tree(Name("try_find")
+    Tree(name("try_find")
       // 4b: Scan the page for clickable elements.
       , Call("scan_clickables", "scan_clickables", () => ({}))
 
@@ -159,7 +159,7 @@ export const pattern = Tree(Name("find-address")
       // ask the AI if it would lead to the address. On "yes" → return it.
       // On "no" → try the next element.
       , Branch(
-        Tree(Name("try_element")
+        Tree(name("try_element")
           // Pick the first element not yet tried.
           , Memory("current", (m) => {
             const tried = m.branch.tried_elements ?? [];
@@ -216,7 +216,7 @@ export const pattern = Tree(Name("find-address")
 
       // 4e: Act on the chosen element. Navigate to its URL or click it.
       , Branch(
-        Tree(Name("pick_action")
+        Tree(name("pick_action")
           , Tools("navigate", "click")
           // disableAuto: this step acts on exactly ONE choice per loop
           // iteration — the tree drives the loop (check + goback below and

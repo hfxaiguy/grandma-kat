@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import grandma, { Tree, when, update, goback, max, KnitError, disableAuto, Name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Map, Call, Check, Emit, Return, Until } from '../src/index.mjs';
+import grandma, { Tree, when, update, goback, max, KnitError, disableAuto, name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until } from '../src/index.mjs';
 import { scripted, mockRuntime, tool } from './helpers.mjs';
 
 function tmpLogger() {
@@ -14,7 +14,7 @@ function tmpLogger() {
 test('basic pipeline: prompts chain via m.prev, result = last child', async () => {
   const seen = [];
   const handler = scripted(['outline', 'draft', 'final']);
-  const pattern = Tree(Name('pipe')
+  const pattern = Tree(name('pipe')
     , Prompt(m => `task: ${m.task}`)
     , Prompt(m => { seen.push(m.prev.length); return `from: ${m.prev[0]}`; })
     , Prompt(m => `${m.prev[0]} + ${m.prev[1]}`));
@@ -32,8 +32,8 @@ test('basic pipeline: prompts chain via m.prev, result = last child', async () =
 
 test('nested branches export to parent and resolve via m.branch.X', async () => {
   const handler = scripted(['inner-value', 'outer-read']);
-  const pattern = Tree(Name('outer')
-    , Branch(Tree(Name('inner'), Prompt(m => 'make')))
+  const pattern = Tree(name('outer')
+    , Branch(Tree(name('inner'), Prompt(m => 'make')))
     , Prompt(m => { assert.equal(m.branch.inner, 'inner-value'); return 'done'; }));
 
   const { result, memory } = await grandma.knit(pattern, mockRuntime(handler));
@@ -44,9 +44,9 @@ test('nested branches export to parent and resolve via m.branch.X', async () => 
 test('shadowing: nearest scope wins', async () => {
   const reads = [];
   const handler = scripted(['inner', 'read-inner', 'read-outer']);
-  const pattern = Tree(Name('root')
+  const pattern = Tree(name('root')
     , Branch(
-      Tree(Name('sub')
+      Tree(name('sub')
         , Prompt('task', m => 'inner') // shadows root input 'task' inside sub
         , Prompt(m => { reads.push(m.branch.task); return 'x'; }))
     )
@@ -58,7 +58,7 @@ test('shadowing: nearest scope wins', async () => {
 
 test('check failure sets m.error; goback retries with feedback', async () => {
   const handler = scripted(['bad answer', 'yes']);
-  const pattern = Tree(Name('agent')
+  const pattern = Tree(name('agent')
     , Prompt(m => `Met? ${m.error ?? 'Answer ONLY yes or no.'}`)
     , Check(
       m => m.prev[0] === 'yes' || m.prev[0] === 'no' || 'Answer with ONLY the word "yes" or "no".',
@@ -74,7 +74,7 @@ test('check failure sets m.error; goback retries with feedback', async () => {
 
 test('check exhaustion throws with authored error message', async () => {
   const handler = scripted(['bad', 'bad', 'bad', 'bad']);
-  const pattern = Tree(Name('agent')
+  const pattern = Tree(name('agent')
     , Prompt(m => 'answer')
     , Check(m => m.prev[0] === 'yes' || 'not yes', goback(1, max(2, m => `gave up: ${m.error}`))));
 
@@ -89,7 +89,7 @@ test('check exhaustion throws with authored error message', async () => {
 
 test('until loops until condition passes', async () => {
   const handler = scripted(['no', 'yes']);
-  const pattern = Tree(Name('loop')
+  const pattern = Tree(name('loop')
     , Prompt(m => 'answer')
     , Until(m => m.prev[0] === 'yes', max(3)));
 
@@ -100,7 +100,7 @@ test('until loops until condition passes', async () => {
 
 test('until exhaustion throws', async () => {
   const handler = scripted(['no', 'no', 'no']);
-  const pattern = Tree(Name('loop')
+  const pattern = Tree(name('loop')
     , Prompt(m => 'answer')
     , Until(m => m.prev[0] === 'yes', max(2)));
 
@@ -111,7 +111,7 @@ test('until exhaustion throws', async () => {
 test('gated children are skipped; m.prev stays dense', async () => {
   const prevs = [];
   const handler = scripted(['a', 'b']);
-  const pattern = Tree(Name('gated')
+  const pattern = Tree(name('gated')
     , Prompt(m => 'a')
     , Prompt(when(m => false), m => 'never runs')
     , Prompt(m => { prevs.push(m.prev[0]); return 'b'; }));
@@ -124,10 +124,10 @@ test('gated children are skipped; m.prev stays dense', async () => {
 });
 
 test('needs: missing input throws; injected memory satisfies', async () => {
-  const missing = Tree(Name('t'), Needs('nope'), Prompt(m => 'x'));
+  const missing = Tree(name('t'), Needs('nope'), Prompt(m => 'x'));
   await assert.rejects(grandma.knit(missing, mockRuntime(scripted(['x']))), /no branch produces it/);
 
-  const satisfied = Tree(Name('t'), Needs('task'), Prompt(m => `got ${m.task}`));
+  const satisfied = Tree(name('t'), Needs('task'), Prompt(m => `got ${m.task}`));
   const { result } = await grandma.knit(satisfied, mockRuntime(scripted(['ok']), { memory: { task: 'injected' } }));
   assert.equal(result, 'ok');
 });
@@ -135,8 +135,8 @@ test('needs: missing input throws; injected memory satisfies', async () => {
 test('needs: missing at runtime (scope chain miss) throws loudly', async () => {
   // 'late' is produced inside the tree but AFTER the branch that needs it,
   // and not injected — runtime resolution must fail when the branch runs.
-  const pattern = Tree(Name('root')
-    , Branch(Tree(Name('needy'), Needs('late'), Prompt(m => 'x')))
+  const pattern = Tree(name('root')
+    , Branch(Tree(name('needy'), Needs('late'), Prompt(m => 'x')))
     , Prompt('late', m => 'too late'));
 
   await assert.rejects(
@@ -151,9 +151,9 @@ test('model resolution: tree .model() overrides runtime default', async () => {
     b: { model: 'b', handler: async () => { usedBy.b++; return { content: 'from-b' }; } },
     default: { model: 'a', handler: async () => { usedBy.a++; return { content: 'from-a' }; } },
   };
-  const pattern = Tree(Name('root')
+  const pattern = Tree(name('root')
     , Prompt(m => 'plain')
-    , Branch(Tree(Name('fancy'), Model('b'), Prompt(m => 'fancy'))));
+    , Branch(Tree(name('fancy'), Model('b'), Prompt(m => 'fancy'))));
 
   await grandma.knit(pattern, mockRuntime(null, { models }));
   assert.equal(usedBy.a, 1);
@@ -168,7 +168,7 @@ test('prompt with tools: tool call executed, result in record', async () => {
   const handler = scripted([
     { content: '', tool_calls: [{ id: '1', function: { name: 'search', arguments: '{"q":"x"}' } }] },
   ]);
-  const pattern = Tree(Name('agent')
+  const pattern = Tree(name('agent')
     , Tools('search')
     , Prompt(disableAuto(), m => 'find something'));
 
@@ -184,7 +184,7 @@ test('tool errors are recorded, not fatal', async () => {
   const handler = scripted([
     { content: '', tool_calls: [{ id: '1', function: { name: 'boom', arguments: '{}' } }] },
   ]);
-  const pattern = Tree(Name('agent'), Tools('boom'), Prompt(disableAuto(), m => 'go'));
+  const pattern = Tree(name('agent'), Tools('boom'), Prompt(disableAuto(), m => 'go'));
 
   const { result } = await grandma.knit(pattern, mockRuntime(handler, { tools }));
   // One LLM call — tool error is recorded, not fed back to the model.
@@ -195,7 +195,7 @@ test('tool errors are recorded, not fatal', async () => {
 test('.call() leaf executes a tool directly with args from memory', async () => {
   const executed = [];
   const tools = { navigate: tool(async (args) => { executed.push(args); return 'navigated'; }) };
-  const pattern = Tree(Name('agent')
+  const pattern = Tree(name('agent')
     , Prompt(m => 'url please')
     , Call('navigate', m => ({ url: m.prev[0] })));
 
@@ -205,7 +205,7 @@ test('.call() leaf executes a tool directly with args from memory', async () => 
 });
 
 test('unknown tool in .tools() fails at knit() start with branch path', async () => {
-  const pattern = Tree(Name('agent')
+  const pattern = Tree(name('agent')
     , Tools('navigte') // typo
     , Prompt(m => 'go'));
 
@@ -215,20 +215,20 @@ test('unknown tool in .tools() fails at knit() start with branch path', async ()
 });
 
 test('reserved memory keys are rejected', async () => {
-  const pattern = Tree(Name('t'), Prompt(m => 'x'));
+  const pattern = Tree(name('t'), Prompt(m => 'x'));
   await assert.rejects(
     grandma.knit(pattern, mockRuntime(scripted(['x']), { memory: { prev: 1 } })),
     /reserved/);
 });
 
 test('tree with zero children is a build error', async () => {
-  await assert.rejects(grandma.knit(Tree(Name('empty')), mockRuntime(scripted(['x']))), /zero children/);
+  await assert.rejects(grandma.knit(Tree(name('empty')), mockRuntime(scripted(['x']))), /zero children/);
 });
 
 test('sqlite logger writes rows', async () => {
   const tmp = path.join(os.tmpdir(), `grandma-kat-test-${Date.now()}.db`);
   try {
-    const pattern = Tree(Name('logged'), Prompt(m => 'hi'));
+    const pattern = Tree(name('logged'), Prompt(m => 'hi'));
     await grandma.knit(pattern, mockRuntime(scripted(['hello']), { logger: tmp }));
 
     const db = new DatabaseSync(tmp, { readonly: true });
@@ -247,12 +247,12 @@ test('sqlite logger writes rows', async () => {
 
 test('memory out feeds the next run (sessions)', async () => {
   const first = await grandma.knit(
-    Tree(Name('s'), Prompt(m => 'v1')),
+    Tree(name('s'), Prompt(m => 'v1')),
     mockRuntime(scripted(['v1'])));
   assert.equal(first.memory['s#1'], 'v1');
 
   const second = await grandma.knit(
-    Tree(Name('s'), Prompt(m => `previous was ${m['s#1'] ?? 'nothing'}`)),
+    Tree(name('s'), Prompt(m => `previous was ${m['s#1'] ?? 'nothing'}`)),
     mockRuntime(scripted(['v2']), { memory: first.memory }));
   assert.equal(second.result, 'v2');
   assert.ok(second.memory['s#1'] === 'v2');
@@ -261,7 +261,7 @@ test('memory out feeds the next run (sessions)', async () => {
 test('.memory() writes to a named slot and produces m.prev output', async () => {
   const seen = [];
   const handler = scripted(['hello', 'result']);
-  const pattern = Tree(Name('m')
+  const pattern = Tree(name('m')
     , Prompt(m => 'hello')
     , Memory('greeting', (m, cur) => m.prev[0])
     , Prompt(m => { seen.push({ greeting: m.branch.greeting, prevLen: m.prev.length }); return 'result'; }));
@@ -276,7 +276,7 @@ test('.memory() writes to a named slot and produces m.prev output', async () => 
 
 test('.memory() with gate skips when gate is false', async () => {
   const handler = scripted(['val']);
-  const pattern = Tree(Name('m')
+  const pattern = Tree(name('m')
     , Prompt(m => 'val')
     , Memory(when(m => false), 'skipped', (m, cur) => 'should not run')
     , Prompt(m => m.branch.skipped ?? 'empty'));
@@ -292,7 +292,7 @@ test('.memory() accumulates across loop iterations', async () => {
     if (n < 3) return { content: `item-${n}` };
     return { content: 'done' };
   };
-  const pattern = Tree(Name('loop')
+  const pattern = Tree(name('loop')
     , Prompt('step', m => `iter`)
     , Memory('items', (m, cur) => [...(cur ?? []), m.branch.step])
     , Until(m => m.branch.step === 'done', max(5)));
@@ -304,7 +304,7 @@ test('.memory() accumulates across loop iterations', async () => {
 
 test('Memory(update(), …) updates an existing slot from parent scope', async () => {
   const handler = scripted(['hello', 'updated']);
-  const pattern = Tree(Name('m')
+  const pattern = Tree(name('m')
     , Memory('greeting', () => 'initial')
     , Prompt(m => 'hello')
     , Memory(update(), 'greeting', (m, cur) => `${cur}-${m.prev[0]}`)
@@ -317,7 +317,7 @@ test('Memory(update(), …) updates an existing slot from parent scope', async (
 
 test('.memory(update(), name, fn) executes as a memory update', async () => {
   const handler = scripted(['hello', 'updated']);
-  const pattern = Tree(Name('m')
+  const pattern = Tree(name('m')
     , Memory('greeting', () => 'initial')
     , Prompt(m => 'hello')
     , Memory(update(), 'greeting', (m, cur) => `${cur}-${m.prev[0]}`)
@@ -330,7 +330,7 @@ test('.memory(update(), name, fn) executes as a memory update', async () => {
 
 test('.memory(name, update(), fn) executes as a memory update too', async () => {
   const handler = scripted(['hello']);
-  const pattern = Tree(Name('m')
+  const pattern = Tree(name('m')
     , Memory('greeting', () => 'initial')
     , Prompt(m => 'hello')
     , Memory('greeting', update(), (m, cur) => `${cur}-${m.prev[0]}`));
@@ -341,7 +341,7 @@ test('.memory(name, update(), fn) executes as a memory update too', async () => 
 
 test('Memory(update(), …) errors when the slot does not exist', async () => {
   const handler = scripted(['hello']);
-  const pattern = Tree(Name('m')
+  const pattern = Tree(name('m')
     , Prompt(m => 'hello')
     , Memory(update(), 'missing', (m, cur) => 'should fail'));
 
@@ -357,10 +357,10 @@ test('Memory(update(), …) errors when the slot does not exist', async () => {
 
 test('Memory(update(), …) resolves from ancestor scope', async () => {
   const handler = scripted(['inner', 'updated']);
-  const pattern = Tree(Name('outer')
+  const pattern = Tree(name('outer')
     , Memory('slot', () => 'from-parent')
     , Branch(
-      Tree(Name('inner')
+      Tree(name('inner')
         , Prompt(m => 'inner')
         , Memory(update(), 'slot', (m, cur) => `${cur}-updated`))
     )
@@ -373,7 +373,7 @@ test('Memory(update(), …) resolves from ancestor scope', async () => {
 
 test('Memory(update(), …) with a gate skips when the gate is false', async () => {
   const handler = scripted(['val']);
-  const pattern = Tree(Name('m')
+  const pattern = Tree(name('m')
     , Memory('slot', () => 'original')
     , Prompt(m => 'val')
     , Memory(update(), when(m => false), 'slot', (m, cur) => 'should not run')
@@ -386,9 +386,9 @@ test('Memory(update(), …) with a gate skips when the gate is false', async () 
 test('memory writes are one record row with an op flag', async () => {
   const dbPath = tmpLogger();
   try {
-    const pattern = Tree(Name('m')
+    const pattern = Tree(name('m')
       , Memory('slot', () => 'value')
-      , Branch(Tree(Name('inner'), Memory(update(), 'slot', (m, cur) => `${cur}!`))));
+      , Branch(Tree(name('inner'), Memory(update(), 'slot', (m, cur) => `${cur}!`))));
     await grandma.knit(pattern, mockRuntime(scripted([]), { logger: dbPath }));
 
     const db = new DatabaseSync(dbPath, { readonly: true });
@@ -415,10 +415,10 @@ test('memory writes are one record row with an op flag', async () => {
 test('resume restores prev for memoryUpdate on the executing scope', async () => {
   const dbPath = tmpLogger();
   try {
-    const pattern = Tree(Name('m')
+    const pattern = Tree(name('m')
       , Memory('slot', () => 'init')
       , Branch(
-        Tree(Name('inner')
+        Tree(name('inner')
           , Memory(update(), 'slot', (m, cur) => `${cur}+`)
           , Human('go')
           , Prompt((m) => `prev=${m.prev[0] ?? 'none'}`))
@@ -447,7 +447,7 @@ test('a failed resume keeps its checkpoint for a retry', async () => {
   const dbPath = tmpLogger();
   try {
     let fail = true;
-    const pattern = Tree(Name('t')
+    const pattern = Tree(name('t')
       , Human('ask')
       , Memory('answer', () => {
         if (fail) throw new Error('boom');
@@ -484,7 +484,7 @@ test('an unnamed branch is auto-named and runs', async () => {
   const dbPath = tmpLogger();
   try {
     const handler = scripted(['outer', 'inner']);
-    const pattern = Tree(Name('t')
+    const pattern = Tree(name('t')
       , Prompt(m => 'outer')
       , Branch(Tree(Prompt(m => `inner sees ${m['t#1']}`))));
 
@@ -505,7 +505,7 @@ test('an unnamed branch is auto-named and runs', async () => {
 test('resume works through an unnamed branch', async () => {
   const dbPath = tmpLogger();
   try {
-    const pattern = Tree(Name('t')
+    const pattern = Tree(name('t')
       , Branch(
         Tree(Prompt(m => 'ask')
           , Human('reply')
@@ -531,8 +531,8 @@ test('an unnamed .map() subtree is auto-named after the collection', async () =>
   const dbPath = tmpLogger();
   try {
     const handler = scripted(['x', 'x']);
-    const pattern = Tree(Name('t')
-      , Map('rated', () => [1, 2], Tree(Prompt(m => `rate ${m.item}`))));
+    const pattern = Tree(name('t')
+      , Each('rated', () => [1, 2], Tree(Prompt(m => `rate ${m.item}`))));
 
     const { memory } = await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath }));
     assert.deepEqual(memory.rated, ['x', 'x']);
@@ -548,7 +548,7 @@ test('an unnamed .map() subtree is auto-named after the collection', async () =>
 
 test('.return() stops tree execution and exports value', async () => {
   const handler = scripted(['a', 'b', 'c']);
-  const pattern = Tree(Name('r')
+  const pattern = Tree(name('r')
     , Prompt(m => 'first')
     , Return(m => 'early')
     , Prompt(m => 'should not run'));
@@ -560,7 +560,7 @@ test('.return() stops tree execution and exports value', async () => {
 
 test('.return() with undefined continues the tree', async () => {
   const handler = scripted(['first', 'second']);
-  const pattern = Tree(Name('r')
+  const pattern = Tree(name('r')
     , Prompt(m => 'first')
     , Return(m => undefined) // don't return, continue
     , Prompt(m => 'second'));
@@ -572,7 +572,7 @@ test('.return() with undefined continues the tree', async () => {
 
 test('.return() with gate only fires when condition is true', async () => {
   const handler = scripted(['not-trigger', 'continued']);
-  const pattern = Tree(Name('r')
+  const pattern = Tree(name('r')
     , Prompt(m => 'val')
     , Return(when(m => m.prev[0] === 'trigger'), m => 'stopped')
     , Prompt(m => 'continued'));
@@ -583,7 +583,7 @@ test('.return() with gate only fires when condition is true', async () => {
 
 test('.return() with gate fires when condition is true', async () => {
   const handler = scripted(['trigger']);
-  const pattern = Tree(Name('r')
+  const pattern = Tree(name('r')
     , Prompt(m => 'val')
     , Return(when(m => m.prev[0] === 'trigger'), m => 'stopped')
     , Prompt(m => 'should not run'));
@@ -601,9 +601,9 @@ test('.map() runs subtree per element and collects results', async () => {
     calls.push(messages);
     return { content: `rated-${items[callIdx++]}` };
   };
-  const sub = Tree(Name('rate'), Prompt(m => `rate ${m.item}`));
-  const pattern = Tree(Name('m')
-    , Map('rated', m => items, sub));
+  const sub = Tree(name('rate'), Prompt(m => `rate ${m.item}`));
+  const pattern = Tree(name('m')
+    , Each('rated', m => items, sub));
 
   const { result, memory } = await grandma.knit(pattern, mockRuntime(handler));
   assert.deepEqual(result, ['rated-a', 'rated-b', 'rated-c']);
@@ -616,8 +616,8 @@ test('.map() injects m.item for each invocation', async () => {
   const items = [{ name: 'x' }, { name: 'y' }];
   let callIdx = 0;
   const handler = async () => ({ content: `done-${callIdx++}` });
-  const sub = Tree(Name('s'), Prompt(m => { seen.push(m.item); return `done`; }));
-  const pattern = Tree(Name('m'), Map('out', m => items, sub));
+  const sub = Tree(name('s'), Prompt(m => { seen.push(m.item); return `done`; }));
+  const pattern = Tree(name('m'), Each('out', m => items, sub));
 
   await grandma.knit(pattern, mockRuntime(handler));
   assert.deepEqual(seen, [{ name: 'x' }, { name: 'y' }]);
@@ -625,8 +625,8 @@ test('.map() injects m.item for each invocation', async () => {
 
 test('.map() with empty array produces empty result', async () => {
   const handler = async () => ({ content: 'should not run' });
-  const sub = Tree(Name('s'), Prompt(m => 'x'));
-  const pattern = Tree(Name('m'), Map('out', m => [], sub));
+  const sub = Tree(name('s'), Prompt(m => 'x'));
+  const pattern = Tree(name('m'), Each('out', m => [], sub));
 
   const { result, memory } = await grandma.knit(pattern, mockRuntime(handler));
   assert.deepEqual(result, []);
@@ -635,10 +635,10 @@ test('.map() with empty array produces empty result', async () => {
 
 test('.map() with gate skips when false', async () => {
   const handler = scripted(['val']);
-  const sub = Tree(Name('s'), Prompt(m => 'x'));
-  const pattern = Tree(Name('m')
+  const sub = Tree(name('s'), Prompt(m => 'x'));
+  const pattern = Tree(name('m')
     , Prompt(m => 'val')
-    , Map(when(m => false), 'out', m => ['a', 'b'], sub));
+    , Each(when(m => false), 'out', m => ['a', 'b'], sub));
 
   const { memory } = await grandma.knit(pattern, mockRuntime(handler));
   assert.equal(memory.out, undefined);
@@ -648,10 +648,10 @@ test('.map() subtree can use .memory() and .return()', async () => {
   const items = [1, 2, 3];
   let callIdx = 0;
   const handler = async () => ({ content: `${items[callIdx++] * 10}` });
-  const sub = Tree(Name('transform')
+  const sub = Tree(name('transform')
     , Prompt(m => `transform ${m.item}`)
     , Memory('result', m => parseInt(m.prev[0])));
-  const pattern = Tree(Name('m'), Map('out', m => items, sub));
+  const pattern = Tree(name('m'), Each('out', m => items, sub));
 
   const { result } = await grandma.knit(pattern, mockRuntime(handler));
   assert.deepEqual(result, [10, 20, 30]);
@@ -663,7 +663,7 @@ test('.human() pauses execution and returns waiting status', async () => {
   const handler = scripted(['draft']);
   const dbPath = tmpLogger();
   try {
-    const pattern = Tree(Name('review')
+    const pattern = Tree(name('review')
       , Prompt(m => 'write draft')
       , Human('approve'));
 
@@ -682,7 +682,7 @@ test('.human() with contextFn provides context in pause result', async () => {
   const handler = scripted(['my draft']);
   const dbPath = tmpLogger();
   try {
-    const pattern = Tree(Name('review')
+    const pattern = Tree(name('review')
       , Prompt(m => 'write')
       , Human('approve', m => ({ draft: m.prev[0] })));
 
@@ -699,7 +699,7 @@ test('.human() emits context via onEmit before pausing', async () => {
   const dbPath = tmpLogger();
   try {
     const emitted = [];
-    const pattern = Tree(Name('review')
+    const pattern = Tree(name('review')
       , Prompt(m => 'write')
       , Human('approve', m => ({ draft: m.prev[0] })));
 
@@ -721,7 +721,7 @@ test('.human() without contextFn does not call onEmit', async () => {
   const dbPath = tmpLogger();
   try {
     const emitted = [];
-    const pattern = Tree(Name('review')
+    const pattern = Tree(name('review')
       , Prompt(m => 'write')
       , Human('approve'));
 
@@ -740,7 +740,7 @@ test('.human() resumes with human input and continues execution', async () => {
   const handler = scripted(['draft', 'final']);
   const dbPath = tmpLogger();
   try {
-    const pattern = Tree(Name('review')
+    const pattern = Tree(name('review')
       , Prompt(m => 'write draft')
       , Human('approve')
       , Prompt(m => `finalize: ${m.branch.approve}, draft: ${m.branch['review#1']}`));
@@ -770,7 +770,7 @@ test('.human() preserves scope state across pause/resume', async () => {
   const handler = scripted(['hello', 'after']);
   const dbPath = tmpLogger();
   try {
-    const pattern = Tree(Name('t')
+    const pattern = Tree(name('t')
       , Prompt(m => 'greet')
       , Memory('greeting', m => m.prev[0])
       , Human('confirm')
@@ -796,9 +796,9 @@ test('.human() inside a branch — branch result is preserved on resume', async 
   const handler = scripted(['inner-prompt']);
   const dbPath = tmpLogger();
   try {
-    const pattern = Tree(Name('outer')
+    const pattern = Tree(name('outer')
       , Branch(
-        Tree(Name('inner')
+        Tree(name('inner')
           , Prompt(m => 'inner-prompt')
           , Human('inner_approve')
           , Prompt(m => `after:${m.branch.inner_approve}`))
@@ -836,10 +836,10 @@ test('.human() as a leaf followed by a .branch() resumes cleanly', async () => {
   const handler = scripted([]);
   const dbPath = tmpLogger();
   try {
-    const pattern = Tree(Name('outer')
+    const pattern = Tree(name('outer')
       , Human('input_1')
       , Branch(
-        Tree(Name('scan')
+        Tree(name('scan')
           , Prompt(m => `scan:${m.branch.input_1}`))
       ));
 
@@ -866,9 +866,9 @@ test('.human() inside a .map() resumes from the paused item', async () => {
   const handler = scripted(['pre-1']);
   const dbPath = tmpLogger();
   try {
-    const pattern = Tree(Name('outer')
-      , Map('r', m => [1, 2],
-        Tree(Name('item')
+    const pattern = Tree(name('outer')
+      , Each('r', m => [1, 2],
+        Tree(name('item')
           , Prompt('pre', m => `pre-${m.item}`)
           , Human(when(m => m.item === 1), 'approve')
           , Prompt('post', m => `post-${m.item}`))
@@ -898,7 +898,7 @@ test('.human() inside a .map() resumes from the paused item', async () => {
 
 test('.human() with gate is skipped when gate is false', async () => {
   const handler = scripted(['draft', 'done']);
-  const pattern = Tree(Name('review')
+  const pattern = Tree(name('review')
     , Prompt(m => 'write')
     , Human(when(m => false), 'approve')
     , Prompt(m => 'done'));
@@ -912,7 +912,7 @@ test('.human() with .memory() writes human input to scope', async () => {
   const handler = scripted(['draft']);
   const dbPath = tmpLogger();
   try {
-    const pattern = Tree(Name('review')
+    const pattern = Tree(name('review')
       , Prompt(m => 'write')
       , Human('feedback')
       , Memory('saved_feedback', m => m.branch.feedback));
@@ -938,7 +938,7 @@ test('.human() inside .until() loop pauses each iteration', async () => {
   const handler = scripted(['try-1']);
   const dbPath = tmpLogger();
   try {
-    const pattern = Tree(Name('loop')
+    const pattern = Tree(name('loop')
       , Prompt(m => `attempt`)
       , Human('verdict')
       , Until(m => m.branch.verdict === 'done', max(5)));
@@ -973,7 +973,7 @@ test('.human() runId is preserved across pause/resume', async () => {
   const handler = scripted(['draft', 'final']);
   const dbPath = tmpLogger();
   try {
-    const pattern = Tree(Name('t')
+    const pattern = Tree(name('t')
       , Prompt(m => 'write')
       , Human('ok')
       , Prompt(m => 'done'));
@@ -996,7 +996,7 @@ test('.human() runId is preserved across pause/resume', async () => {
 test('.emit() calls onEmit with computed value and continues', async () => {
   const emitted = [];
   const handler = scripted(['hello']);
-  const pattern = Tree(Name('agent')
+  const pattern = Tree(name('agent')
     , Emit(m => ({ text: 'thinking...' }))
     , Prompt(m => 'hello')
     , Emit(m => ({ text: `result: ${m.prev[0]}` })));
@@ -1013,7 +1013,7 @@ test('.emit() does NOT write to m.prev', async () => {
   const emitted = [];
   const prevs = [];
   const handler = scripted(['a', 'b']);
-  const pattern = Tree(Name('agent')
+  const pattern = Tree(name('agent')
     , Prompt(m => 'a')
     , Emit(m => { emitted.push('emit1'); return 'e1'; })
     , Prompt(m => { prevs.push(m.prev.length); return 'b'; }));
@@ -1029,7 +1029,7 @@ test('.emit() does NOT write to m.prev', async () => {
 test('.emit() with gate skips when false', async () => {
   const emitted = [];
   const handler = scripted(['a', 'b']);
-  const pattern = Tree(Name('agent')
+  const pattern = Tree(name('agent')
     , Prompt(m => 'a')
     , Emit(when(m => false), m => 'should not emit')
     , Prompt(m => 'b'));
@@ -1044,7 +1044,7 @@ test('.emit() with gate skips when false', async () => {
 
 test('.emit() works without onEmit (no-op)', async () => {
   const handler = scripted(['x']);
-  const pattern = Tree(Name('agent')
+  const pattern = Tree(name('agent')
     , Emit(m => 'ignored')
     , Prompt(m => 'x'));
 
@@ -1059,7 +1059,7 @@ test('.emit() inside .until() loop fires each iteration', async () => {
     if (i++ < 2) return { content: 'no' };
     return { content: 'yes' };
   };
-  const pattern = Tree(Name('loop')
+  const pattern = Tree(name('loop')
     , Prompt(m => 'ask')
     , Emit(m => ({ attempt: i }))
     , Until(m => m.prev[0] === 'yes', max(5)));
@@ -1090,7 +1090,7 @@ const tc = (name, args, id = name) => ({
 // execution, so position does not matter and a pause cannot lose it.
 
 test('Register(...) is hoisted: a declaration after its call site still resolves', async () => {
-  const pattern = Tree(Name('late_register')
+  const pattern = Tree(name('late_register')
     , Call('lookup', () => ({ name: 'Ada' }))
     , Register('lookup', 'Find a person by name', (m, args) => `found:${args.name}`));
 
@@ -1099,10 +1099,10 @@ test('Register(...) is hoisted: a declaration after its call site still resolves
 });
 
 test('Register(...) fn reads the memory of the scope it is called from', async () => {
-  const pattern = Tree(Name('register_scope')
+  const pattern = Tree(name('register_scope')
     , Register('peek', 'Read the local slot', (m) => m.local ?? 'missing')
     , Branch(
-      Tree(Name('inner_scope')
+      Tree(name('inner_scope')
         , Memory('local', () => 'inner-ctx')
         , Call('peek', () => ({})))
     ));
@@ -1116,7 +1116,7 @@ test('Register(...) exposes the inline tool to the model via Tools(...)', async 
     { content: '', tool_calls: [tc('lookup', { name: 'Ada' })] },
     'reported',
   ]);
-  const pattern = Tree(Name('register_model')
+  const pattern = Tree(name('register_model')
     , Register('lookup', 'Find a person by name', (m, args) => ({ phone: `555-${args.name}` }))
     , Tools('lookup')
     , Prompt(m => 'find Ada')
@@ -1132,7 +1132,7 @@ test('Register(...) error-shaped results are tool errors, not fatal', async () =
     { content: '', tool_calls: [tc('flaky', {})] },
     'next',
   ]);
-  const pattern = Tree(Name('register_err')
+  const pattern = Tree(name('register_err')
     , Register('flaky', 'Always fails', () => ({ error: 'no can do' }))
     , Tools('flaky')
     , Prompt(m => 'go')
@@ -1145,7 +1145,7 @@ test('Register(...) error-shaped results are tool errors, not fatal', async () =
 test('Register(...) survives a pause: the tool still resolves after resume', async () => {
   const dbPath = tmpLogger();
   try {
-    const pattern = Tree(Name('register_resume')
+    const pattern = Tree(name('register_resume')
       , Register('lookup', 'Find a person by name', (m, args) => `found:${args.name}`)
       , Prompt(m => 'start')
       , Human('reply')
@@ -1166,7 +1166,7 @@ test('Register(...) survives a pause: the tool still resolves after resume', asy
 
 test('Register(...) shadows a same-named runtime tool for that run', async () => {
   const tools = { lookup: tool(async () => 'host result') };
-  const pattern = Tree(Name('register_shadow')
+  const pattern = Tree(name('register_shadow')
     , Register('lookup', 'Inline keeps the wheel', () => 'inline result')
     , Call('lookup', () => ({})));
 
@@ -1175,7 +1175,7 @@ test('Register(...) shadows a same-named runtime tool for that run', async () =>
 });
 
 test('duplicate Register(...) names fail at knit() start', async () => {
-  const pattern = Tree(Name('register_dup')
+  const pattern = Tree(name('register_dup')
     , Register('lookup', 'One', () => 'a')
     , Register('lookup', 'Two', () => 'b')
     , Prompt(m => 'go'));
@@ -1186,9 +1186,9 @@ test('duplicate Register(...) names fail at knit() start', async () => {
 });
 
 test('a .call() to a tree tool runs the subtree with seeded args', async () => {
-  const child = Tree(Name('greeter'), Needs('who'), Prompt(m => `hello ${m.who}`));
+  const child = Tree(name('greeter'), Needs('who'), Prompt(m => `hello ${m.who}`));
   const handler = scripted(['hi']);
-  const pattern = Tree(Name('host')
+  const pattern = Tree(name('host')
     , Call('greet', 'greeter_tool', () => ({ who: 'Ada' }))
     , Memory('seen', m => m.branch.greet));
 
@@ -1203,12 +1203,12 @@ test('a .call() to a tree tool runs the subtree with seeded args', async () => {
 });
 
 test('a model tool call to a tree tool returns the subtree export as the tool result', async () => {
-  const child = Tree(Name('finder'), Prompt(m => `looking for ${m.query}`));
+  const child = Tree(name('finder'), Prompt(m => `looking for ${m.query}`));
   const handler = scripted([
     { content: '', tool_calls: [tc('finder_tool', { query: 'keys' })] },
     'searching',
   ]);
-  const pattern = Tree(Name('host')
+  const pattern = Tree(name('host')
     , Tools('finder_tool')
     , Prompt(disableAuto(), 'act', () => 'go')
     , Memory('seen', m => m.raw.branch.act.toolResults[0].result));
@@ -1223,7 +1223,7 @@ test('a model tool call to a tree tool returns the subtree export as the tool re
 });
 
 test('a pause inside a model-called tree resumes without re-calling the model', async () => {
-  const child = Tree(Name('interview')
+  const child = Tree(name('interview')
     , Prompt(m => `q for ${m.topic}`)
     , Human('answer')
     , Memory('out', m => `got: ${m.answer}`));
@@ -1237,7 +1237,7 @@ test('a pause inside a model-called tree resumes without re-calling the model', 
     logger: tmpLogger(),
     tools: { ask: { description: 'ask', parameters: {}, tree: child } },
   });
-  const pattern = Tree(Name('host')
+  const pattern = Tree(name('host')
     , Tools('ask')
     , Prompt(disableAuto(), 'act', () => 'go')
     , Prompt('after', m => `tool said: ${m.raw.branch.act.toolResults[0].result}`)
@@ -1259,14 +1259,14 @@ test('a pause inside a model-called tree resumes without re-calling the model', 
 });
 
 test('a pause inside a .call() tree resumes structurally', async () => {
-  const child = Tree(Name('asker')
+  const child = Tree(name('asker')
     , Prompt(() => 'question')
     , Human('answer')
     , Memory('out', m => `answer: ${m.answer}`));
 
   const handler = scripted(['child prompt']);
   const runtime = mockRuntime(handler, { logger: tmpLogger(), tools: { asker_tool: { tree: child } } });
-  const pattern = Tree(Name('host')
+  const pattern = Tree(name('host')
     , Call('run', 'asker_tool', () => ({}))
     , Memory('seen', m => m.branch.run));
 
@@ -1287,7 +1287,7 @@ test('a pause inside a .call() tree resumes structurally', async () => {
 
 test('completed sibling tool calls are replayed, not re-executed, after a pause', async () => {
   const effects = [];
-  const child = Tree(Name('nested'), Human('go'), Memory('out', () => 'nested done'));
+  const child = Tree(name('nested'), Human('go'), Memory('out', () => 'nested done'));
   const handler = scripted([
     { content: '', tool_calls: [tc('effect', { n: 1 }, 'c1'), tc('ask', {}, 'c2')] },
   ]);
@@ -1298,7 +1298,7 @@ test('completed sibling tool calls are replayed, not re-executed, after a pause'
       ask: { description: 'ask', parameters: {}, tree: child },
     },
   });
-  const pattern = Tree(Name('host')
+  const pattern = Tree(name('host')
     , Tools('effect', 'ask')
     , Prompt(disableAuto(), 'act', () => 'go')
     , Memory('first', m => m.raw.branch.act.toolResults[0].result)
@@ -1321,7 +1321,7 @@ test('completed sibling tool calls are replayed, not re-executed, after a pause'
 });
 
 test('a subtree failure surfaces as an isError tool result', async () => {
-  const child = Tree(Name('flaky')
+  const child = Tree(name('flaky')
     , Prompt(() => 'try')
     , Check(() => 'nope', goback(1, max(1))));
   const handler = scripted([
@@ -1329,7 +1329,7 @@ test('a subtree failure surfaces as an isError tool result', async () => {
     'a',
     'b',
   ]);
-  const pattern = Tree(Name('host')
+  const pattern = Tree(name('host')
     , Tools('flaky_tool')
     , Prompt('act', () => 'go')
     , Memory('err', m => m.raw.branch.act.toolResults[0].isError)
@@ -1345,7 +1345,7 @@ test('a subtree failure surfaces as an isError tool result', async () => {
 
 test('an unresolvable tree tool name is an isError result', async () => {
   const handler = scripted([{ content: '', tool_calls: [tc('ghost', {})] }]);
-  const pattern = Tree(Name('host')
+  const pattern = Tree(name('host')
     , Tools('ghost')
     , Prompt(disableAuto(), 'act', () => 'go')
     , Memory('err', m => m.raw.branch.act.toolResults[0].isError)
@@ -1368,7 +1368,7 @@ test('loadTree resolves and names a dynamically loaded tree', async () => {
     asked.push(name);
     return name === 'late_tree' ? late : null;
   };
-  const pattern = Tree(Name('host'), Call('run', 'late_tool', () => ({ who: 'x' })));
+  const pattern = Tree(name('host'), Call('run', 'late_tool', () => ({ who: 'x' })));
 
   const { memory } = await grandma.knit(pattern, runtime);
   assert.deepEqual(asked, ['late_tree']);
@@ -1380,14 +1380,14 @@ test('tree tool entries must declare exactly one implementation', async () => {
   const handler = scripted(['x']);
   await assert.rejects(
     grandma.knit(
-      Tree(Name('host'), Call('run', 'bad', () => ({}))),
+      Tree(name('host'), Call('run', 'bad', () => ({}))),
       mockRuntime(handler, { tools: { bad: { execute: () => 1, tree: Tree(Prompt(() => 'x')) } } }),
     ),
     /both execute and tree/,
   );
   await assert.rejects(
     grandma.knit(
-      Tree(Name('host'), Call('run', 'bad2', () => ({}))),
+      Tree(name('host'), Call('run', 'bad2', () => ({}))),
       mockRuntime(handler, { tools: { bad2: { description: 'no impl' } } }),
     ),
     /needs execute\(\) or a tree/,
@@ -1395,8 +1395,8 @@ test('tree tool entries must declare exactly one implementation', async () => {
 });
 
 test('nested tree tools replay every prompt level on resume', async () => {
-  const inner = Tree(Name('inner'), Human('go'), Memory('out', () => 'inner done'));
-  const outer = Tree(Name('outer')
+  const inner = Tree(name('inner'), Human('go'), Memory('out', () => 'inner done'));
+  const outer = Tree(name('outer')
     , Tools('inner_tool')
     , Prompt(disableAuto(), 'outer_act', () => 'call inner')
     , Memory('outer_out', m => m.raw.branch.outer_act.toolResults[0].result));
@@ -1411,7 +1411,7 @@ test('nested tree tools replay every prompt level on resume', async () => {
       inner_tool: { description: 'inner', parameters: {}, tree: inner },
     },
   });
-  const pattern = Tree(Name('host')
+  const pattern = Tree(name('host')
     , Tools('outer_tool')
     , Prompt(disableAuto(), 'act', () => 'go')
     , Memory('seen', m => m.raw.branch.act.toolResults[0].result));
@@ -1438,7 +1438,7 @@ test('nested tree tools replay every prompt level on resume', async () => {
 test('round trip: record → resume → record resumes from the second record', async () => {
   const dbPath = tmpLogger();
   const handler = scripted(['one', 'two']);
-  const pattern = Tree(Name('round')
+  const pattern = Tree(name('round')
     , Prompt(m => 'first')
     , Human('first_answer')
     , Prompt(m => `second: ${m.branch.first_answer}`)
@@ -1471,12 +1471,12 @@ test('round trip: record → resume → record resumes from the second record', 
 test('resume restores slots accumulated across several pauses', async () => {
   const dbPath = tmpLogger();
   const handler = scripted([]);
-  const loop = Tree(Name('loop')
+  const loop = Tree(name('loop')
     , Human('word')
     , Memory(update(), 'count', (m, cur) => cur + 1)
     , Memory(update(), 'words', (m, cur) => [...(cur ?? []), m.branch.word])
     , Until(m => m.branch.word === 'stop', max(10)));
-  const pattern = Tree(Name('acc')
+  const pattern = Tree(name('acc')
     , Memory('count', () => 0)
     , Memory('words', () => [])
     , Branch(loop));
@@ -1508,11 +1508,11 @@ test('resume restores slots accumulated across several pauses', async () => {
 test('resume after a pause inside a .map() keeps prior items', async () => {
   const dbPath = tmpLogger();
   const handler = scripted(['rated-1', 'rated-2']);
-  const item = Tree(Name('item')
+  const item = Tree(name('item')
     , Prompt(m => `rate ${m.item}`)
     , Human('verdict'));
-  const pattern = Tree(Name('mapper')
-    , Map('rated', m => ['x', 'y'], item));
+  const pattern = Tree(name('mapper')
+    , Each('rated', m => ['x', 'y'], item));
 
   const first = await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath }));
   assert.equal(first.status, 'waiting');
@@ -1529,11 +1529,11 @@ test('resume after a pause inside a .map() keeps prior items', async () => {
 test('branch slot written before a pause survives resume', async () => {
   const dbPath = tmpLogger();
   const handler = scripted([]);
-  const sub = Tree(Name('sub')
+  const sub = Tree(name('sub')
     , Memory('kept', () => 'value')
     , Human('go')
     , Emit(m => ({ text: `kept=${m.branch.kept}` })));
-  const pattern = Tree(Name('slot'), Branch(sub));
+  const pattern = Tree(name('slot'), Branch(sub));
 
   const first = await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath }));
   assert.equal(first.status, 'waiting');
@@ -1556,10 +1556,10 @@ test('a map item ending in .human() keeps its export across two resumes', async 
   // child is .human() then exported undefined.
   const dbPath = tmpLogger();
   const handler = scripted(['x1', 'x2']);
-  const item = Tree(Name('tail-item')
+  const item = Tree(name('tail-item')
     , Prompt(m => `p${m.item}`)
     , Human('h'));
-  const pattern = Tree(Name('tail-map'), Map('r', () => [1, 2], item));
+  const pattern = Tree(name('tail-map'), Each('r', () => [1, 2], item));
 
   const first = await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath }));
   assert.equal(first.status, 'waiting');

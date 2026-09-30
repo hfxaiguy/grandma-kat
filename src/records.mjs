@@ -2,7 +2,7 @@
 // surface — the arguments of Tree(...):
 //
 //   Tree(
-//     Name("call_outcome"), Model("strong"),
+//     name("call_outcome"), Model("strong"),
 //     Prompt("response", textFn, when(cond), max(6)),
 //     Register("note_phone", "…", body, calls("contacts__get_contact")),
 //     Branch(when(cond), subtree),
@@ -283,7 +283,7 @@ export function mapFields(rawArgs, label) {
   const { gate, args } = takeGate(rawArgs, label);
   const name = args.shift();
   if (typeof name !== 'string' || name.length === 0) {
-    throw new TypeError(`${label}: first argument must be the collection name (string), e.g. Map('rated', m => arr, tree)`);
+    throw new TypeError(`${label}: first argument must be the collection name (string), e.g. Each('rated', m => arr, tree)`);
   }
   assertValidName(name, label);
   const arrayFn = args.shift();
@@ -419,13 +419,13 @@ export const Register = (...rawArgs) => element('register', { entry: registerFie
 export const Check = (...rawArgs) => element('check', { record: checkRecord(checkFields(rawArgs, 'Check()')) });
 export const Memory = (...rawArgs) => element('memory', { record: memoryRecord(memoryFields(rawArgs, 'Memory()')) });
 export const Return = (...rawArgs) => element('return', { record: returnRecord(returnFields(rawArgs, 'Return()')) });
-export const Map = (...rawArgs) => element('map', { record: mapRecord(mapFields(rawArgs, 'Map()')) });
+export const Each = (...rawArgs) => element('map', { record: mapRecord(mapFields(rawArgs, 'Each()')) });
 export const Human = (...rawArgs) => element('human', { record: humanRecord(humanFields(rawArgs, 'Human()')) });
 export const Emit = (...rawArgs) => element('emit', { record: emitRecord(emitFields(rawArgs, 'Emit()')) });
 export const Until = (...rawArgs) => element('until', { record: untilRecord(untilFields(rawArgs, 'Until()')) });
 
-export const Name = (value) => {
-  assertValidName(value, 'Name()');
+export const name = (value) => {
+  assertValidName(value, 'name()');
   return element('name', { value });
 };
 export const Model = (...rawArgs) => {

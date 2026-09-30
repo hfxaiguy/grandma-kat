@@ -10,7 +10,7 @@
 ## Decisions locked in this conversation
 
 - **Surface**: element literal —
-  `Tree(Name("x"), Model("strong"), Prompt(...), Register(...), Branch(...), Until(...))`.
+  `Tree(name("x"), Model("strong"), Prompt(...), Register(...), Branch(...), Until(...))`.
   Markers ride inside elements: `when(cond)`, `max(n)`, `calls(...)`,
   `parameters(...)`, `toolHookBefore/After(...)`, `update()`. Condition is
   always explicit (`when(cond)`); argless `when()` is rejected — no implicit
@@ -56,7 +56,7 @@ Files: `src/records.mjs` (new), `src/tree.mjs`, `src/index.mjs`,
 
 - `records.mjs`: field-validating constructors returning the exact current
   child shapes — steps `Prompt, Register, Memory, Human, Emit, Call, Check,
-  Branch, Map, Return, Until`; directives `Name, Model, Tools, Needs`.
+  Branch, Each, Return, Until`; directives `name, Model, Tools, Needs`.
 - `tree.mjs`: extract each chain method's parse/validate into the record
   constructors (same error strings, same def shape, `registers` carve-out and
   copy-on-write untouched). Chain methods shrink to grammar → record → append.
