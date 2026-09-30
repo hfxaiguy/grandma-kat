@@ -14,14 +14,14 @@ without tracking method boundaries.
 
 | Symbol | Example | Means | Maps to (builder) | Text rule |
 |---|---|---|---|---|
-| `++` | `++ memory: mem_global` | declare a memory slot / session seed, or an update that may be gated | runtime `memory:` seed, `.memory(name, fn)`, or `.memoryUpdate(name, fn)` | name literal; value is data |
-| `++!` | `++! conversation: keep the log` | required memory update — runs every pass, never gated | `.memoryUpdate(name, fn)` with no `when(...)` gate | name literal; value is data |
+| `++` | `++ memory: mem_global` | declare a memory slot / session seed, or an update that may be gated | runtime `memory:` seed, `.memory(name, fn)`, or `.memory(update(), name, fn)` / `.memory(when(cond), update(), name, fn)` | name literal; value is data |
+| `++!` | `++! conversation: keep the log` | required memory update — runs every pass, never gated | `.memory(update(), name, fn)` with no `when(...)` gate | name literal; value is data |
 | `<<` | `<< output_msg: "Hi"` | non-blocking output | `.emit(m => ({ text: ... }))` | `"..."` verbatim |
 | `>>` | `>> human: input_1` | pause, ask the human for input | `.human("input_1")` | slot name literal |
 | `!!` | `!! input` | require a memory slot (declared input) | `.needs("input")` | name literal; slot must be seeded by the caller |
 | `--` | `-- prompt: does X ...?` | ask the model | a named `.branch()` wrapping `.prompt()` | text **expanded** into a full prompt |
 | `->` | `-> query_batch: duckdb_query ...` | fixed/direct tool call, no model | `.call("query_batch", "duckdb_query", argsFn)` | call name and tool name literal; arguments **expanded** from context |
-| `+->` | `+-> lookup: "Find a person by name"` | register an inline tool the tree's steps (and the model, when whitelisted) can call | `.register("lookup", "Find a person by name", (m, args) => ...)` | name literal; the description `"..."` verbatim; the body is JavaScript at the call site |
+| `#->` | `#-> lookup: "Find a person by name"` | register an inline tool, scoped like a memory slot (inherited by its subtree, overridable by a child) | `.register("lookup", "Find a person by name", (m, args, tools) => …, calls(...), parameters({ … }))` | name literal; the description `"..."` verbatim; the body is JavaScript at the call site; `calls(...)` and `parameters(...)` are markers |
 | `??` | `?? check: X holds; else goto draft_plan (max 3)` | guard the chunk above; on failure jump to a named child | `.check(m => EXPAND(COND), goto("NAME", max(k)))` | condition **expanded**; the `goto` target and max are literal |
 | `@@` | `@@ upsert_rows: batch_rows` | run the subtree once per array element | `.map("upsert_rows", m => m.batch_rows, SUBTREE)` | name literal; the array is a memory/branch reference |
 | `**` | `** branch: if X is true, run:` or `**` | conditional or unconditional subtree | `.branch(when(cond), SUBTREE)` or `.branch(SUBTREE)` — the subtree may be unnamed | condition text **expanded** when present |
@@ -110,10 +110,11 @@ keeps the notation-to-code mapping visible.
 - `++ memory: NAME` → seed the **root scope** with `memory: { NAME: value }`
   in the runtime, or (inside a loop that needs to accumulate) a
   `.memory('NAME', ...)` write at the level where the value must persist.
-- `++! NAME` → `.memoryUpdate("NAME", fn)` **unconditional** — do not wrap it
-  in `when(...)`. Use it for state the rest of the tree depends on being
-  complete (a conversation log, a required counter). A plain `++` update may
-  be gated when the write is genuinely optional; a `++!` update never is.
+- `++ NAME` as an update → `.memory(update(), "NAME", fn)`; when the write is
+  genuinely optional it may be gated: `.memory(when(cond), update(), "NAME", fn)`.
+- `++! NAME` → `.memory(update(), "NAME", fn)` **unconditional** — do not wrap
+  it in `when(...)`. Use it for state the rest of the tree depends on being
+  complete (a conversation log, a required counter); a `++!` update never is.
 - `<< label: "TEXT"` → `.emit(m => ({ text: "TEXT" }))`. The quoted string is
   the verbatim `text`. (grandma-kat's `.emit` fires `onEmit` and does not
   pause.) A message may also carry `buttons`: a flat `{ label, value }[]`,
@@ -170,17 +171,28 @@ keeps the notation-to-code mapping visible.
 - `-> NAME: TOOL` → `.call('NAME', 'TOOL', m => ARGS)`. The tool executes
   immediately with the expanded arguments; no model is involved. When NAME is
   omitted, assign a stable translator-generated name.
-- `+-> NAME: "DESCRIPTION"` → `.register("NAME", "DESCRIPTION", (m, args) =>
-  …)`. The body is JavaScript, written at the call site; the notation names
-  the tool and fixes its description verbatim. A register is a
-  **declaration, not a step**: it is installed before the tree runs and is
-  available to every step and every pass — fresh and resumed alike — so its
-  position in the sketch is readability only and it never takes `when()`.
-  The fn receives the memory view of the **call site** plus the tool
-  arguments, and its return value is the tool result (a string or a plain
-  object; an object with an `error` key, or a string starting with "error",
-  is a tool error). A prompt offers the tool to the model with
-  `.tools("NAME")`; `.call("NAME", …)` works from any step.
+- `#-> NAME: "DESCRIPTION"` → `.register("NAME", "DESCRIPTION", (m, args,
+  tools) => …, calls(...), parameters({ … }))`. The body is JavaScript,
+  written at the call site; the notation names the tool and fixes its
+  description verbatim. A register is a **declaration, not a step** — it never
+  takes `when()` — but it is **scoped like a memory slot**: it belongs to the
+  subtree it is declared in, is inherited downward, and a child may declare
+  the same name to override it for its own subtree only (callers above and
+  siblings never see it). It is available to every step and every pass of that
+  subtree — fresh and resumed alike. Two registers with the same name on ONE
+  tree are a build error.
+  The fn receives the memory view of the **call site**, the tool arguments,
+  and `tools` — the host tools it declared with `calls("NAME", ...)`, resolved
+  on the register's home path (its declaring scope chain, then the runtime's
+  tools). Only function-kind tools may be declared (a `calls(...)` name that
+  resolves to a tree is a build error); each call is logged as a tool result.
+  A prompt offers the tool to the model with `.tools("NAME")`;
+  `.call("NAME", …)` works from any step.
+
+  Return `{ value, memory }` on success — `memory` is an optional
+  `{ slot: value }` patch, applied as memory updates and stripped from the
+  stored tool result, which is `{ value }` — or `{ error }` (or a string
+  starting with "error") on failure, which skips the patch.
 
   Write the body **inline at the call site**, multi-line and `async` as
   needed — like prompt text, do not hoist it into a separate function or
@@ -189,13 +201,16 @@ keeps the notation-to-code mapping visible.
   current memory from `m`, and return the result:
 
   ```js
-  // +-> lookup: "Find a person by name and return their phone"
+  // #-> lookup: "Find a person by name and return their phone" calls(search_contacts)
   .register("lookup", "Find a person by name and return their phone",
-    async (m, args) => {
-      const hit = await findPerson(m.workspace, args.name);
+    async (m, args, tools) => {
+      const found = await tools.search_contacts({ query: args.name });
+      const hit = (found?.contacts ?? [])[0];
       if (!hit) return { error: `no contact named ${args.name}` };
-      return { name: hit.name, phone: hit.phone };
-    })
+      return { value: { name: hit.name, phone: hit.phone }, memory: { lookedUp: hit.id } };
+    },
+    calls("search_contacts"),
+    parameters({ type: "object", properties: { name: { type: "string" } }, required: ["name"] }))
   ```
 - `@@ NAME: ARRAY` → `.map('NAME', m => m.ARRAY, SUBTREE)`. It opens a level:
   the `||` lines below form the per-item subtree. The current element is

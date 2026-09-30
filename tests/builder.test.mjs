@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Tree, when, update, goback, max } from '../src/index.mjs';
+import { Tree, when, update, goback, max, calls, parameters } from '../src/index.mjs';
 
 test('builder methods are immutable (copy-on-write)', () => {
   const base = Tree.name('base').prompt(m => 'a');
@@ -93,10 +93,16 @@ test('.register() validates its arguments', () => {
   assert.throws(
     () => Tree.name('r2').register(when(() => true), 'n', 'd', () => 'x'),
     /declarations/);
-  assert.throws(() => Tree.name('r2').register('n', 'd', () => 'x', { bogus: 1 }), /unknown option/);
-  assert.throws(() => Tree.name('r2').register('n', 'd', () => 'x', { parameters: [] }), /JSON-schema/);
-  assert.doesNotThrow(() =>
-    Tree.name('r2').register('n', 'd', () => 'x', { parameters: { type: 'object', properties: { q: { type: 'string' } } } }));
+  assert.throws(() => Tree.name('r2').register('n', 'd', () => 'x', { bogus: 1 }), /unexpected argument/);
+  assert.throws(() => Tree.name('r2').register('n', 'd', () => 'x', parameters([])), /JSON-schema/);
+  assert.throws(() => Tree.name('r2').register('n', 'd', () => 'x', calls('')), /non-empty/);
+  assert.throws(
+    () => Tree.name('r2').register('n', 'd', () => 'x', parameters({}), parameters({})),
+    /only appear once/);
+  const marked = Tree.name('r2').register(
+    'n', 'd', () => 'x', calls('sql_query'), parameters({ type: 'object', properties: { q: { type: 'string' } } }));
+  assert.deepEqual(marked.def.registers[0].calls, ['sql_query']);
+  assert.deepEqual(marked.def.registers[0].parameters, { type: 'object', properties: { q: { type: 'string' } } });
 });
 
 test('.register() is copy-on-write and absent until used', () => {

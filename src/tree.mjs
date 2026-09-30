@@ -1,7 +1,7 @@
 // Tree factory: chained builder methods accumulate an immutable definition
 // (plain data). Execution happens separately, via grandma.knit().
 
-import { isWhen, isUpdate, isGoback, isGoto, isMax, goback, goto, resolveMax } from './markers.mjs';
+import { isWhen, isUpdate, isGoback, isGoto, isMax, isCalls, isParameters, goback, goto, resolveMax } from './markers.mjs';
 
 const BUILDER = Symbol('grandma-kat/builder');
 const registry = new Map();
@@ -103,12 +103,12 @@ function makeBuilder(def) {
       return next(def, (d) => { d.children.push(child); });
     },
 
-    // Declarative: register an inline tool. Installed into the run's tool
-    // table before execution, so it is available to every step and every
-    // pass — fresh, rewound, and resumed alike. Its position in the chain
-    // is readability only, and a register never takes when().
-    //   .register(name, description, fn)                  — fn(m, args) → result
-    //   .register(name, description, fn, { parameters })  — model-facing schema
+    // Declarative: register an inline tool, scoped like a memory slot —
+    // declared on this node, visible to its whole subtree, overridable by a
+    // child, invisible upward and to siblings; the runtime tool table is the
+    // bottom layer. A register never takes when().
+    //   .register(name, description, fn)                 — fn(m, args, tools) → result
+    //   .register(name, description, fn, calls("sql_query", …), parameters({ … }))
     register(...rawArgs) {
       const { gate, args } = takeGate(rawArgs, '.register()');
       if (gate != null) {
@@ -127,12 +127,24 @@ function makeBuilder(def) {
       if (typeof fn !== 'function') {
         throw new TypeError('.register(): third argument must be the tool function, e.g. (m, args) => result');
       }
-      const options = takeOptions(args, '.register()', ['parameters']);
-      if (args.length !== 0) throw new TypeError('.register(): too many arguments');
+      let callsList = null;
+      let schema = null;
+      for (const arg of args) {
+        if (isCalls(arg)) {
+          if (callsList) throw new TypeError('.register(): calls(...) may only appear once');
+          callsList = arg.names;
+        } else if (isParameters(arg)) {
+          if (schema) throw new TypeError('.register(): parameters(...) may only appear once');
+          schema = arg.schema;
+        } else {
+          throw new TypeError('.register(): unexpected argument — the options are calls(...) and parameters(...)');
+        }
+      }
       const entry = {
         name,
         description,
-        parameters: options.parameters ?? { type: 'object', properties: {} },
+        parameters: schema ?? { type: 'object', properties: {} },
+        ...(callsList ? { calls: callsList } : {}),
         fn,
       };
       return next(def, (d) => { d.registers = [...(d.registers ?? []), entry]; });

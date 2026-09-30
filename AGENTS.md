@@ -750,26 +750,33 @@ function are just mechanisms for producing the value.
 
 ### Inline tool registration (chosen)
 
-`.register(name, description, fn, [options])` lets a tree declare its own
-tools — the handler JS lives in the tree file, so a pattern can ship a tool
-without a runtime-registry entry.
+`.register(name, description, fn, calls(...), parameters(schema))` lets a tree
+declare its own tools — the handler JS lives in the tree file, so a pattern can
+ship a tool without a runtime-registry entry.
 
-Modeled as a **declaration, not a step**: registers install into the run's
-tool table at `knit()` start and are available to every step, every pass,
-and every resume. Positional execution was rejected: `resume()`
-reconstructs scopes from the log and restarts at the paused child, so a
-registration node before the pause would never re-run and the tool would
-vanish on the next message.
+Modeled as a **declaration, not a step**, but **scoped like a memory slot**: a
+register belongs to the subtree of the def that declares it — inherited
+downward, overridable by a child for its own subtree, invisible to callers
+above and to siblings, with the runtime's tools as the bottom layer. Lookup
+happens at the point of use against the execution scope chain (nearest wins),
+so `resume()` re-attaches nothing: the scopes carry their defs' registers.
+Positional execution was rejected: a registration node before a pause would
+never re-run and the tool would vanish on the next message.
 
 Consequences: `.register()` deliberately does **not** take `when()` (the
-second gated-declaration exception, alongside `.needs()`); duplicate names
-in one tree graph are a build error; a register shadows a same-named
-runtime tool for that run and warns at knit start. The fn is
-`(memory, args) => result` with `memory` the call-site view, and the
-optional `options.parameters` supplies the model-facing schema. The body
-is authored **inline at the call site** (multi-line, `async` allowed) —
-the same rule as prompt text, so the tool and the tree using it stay
-together.
+second gated-declaration exception, alongside `.needs()`); two registers with
+the same name on ONE tree are a build error (parent/child overrides and
+sibling reuse are legal); `calls(...)` and `parameters(...)` are markers like
+`when()`/`max()`. The fn is `(memory, args, tools) => result` with `memory` the
+call-site view and `tools` the handles for the host tools named in `calls(...)`
+— resolved on the register's home path (declaring scope chain, then the
+runtime's tools), function-kind only, each call logged as a tool result. A
+success result is `{ value, memory }` — `memory` an optional `{ slot: value }`
+patch applied as memory updates at both tool-execution sites (`.call` leaves
+and prompt tool rounds) and stripped, so the stored tool result is
+`{ value }` — or `{ error }` on failure (the patch is skipped). The body is
+authored **inline at the call site** (multi-line, `async` allowed) — the same
+rule as prompt text, so the tool and the tree using it stay together.
 
 ### Defined inputs
 

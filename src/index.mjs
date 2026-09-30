@@ -27,7 +27,7 @@
 import { knit, resume, KnitError, PauseSignal } from './knit.mjs';
 
 export { Tree } from './tree.mjs';
-export { when, update, goback, goto, max, isWhen, isUpdate, isGoback, isGoto, isMax, DEFAULT_MAX } from './markers.mjs';
+export { when, update, goback, goto, max, calls, parameters, isWhen, isUpdate, isGoback, isGoto, isMax, isCalls, isParameters, DEFAULT_MAX } from './markers.mjs';
 export { knit, resume, KnitError, PauseSignal } from './knit.mjs';
 export { createLogger } from './logger.mjs';
 

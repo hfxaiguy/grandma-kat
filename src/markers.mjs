@@ -1,4 +1,5 @@
-// Marker factories: when(), update(), goback(), goto(), max().
+// Marker factories: when(), update(), goback(), goto(), max(), calls(),
+// parameters().
 // Each marker is a distinct type so the builder can validate argument slots
 // at build time (e.g. reject a bare function in a condition slot).
 
@@ -70,3 +71,36 @@ export function resolveMax(marker) {
   if (marker == null) return { count: DEFAULT_MAX, errFn: null };
   return { count: marker.count, errFn: marker.errFn };
 }
+
+const CALLS = Symbol('grandma-kat/calls');
+const PARAMETERS = Symbol('grandma-kat/parameters');
+
+/**
+ * Marker for `.register(name, description, fn, calls("sql_query", ...))` —
+ * the host tools the register body may invoke, handed to the fn as
+ * `tools.<name>(args)`. Resolved once, on the register's home path (its
+ * declaring scope chain's registers, then the runtime's tools); only
+ * function-kind tools qualify.
+ */
+export function calls(...names) {
+  const list = names.flat();
+  if (list.length === 0 || list.some((n) => typeof n !== 'string' || n.length === 0)) {
+    throw new TypeError('calls(...names) expects one or more non-empty tool names');
+  }
+  return Object.freeze({ [CALLS]: true, names: list });
+}
+
+export const isCalls = (v) => v != null && v[CALLS] === true;
+
+/**
+ * Marker for `.register(name, description, fn, parameters(schema))` — the
+ * JSON schema the model sees for this inline tool.
+ */
+export function parameters(schema) {
+  if (schema == null || typeof schema !== 'object' || Array.isArray(schema)) {
+    throw new TypeError('parameters(schema) expects a JSON-schema object');
+  }
+  return Object.freeze({ [PARAMETERS]: true, schema });
+}
+
+export const isParameters = (v) => v != null && v[PARAMETERS] === true;

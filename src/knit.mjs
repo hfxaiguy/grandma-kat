@@ -38,12 +38,10 @@ export async function knit(rootInput, runtime = {}) {
     defId: definitionId(def),
     stack: [], // [{ name, tree, childIndex, pass, edgeCounters: Map }]
     seq: 0,
-    // Per-run tool table: runtime tools plus the tree's inline registers.
-    // The runtime's own table is never mutated.
+    // Per-run tool table: the runtime's tools. Registers are not installed
+    // here — they live on the scopes that declare them (see resolveTool).
     tools: { ...(runtime.tools ?? {}) },
-    regShadowWarned: new Set(),
   };
-  installRegisters(exec, def);
 
   let rootScope;
   let resumeState = null;
@@ -118,7 +116,11 @@ export async function resume(checkpointId, runtime) {
         // scope that ran the child, which is where prev/raw entries belong.
         const execScope = c.execScopeId != null ? (scopes.get(c.execScopeId) ?? scope) : scope;
         scope.slots[c.child] = c.value;
-        execScope.prev.unshift({ childIndex: c.childIndex, name: c.child, value: c.value });
+        // A register memory patch is a slot write with no prev entry — it
+        // does not come from the child loop.
+        if (!c.patch) {
+          execScope.prev.unshift({ childIndex: c.childIndex, name: c.child, value: c.value });
+        }
       } else if (ev.kind === 'memory' && !c.update) {
         // Legacy rows: memory writes used to be logged as their own kind, and
         // old checkpoints must still resume from them.
@@ -270,13 +272,7 @@ export async function resume(checkpointId, runtime) {
       stack: [],
       seq: cp.seq,
       tools: { ...(runtime.tools ?? {}) },
-      regShadowWarned: new Set(),
     };
-    // Registers are static in the defs, so every tree this resume re-enters
-    // reinstalls its inline tools — a pause never drops them.
-    for (const level of stack) {
-      if (level.tree) installRegisters(exec, level.tree);
-    }
     try {
       const outcome = await execTree(exec, stack[0].tree, rootScope, rootScope, resumeState);
       logger.deleteCheckpoint(checkpointId);
@@ -333,6 +329,10 @@ function injectHumanInput(humanInput, scopes, pausedSlot, currentScope = null) {
 // --- execution ---
 
 async function execTree(exec, tree, scope, parentScope, resumeState = null) {
+  // Registers are lexical: every scope knows the registers declared on its
+  // def, and resolution walks the scope chain (see resolveTool). Re-attached
+  // on every entry, so resumed levels get theirs back too.
+  scope.registers = tree?.registers ?? null;
   if (resumeState) {
     // Resume path: resume() already reconstructed a scope per tree level
     // with that level's own slots, so the scope passed in is correct —
@@ -668,14 +668,21 @@ async function execPrompt(exec, child, scope, promptResume = null) {
     record.model = modelName;
 
     const toolNames = child.options.tools ?? (await resolveInherited(exec, 'tools', view)) ?? [];
-    const tools = toolNames.map((n) => ({
-      type: 'function',
-      function: {
-        name: n,
-        description: exec.tools[n]?.description ?? '',
-        parameters: exec.tools[n]?.parameters ?? { type: 'object', properties: {} },
-      },
-    }));
+    const tools = toolNames.map((n) => {
+      // Schemas come from whatever the name resolves to at THIS prompt's
+      // scope: a register declared here (or on an ancestor) wins over a
+      // runtime tool of the same name.
+      const resolved = resolveTool(exec, scope, n);
+      const spec = resolved?.kind === 'register' ? resolved.entry : resolved?.tool;
+      return {
+        type: 'function',
+        function: {
+          name: n,
+          description: spec?.description ?? '',
+          parameters: spec?.parameters ?? { type: 'object', properties: {} },
+        },
+      };
+    });
 
     // One LLM call. If the model returns tool calls, execute them — but do
     // NOT loop. The tree controls retries via .check() + goback().
@@ -728,30 +735,29 @@ async function execPrompt(exec, child, scope, promptResume = null) {
     let result;
     let isError = false;
     try {
-      const tool = exec.tools[name];
-      if (!tool) throw new KnitError(`unknown tool '${name}'`);
-      if (tool.tree !== undefined) {
+      const resolved = resolveTool(exec, scope, name);
+      if (!resolved) throw new KnitError(`unknown tool '${name}'`);
+      if (resolved.kind === 'tool' && resolved.tool.tree !== undefined) {
         // A tree tool: run the tree in a child scope seeded with the call
         // args; its exported value is the tool result. A .human() inside
         // pauses the whole run, and on resume the paused call receives the
         // resume state so the subtree continues exactly where it stopped.
         const resume = replay && ci === replay.doneResults.length ? promptResume : null;
-        result = await runTreeTool(exec, name, tool, args, scope, resume);
+        result = await runTreeTool(exec, name, resolved.tool, args, scope, resume);
       } else {
         // Tools return either a string or a plain JSON object (structured
         // output). Objects flow through verbatim — patterns read them via
         // m.raw.prev[0].toolResults / branch slots — so tools can hand back
-        // structured data without JSON-encoding it into a string. The second
-        // argument carries the call-site view for inline registers; registry
-        // tools ignore it.
-        result = await tool.execute(args, { view: makeView(scope) });
+        // structured data without JSON-encoding it into a string. A register
+        // also gets the call-site view and its declared tools; its `memory`
+        // patch is applied and stripped (the stored result is { value }).
+        result = resolved.kind === 'register'
+          ? await callRegister(exec, resolved, args, scope)
+          : await resolved.tool.execute(args, { view: makeView(scope) });
+        result = settleRegisterResult(exec, scope, resolved, result);
       }
       // Tools may return error-shaped results instead of throwing.
-      if (result && typeof result === 'object' && 'error' in result) {
-        isError = true;
-      } else if (typeof result === 'string' && result.toLowerCase().startsWith('error')) {
-        isError = true;
-      }
+      if (isErrorResult(result)) isError = true;
     } catch (err) {
       // A pause inside a tree tool is not a tool error — it suspends the
       // whole run and must reach knit() unchanged.
@@ -776,23 +782,27 @@ async function execCall(exec, child, scope, callResume = null) {
   const args = typeof child.argsFn === 'function'
     ? await callFn(child.argsFn, view, `args fn of '${child.name}'`)
     : child.argsFn;
-  const tool = exec.tools[child.tool];
-  if (!tool) throw new KnitError(`unknown tool '${child.tool}' (called from '${child.name}')`);
-  if (tool.tree !== undefined) {
+  const resolved = resolveTool(exec, scope, child.tool);
+  if (!resolved) throw new KnitError(`unknown tool '${child.tool}' (called from '${child.name}')`);
+  if (resolved.kind === 'tool' && resolved.tool.tree !== undefined) {
     // A .call() to a tree tool runs the subtree in place — the argument is
     // the tree's name (a registered/dynamically loaded tree) or a def. A
     // pause inside resumes through the structural branch machinery.
-    const result = await runTreeTool(exec, child.tool, tool, args, scope, callResume);
+    const result = await runTreeTool(exec, child.tool, resolved.tool, args, scope, callResume);
     logEvent(exec, 'tool_call', { child: child.name, tool: child.tool, args, result }, scope);
     return { value: result, record: { content: result, tool: child.tool, args, toolResults: [result] } };
   }
   // Result may be a string or a plain JSON object; either is stored in the
   // branch slot verbatim so patterns can consume structured output directly.
-  // The second argument carries the call-site view for inline registers;
-  // registry tools ignore it.
+  // A register also gets the call-site view as `m` and its declared tools;
+  // its `memory` patch is applied and stripped (the stored result is
+  // { value } / { error }).
   let result;
   try {
-    result = await tool.execute(args, { view });
+    result = resolved.kind === 'register'
+      ? await callRegister(exec, resolved, args, scope)
+      : await resolved.tool.execute(args, { view });
+    result = settleRegisterResult(exec, scope, resolved, result);
   } catch (err) {
     // A thrown tool error leaves no value to route — log it for diagnosis.
     logEvent(exec, 'tool_error', {
@@ -815,8 +825,6 @@ async function execCall(exec, child, scope, callResume = null) {
  */
 async function runTreeTool(exec, toolName, tool, args, scope, resumeState = null) {
   const def = await resolveTreeTool(exec, toolName, tool.tree);
-  // A tree used as a tool brings its own inline registers.
-  installRegisters(exec, def);
   const childScope = resumeState
     ? (resumeState.levelScopes[resumeState.stackIdx] ?? new Scope(scope))
     : new Scope(scope);
@@ -933,6 +941,101 @@ async function execMemoryUpdate(exec, child, scope) {
   // The write is logged once, by record(), with op 'memoryUpdate' and
   // execScopeId pointing at the scope that ran this child.
   return { value, record: { content: value }, _slotScope: target, _op: 'memoryUpdate' };
+}
+
+// --- scoped registers ------------------------------------------------
+
+// Resolve a tool name at a call site: the nearest register on the execution
+// scope chain wins, then the runtime's tool table (the bottom layer).
+function resolveTool(exec, scope, name) {
+  for (let s = scope; s; s = s.parent) {
+    const entry = (s.registers ?? []).find((r) => r.name === name);
+    if (entry) return { kind: 'register', entry, declaringScope: s };
+  }
+  const tool = exec.tools[name];
+  return tool ? { kind: 'tool', tool } : null;
+}
+
+// Error-shaped results follow the tool conventions; shared by the call sites
+// and the nested register calls.
+function isErrorResult(result) {
+  if (result && typeof result === 'object' && 'error' in result) return true;
+  return typeof result === 'string' && result.toLowerCase().startsWith('error');
+}
+
+// The `tools` handle a register body receives: its declared calls resolved on
+// the register's home path (its declaring scope chain's registers, then the
+// runtime's tools). Every call is logged like any other tool result.
+function registerToolSet(exec, entry, declaringScope) {
+  const handle = {};
+  for (const name of entry.calls ?? []) {
+    handle[name] = async (args) => {
+      const target = resolveTool(exec, declaringScope, name);
+      if (!target) {
+        throw new KnitError(`register '${entry.name}': calls('${name}') is not resolvable on its home path`);
+      }
+      const value = target.kind === 'register'
+        ? await callFn(target.entry.fn, makeView(declaringScope), `register '${name}'`, args ?? {}, registerToolSet(exec, target.entry, target.declaringScope))
+        : await target.tool.execute(args ?? {}, { view: makeView(declaringScope) });
+      logEvent(exec, 'tool_result', {
+        tool: name,
+        args: args ?? {},
+        result: value,
+        isError: isErrorResult(value),
+        via: entry.name,
+      }, declaringScope);
+      return value;
+    };
+  }
+  return Object.freeze(handle);
+}
+
+// Run a register body: the call-site view as `m`, plus the declared tools.
+function callRegister(exec, resolved, args, callSiteScope) {
+  return callFn(
+    resolved.entry.fn,
+    makeView(callSiteScope),
+    `register '${resolved.entry.name}'`,
+    args,
+    registerToolSet(exec, resolved.entry, resolved.declaringScope),
+  );
+}
+
+// A register result may carry a `memory` patch: write it as memory-update
+// records (same scope resolution as .memory(update(), …)) and strip it — the
+// stored tool result is { value } / { error }. A failed body skips the patch
+// but still loses the memory key.
+function settleRegisterResult(exec, scope, resolved, result) {
+  if (resolved.kind !== 'register') return result;
+  if (!result || typeof result !== 'object' || Array.isArray(result) || !('memory' in result)) return result;
+  const patch = result.memory;
+  if (!('error' in result) && patch && typeof patch === 'object' && !Array.isArray(patch)) {
+    applyMemoryPatch(exec, scope, patch, resolved.entry.name);
+  }
+  const { memory, ...rest } = result;
+  return rest;
+}
+
+// Each slot write lands in the scope that declares the slot; logged as
+// `record` rows with op 'memoryUpdate' and patch: true (resume writes the
+// slot without pushing a prev entry).
+function applyMemoryPatch(exec, scope, patch, toolName) {
+  for (const [name, value] of Object.entries(patch)) {
+    let target = scope;
+    while (target && !Object.prototype.hasOwnProperty.call(target.slots, name)) target = target.parent;
+    if (!target) {
+      throw new KnitError(`register '${toolName}': memory patch slot '${name}' does not exist in the scope chain — declare it with .memory() first`);
+    }
+    target.slots[name] = value;
+    logEvent(exec, 'record', {
+      child: name,
+      childIndex: null,
+      patch: true,
+      value,
+      op: 'memoryUpdate',
+      ...(target !== scope ? { execScopeId: scope.id } : {}),
+    }, target);
+  }
 }
 
 // Runs a subtree per element of an array. Each invocation gets `m.item`
@@ -1211,43 +1314,11 @@ function collectNames(tree, set) {
 
 // --- inline tool registers (`.register()`) ---
 
-// Registers are declarations: collect them from the whole tree graph
-// (branches, maps, imported subtrees) by name. Duplicates are a build error
-// — an ambiguous tool table would make call resolution order-dependent.
-function collectRegisters(def, out = new Map(), path = def?.name ?? '') {
-  for (const entry of def?.registers ?? []) {
-    const clash = out.get(entry.name);
-    if (clash) {
-      throw new KnitError(`duplicate .register('${entry.name}') — already declared at '${clash.path}'`);
-    }
-    out.set(entry.name, { ...entry, path });
-  }
-  for (const child of def?.children ?? []) {
-    if (child.kind === 'branch' || child.kind === 'map') {
-      collectRegisters(child.tree, out, `${path}/${child.name}`);
-    }
-  }
-  return out;
-}
-
-// Install a def's registers into the run's tool table. Called at knit()/
-// resume() start and whenever a tree-tool def is resolved, because a pause
-// never re-runs earlier nodes — a positional registration would silently
-// vanish on the next message.
-function installRegisters(exec, def) {
-  for (const entry of collectRegisters(def).values()) {
-    if (exec.runtime.tools?.[entry.name] && !exec.regShadowWarned.has(entry.name)) {
-      exec.regShadowWarned.add(entry.name);
-      console.warn(`[grandma-kat] .register('${entry.name}') shadows a runtime tool of the same name`);
-    }
-    exec.tools[entry.name] = {
-      description: entry.description,
-      parameters: entry.parameters,
-      // The fn receives the view of the CALLING scope plus the tool args.
-      execute: (args, ctx) => callFn(entry.fn, ctx?.view, `register '${entry.name}'`, args),
-    };
-  }
-}
+// Registers are lexical declarations (see resolveTool): each scope carries
+// the registers declared on its def, and children inherit them. Duplicates on
+// ONE def are a build error — within a scope, resolution must be
+// unambiguous. A child may declare a name an ancestor also uses; the child's
+// wins for its subtree, and callers above never see it.
 
 function validateRuntime(def, runtime) {
   // Reserved framework keys may not be injected as root memory.
@@ -1259,20 +1330,71 @@ function validateRuntime(def, runtime) {
 
   // Every referenced model name must exist in the runtime models.
   const modelRefs = new Set();
-  const toolRefs = []; // [{ name, path }]
-  const callRefs = []; // [{ name, path }]
-  const collect = (t, path) => {
-    for (const r of t.models) modelRefs.add(r.value);
-    for (const r of t.tools) {
-      for (const n of r.value) toolRefs.push({ name: n, path });
+  const tools = runtime.tools ?? {};
+  const problems = [];
+  const registerNames = new Set();
+
+  // References resolve against the registers visible on their ancestor path
+  // (a register is visible to its def's whole subtree) and the runtime's
+  // tools at the bottom. `.tools()` schemas and `.call()` steps resolve at
+  // their node's scope; a register's `calls(...)` resolve on its home path.
+  const checkRuntimeTool = (name, path) => {
+    const entry = tools[name];
+    if (!entry) return;
+    const hasExecute = typeof entry.execute === 'function';
+    const hasTree = entry.tree !== undefined;
+    if (hasExecute && hasTree) {
+      throw new KnitError(`tool '${name}' (${path}) declares both execute and tree — give it one implementation`);
     }
-    for (const c of t.children) {
-      if (c.kind === 'call') callRefs.push({ name: c.tool, path });
-      if (c.kind === 'branch') collect(c.tree, `${path}/${c.name}`);
-      if (c.kind === 'map') collect(c.tree, `${path}/${c.name}`);
+    if (!hasExecute && !hasTree) {
+      throw new KnitError(`tool '${name}' (${path}) needs execute() or a tree`);
     }
   };
-  collect(def, def.name);
+
+  const walkTree = (t, path, visible) => {
+    const own = new Map(visible);
+    const seen = new Set();
+    for (const entry of t.registers ?? []) {
+      if (seen.has(entry.name)) {
+        problems.push(`${path}: duplicate .register('${entry.name}') on one tree`);
+      }
+      seen.add(entry.name);
+      own.set(entry.name, { kind: 'register', entry, path });
+      registerNames.add(entry.name);
+    }
+    for (const r of t.models) modelRefs.add(r.value);
+    for (const r of t.tools) {
+      for (const n of r.value) {
+        if (own.has(n)) continue;
+        if (!tools[n]) problems.push(`${path} references unknown tool '${n}'`);
+        else checkRuntimeTool(n, path);
+      }
+    }
+    for (const entry of t.registers ?? []) {
+      for (const n of entry.calls ?? []) {
+        const hit = own.get(n) ?? (tools[n] ? { kind: 'tool', tool: tools[n] } : null);
+        if (!hit) {
+          problems.push(`${path}: .register('${entry.name}') calls('${n}') is not resolvable on its home path`);
+          continue;
+        }
+        if (hit.kind === 'tool' && hit.tool.tree !== undefined) {
+          problems.push(`${path}: .register('${entry.name}') calls('${n}') resolves to a tree tool — bodies may only call function tools`);
+        } else if (hit.kind === 'tool') {
+          checkRuntimeTool(n, path);
+        }
+      }
+    }
+    for (const c of t.children) {
+      if (c.kind === 'call') {
+        if (!own.has(c.tool)) {
+          if (!tools[c.tool]) problems.push(`${path} references unknown tool '${c.tool}' (called from '${c.name}')`);
+          else checkRuntimeTool(c.tool, path);
+        }
+      }
+      if (c.kind === 'branch' || c.kind === 'map') walkTree(c.tree, `${path}/${c.name}`, own);
+    }
+  };
+  walkTree(def, def.name, new Map());
 
   const models = runtime.models ?? {};
   for (const name of modelRefs) {
@@ -1289,30 +1411,16 @@ function validateRuntime(def, runtime) {
     }
   }
 
-  // Registers declared by the tree itself count as available tools.
-  const registers = collectRegisters(def);
-  const tools = runtime.tools ?? {};
-  const missing = [];
-  for (const { name, path } of [...toolRefs, ...callRefs]) {
-    if (registers.has(name)) continue;
-    const entry = tools[name];
-    if (!entry) {
-      missing.push(`${path} references unknown tool '${name}'`);
-      continue;
-    }
-    // A tool is either a function (execute) or a tree (tree: name/def) —
-    // never both, and never neither.
-    const hasExecute = typeof entry.execute === 'function';
-    const hasTree = entry.tree !== undefined;
-    if (hasExecute && hasTree) {
-      throw new KnitError(`tool '${name}' (${path}) declares both execute and tree — give it one implementation`);
-    }
-    if (!hasExecute && !hasTree) {
-      throw new KnitError(`tool '${name}' (${path}) needs execute() or a tree`);
+  // Overriding a runtime tool from a tree is legal (and lexical) — say so
+  // once per name so an accidental collision is still visible in the log.
+  for (const n of registerNames) {
+    if (tools[n]) {
+      console.warn(`[grandma-kat] .register('${n}') overrides a runtime tool of the same name (visible in that tree only)`);
     }
   }
-  if (missing.length) {
-    const available = [...Object.keys(tools), ...registers.keys()].join(', ') || 'none';
-    throw new KnitError(`unknown tools:\n  ${missing.join('\n  ')}\navailable: ${available}`);
+
+  if (problems.length) {
+    const available = [...Object.keys(tools), ...registerNames].join(', ') || 'none';
+    throw new KnitError(`unknown tools:\n  ${problems.join('\n  ')}\navailable: ${available}`);
   }
 }
