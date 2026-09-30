@@ -21,7 +21,7 @@ tracking method boundaries.
 | `!!` | `!! input` | require a memory slot (declared input) | `Needs("input")` | name literal; slot must be seeded by the caller |
 | `--` | `-- prompt: does X ...?` | ask the model | a `Branch` wrapping a `Prompt(...)` | text **expanded** into a full prompt |
 | `->` | `-> query_batch: duckdb_query ...` | fixed/direct tool call, no model | `Call("query_batch", "duckdb_query", argsFn)` | call name and tool name literal; arguments **expanded** from context |
-| `#->` | `#-> lookup: "Find a person by name"` | register an inline tool, scoped like a memory slot (inherited by its subtree, overridable by a child) | `Register("lookup", "Find a person by name", (m, args, tools) => …, calls(...), parameters({ … }))` | name literal; the description `"..."` verbatim; the body is JavaScript at the call site; `calls(...)` and `parameters(...)` are markers |
+| `#->` | `#-> lookup: "Find a person by name"` | register an inline tool, usable from its point onward (positional) and scoped like a memory slot (inherited by its subtree, overridable by a child) | `Register("lookup", "Find a person by name", (m, args, tools) => …, calls(...), parameters({ … }))` | name literal; the description `"..."` verbatim; the body is JavaScript at the call site; `calls(...)` and `parameters(...)` are markers |
 | `??` | `?? check: X holds; else goto draft_plan (max 3)` | guard the chunk above; on failure jump to a named child | `Check(m => EXPAND(COND), goto("NAME", max(k)))` | condition **expanded**; the `goto` target and max are literal |
 | `@@` | `@@ upsert_rows: batch_rows` | run the subtree once per array element | `Each("upsert_rows", m => m.batch_rows, SUBTREE)` | name literal; the array is a memory/branch reference |
 | `**` | `** branch: if X is true, run:` or `**` | conditional or unconditional subtree | `Branch(when(cond), SUBTREE)` or `Branch(SUBTREE)` — the subtree may be unnamed | condition text **expanded** when present |
@@ -218,7 +218,9 @@ Rules of the translation:
   tools) => …, calls(...), parameters({ … }))`. The body is JavaScript,
   written at the call site; the notation names the tool and fixes its
   description verbatim. A register is a **declaration, not a step** — it never
-  takes `when()` — but it is **scoped like a memory slot**: it belongs to the
+  takes `when()` — but it is **positional** (usable from its point in the
+  sequence onward; a reference before the `#->` line is a build error) and
+  **scoped like a memory slot**: it belongs to the
   subtree it is declared in, is inherited downward, and a child may declare
   the same name to override it for its own subtree only (callers above and
   siblings never see it). It is available to every step and every pass of that
