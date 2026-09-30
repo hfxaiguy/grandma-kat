@@ -1110,15 +1110,37 @@ const tc = (name, args, id = name) => ({
 });
 
 // ── inline tool registers (`Register(...)`) ────────────────────────────────
-// A register is a declaration: installed into the run's tool table before
-// execution, so position does not matter and a pause cannot lose it.
+// A register is positional: usable from its point in the sequence onward
+// (a reference before it is a build error). Installation happens at scope
+// build, so a pause cannot lose it either.
 
-test('Register(...) is hoisted: a declaration after its call site still resolves', async () => {
-  const pattern = Tree(name('late_register')
+test('Register(...) is positional: a use before its declaration fails at knit() start', async () => {
+  const callBefore = Tree(name('late_call')
     , Call('lookup', () => ({ name: 'Ada' }))
     , Register('lookup', 'Find a person by name', (m, args) => `found:${args.name}`));
+  await assert.rejects(
+    grandma.knit(callBefore, mockRuntime(scripted([]))),
+    /before its Register\(\.\.\.\) point/);
 
-  const { result } = await grandma.knit(pattern, mockRuntime(scripted([])));
+  const toolsBefore = Tree(name('late_tools')
+    , Tools('peek')
+    , Prompt(() => 'go')
+    , Register('peek', 'Peek', () => 'p'));
+  await assert.rejects(
+    grandma.knit(toolsBefore, mockRuntime(scripted([]))),
+    /before its Register\(\.\.\.\) point/);
+
+  const nestedBefore = Tree(name('late_nested')
+    , Branch(Tree(name('early'), Call('peek', () => ({}))))
+    , Register('peek', 'Peek', () => 'p'));
+  await assert.rejects(
+    grandma.knit(nestedBefore, mockRuntime(scripted([]))),
+    /before its Register\(\.\.\.\) point/);
+
+  const declaredFirst = Tree(name('early_register')
+    , Register('lookup', 'Find a person by name', (m, args) => `found:${args.name}`)
+    , Call('lookup', () => ({ name: 'Ada' })));
+  const { result } = await grandma.knit(declaredFirst, mockRuntime(scripted([])));
   assert.equal(result, 'found:Ada');
 });
 

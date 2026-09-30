@@ -164,7 +164,9 @@ Rules of the translation:
   `m.branch.NAME`.
 - `!! NAME` → `Needs("NAME")`. The tree declares the slot as a required input:
   knitting without it seeded in `runtime.memory` throws. Unlike `>>`, no pause
-  happens — the value must already be present.
+  happens — the value must already be present. Put `!!` at the top of the
+  tree: "given to me" (an ancestor scope, injected memory, or call args),
+  never produced by a sibling.
 - `-- prompt: BODY` → a `Branch` wrapping a `Prompt(...)`, so the result
   is referenceable by name (`m.branch.<name>`). If no name is written, assign
   a stable translator-generated name. The BODY is expanded into

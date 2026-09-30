@@ -56,13 +56,21 @@ function applyElement(def, el) {
     case 'model':
       return next(def, (d) => { d.models.push({ cond: el.gate, value: el.value }); });
     case 'tools':
-      return next(def, (d) => { d.tools.push({ cond: el.gate, value: [...el.names] }); });
+      // `position` is the index of the next child to run: the rule applies
+      // from that point onward, and so do the register names it may
+      // reference (Register is positional — see knit.mjs validation).
+      return next(def, (d) => { d.tools.push({ cond: el.gate, value: [...el.names], position: d.children.length }); });
     case 'needs':
       return next(def, (d) => {
         for (const n of el.names) if (!d.needs.includes(n)) d.needs.push(n);
       });
     case 'register':
-      return next(def, (d) => { d.registers = [...(d.registers ?? []), el.entry]; });
+      // Positional: `position` is the index of the next child to run, so the
+      // tool is usable from there onward and a reference before it is a
+      // build error (enforced by knit.mjs validation).
+      return next(def, (d) => {
+        d.registers = [...(d.registers ?? []), { ...el.entry, position: d.children.length }];
+      });
     default:
       return next(def, (d) => { d.children.push(el.record); });
   }

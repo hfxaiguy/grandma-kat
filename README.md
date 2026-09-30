@@ -366,7 +366,7 @@ warnings cover duplicate child names, shadowed config rules, and
 
 `Needs('draft', 'navigate')` declares expected memory inputs: hard build
 error if nothing in the tree (or injected memory) produces them, loud
-runtime error if they don't resolve when the step runs.
+runtime error if they don't resolve when the tree starts.
 
 ### Reuse
 
@@ -819,6 +819,11 @@ LLM-authored trees:
 - **Run time:** when the tree starts, each need must resolve via the scope
   chain (ancestors may satisfy it) — loud `KnitError` on a miss.
 
+**Needs means "given to me"** — put `Needs(...)` at the top of the tree.
+It is checked when the tree starts, before any child runs, so it is
+satisfied by an ancestor scope, injected runtime memory, or a tree tool's
+call args — never by a sibling write.
+
 Consequence: declare needs only for inputs present at **first execution**.
 Loop-carried reads (draft reading `m.branch.verify` on pass 1) must stay
 undeclared and defensive: `${m.branch.verify ?? ''}`.
@@ -859,8 +864,10 @@ Register("lookup", "Find a person by name and return their phone",
   empty object schema); `calls(...)` and `parameters(...)` may each appear
   once.
 - A register is a **declaration, not a step**: it does not take `when()`,
-  and its position in the sequence is readability only — resolution is
-  lexical, not positional.
+  and it is **positional** — usable from its point in the sequence onward; a
+  reference before the declaration is a build error at `knit()` start
+  ("declare it first"). Resolution is also lexical: the register belongs to
+  the subtree of the tree it is declared on.
 - Model visibility is unchanged: whitelist the name on a prompt
   (`Tools('lookup')`) or call it directly (`Call('lookup', m => …)`).
 

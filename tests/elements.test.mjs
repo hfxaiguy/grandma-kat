@@ -93,7 +93,7 @@ test('the kitchen sink builds one tree with the exact shape', () => {
   assert.equal(tree.children[15].jumpType, 'goto');
   assert.equal(tree.children[15].jumpTarget, 'ask');
 
-  assert.deepEqual(Object.keys(tree.registers[0]), ['name', 'description', 'parameters', 'calls', 'fn']);
+  assert.deepEqual(Object.keys(tree.registers[0]), ['name', 'description', 'parameters', 'calls', 'fn', 'position']);
   assert.equal(tree.registers[0].fn, f.body);
   assert.deepEqual(tree.registers[0].calls, ['echo']);
   assert.deepEqual(tree.registers[0].parameters, schema);
@@ -112,7 +112,7 @@ test('element directives patch the definition', () => {
   assert.ok(Tree.has('el_directives'), 'name(...) registers the tree');
   assert.equal(Tree.from('el_directives'), tree);
   assert.deepEqual(tree.models, [{ cond: null, value: 'cheap' }]);
-  assert.deepEqual(tree.tools, [{ cond: null, value: ['a', 'b'] }]);
+  assert.deepEqual(tree.tools, [{ cond: null, value: ['a', 'b'], position: 0 }]);
   assert.deepEqual(tree.needs, ['input']);
 });
 

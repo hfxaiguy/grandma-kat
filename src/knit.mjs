@@ -330,9 +330,11 @@ function injectHumanInput(humanInput, scopes, pausedSlot, currentScope = null) {
 // --- execution ---
 
 async function execTree(exec, tree, scope, parentScope, resumeState = null) {
-  // Registers are lexical: every scope knows the registers declared on its
-  // def, and resolution walks the scope chain (see resolveTool). Re-attached
-  // on every entry, so resumed levels get theirs back too.
+  // Registers are positional (see validateRuntime): every scope knows the
+  // registers declared on its def, and resolution walks the scope chain (see
+  // resolveTool). The before-use rule is enforced at knit() start, so the
+  // table can be attached here whole. Re-attached on every entry, so resumed
+  // levels get theirs back too.
   scope.registers = tree?.registers ?? null;
   if (resumeState) {
     // Resume path: resume() already reconstructed a scope per tree level
@@ -1432,11 +1434,12 @@ function collectNames(tree, set) {
 
 // --- inline tool registers (`Register()`) ---
 
-// Registers are lexical declarations (see resolveTool): each scope carries
-// the registers declared on its def, and children inherit them. Duplicates on
-// ONE def are a build error — within a scope, resolution must be
-// unambiguous. A child may declare a name an ancestor also uses; the child's
-// wins for its subtree, and callers above never see it.
+// Registers are positional declarations: a register is usable from its
+// point in the child sequence onward (a reference before it is a build
+// error — see validateRuntime) and lexically scoped — visible to its def's
+// whole subtree, overridable by a child, invisible to the parent and to
+// siblings. Within a scope, resolution must be unambiguous: duplicates on
+// ONE def are a build error.
 
 function validateRuntime(def, runtime) {
   // Reserved framework keys may not be injected as root memory.
@@ -1469,30 +1472,43 @@ function validateRuntime(def, runtime) {
     }
   };
 
-  const walkTree = (t, path, visible) => {
-    const own = new Map(visible);
+  const walkTree = (t, path, visible, pendingAncestors = new Map()) => {
+    // Registers are positional: each becomes available when the child walk
+    // reaches its point, so a reference before the declaration is a build
+    // error. `visible` holds the ancestor registers whose points were already
+    // crossed before this subtree was entered; `pendingAncestors` names the
+    // ancestor registers declared later, so errors can say so.
+    const active = new Map(visible);
+    const declared = new Map();
     const seen = new Set();
     for (const entry of t.registers ?? []) {
       if (seen.has(entry.name)) {
         problems.push(`${path}: duplicate Register('${entry.name}') on one tree`);
       }
       seen.add(entry.name);
-      own.set(entry.name, { kind: 'register', entry, path });
+      declared.set(entry.name, entry);
       registerNames.add(entry.name);
     }
-    for (const r of t.models) modelRefs.add(r.value);
-    for (const r of t.tools) {
-      for (const n of r.value) {
-        if (own.has(n)) continue;
-        if (!tools[n]) problems.push(`${path} references unknown tool '${n}'`);
-        else checkRuntimeTool(n, path);
+
+    let at = 0; // the current point: the index of the next child to run
+    const later = (n) =>
+      (declared.has(n) && declared.get(n).position > at) || pendingAncestors.has(n);
+    const beforePoint = (n, usedBy) => {
+      const suffix = usedBy ? ` (from '${usedBy}')` : '';
+      if (later(n)) {
+        problems.push(`${path} uses tool '${n}'${suffix} before its Register(...) point — declare it first`);
+        return true;
       }
-    }
-    for (const entry of t.registers ?? []) {
+      return false;
+    };
+
+    const checkCalls = (entry) => {
       for (const n of entry.calls ?? []) {
-        const hit = own.get(n) ?? (tools[n] ? { kind: 'tool', tool: tools[n] } : null);
+        const hit = active.get(n) ?? (tools[n] ? { kind: 'tool', tool: tools[n] } : null);
         if (!hit) {
-          problems.push(`${path}: Register('${entry.name}') calls('${n}') is not resolvable on its home path`);
+          if (!beforePoint(n)) {
+            problems.push(`${path}: Register('${entry.name}') calls('${n}') is not resolvable on its home path`);
+          }
           continue;
         }
         if (hit.kind === 'tool' && hit.tool.tree !== undefined) {
@@ -1501,16 +1517,47 @@ function validateRuntime(def, runtime) {
           checkRuntimeTool(n, path);
         }
       }
-    }
-    for (const c of t.children) {
-      if (c.kind === 'call') {
-        if (!own.has(c.tool)) {
-          if (!tools[c.tool]) problems.push(`${path} references unknown tool '${c.tool}' (called from '${c.name}')`);
-          else checkRuntimeTool(c.tool, path);
-        }
+    };
+
+    const checkName = (n, usedBy) => {
+      if (active.has(n)) return;
+      if (tools[n]) { checkRuntimeTool(n, path); return; }
+      if (!beforePoint(n, usedBy)) {
+        problems.push(`${path} references unknown tool '${n}'${usedBy ? ` (called from '${usedBy}')` : ''}`);
       }
-      if (c.kind === 'branch' || c.kind === 'map') walkTree(c.tree, `${path}/${c.name}`, own);
+    };
+
+    // Walk children in order, activating registers and tool rules at their
+    // points, so every reference resolves against what is declared so far.
+    const pendingRegisters = [...(t.registers ?? [])];
+    const pendingRules = [...t.tools];
+    const activate = (i) => {
+      at = i;
+      while (pendingRegisters.length && pendingRegisters[0].position <= i) {
+        const pos = pendingRegisters[0].position;
+        const batch = [];
+        while (pendingRegisters.length && pendingRegisters[0].position === pos) batch.push(pendingRegisters.shift());
+        for (const entry of batch) active.set(entry.name, { kind: 'register', entry, path });
+        for (const entry of batch) checkCalls(entry);
+      }
+      while (pendingRules.length && pendingRules[0].position <= i) {
+        const rule = pendingRules.shift();
+        for (const n of rule.value) checkName(n);
+      }
+    };
+
+    for (const r of t.models) modelRefs.add(r.value);
+    for (let i = 0; i < t.children.length; i++) {
+      activate(i);
+      const c = t.children[i];
+      if (c.kind === 'call') checkName(c.tool, c.name);
+      if (c.kind === 'branch' || c.kind === 'map') {
+        const childPending = new Map(pendingAncestors);
+        for (const e of pendingRegisters) childPending.set(e.name, path);
+        walkTree(c.tree, `${path}/${c.name}`, active, childPending);
+      }
     }
+    activate(t.children.length); // registers/rules declared after the last child
   };
   walkTree(def, def.name, new Map());
 
