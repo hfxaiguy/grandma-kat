@@ -1,5 +1,10 @@
 # Threads Project Specification
 
+*Historical note: the "Threads" spec below is the original design document,
+kept for context. The shipped API is the element surface in `../AGENTS.md`;
+the current authoring conventions live under "Writing Prototype Scripts" at
+the bottom of this file.*
+
 ## Overview
 
 Threads is a framework for making low-intelligence LLM models more capable at specific tasks through granular, composable execution units. Unlike traditional agent/subagent patterns, Threads breaks work into highly granular, predefined sequences with memory persistence.
@@ -221,10 +226,12 @@ Only use a factory function if the tree shape genuinely varies by input.
 
 ```js
 // Good
-export const pattern = Tree.name('my-tree')
-  Model('default')
-  Prompt(m => `...`)
-  Until(m => done, max(3));
+export const pattern = Tree(
+  name('my-tree'),
+  Model('default'),
+  Prompt(m => `...`),
+  Until(m => done, max(3)),
+);
 
 // Only if the tree shape varies
 export function createPattern({ mode }) { ... }
@@ -250,8 +257,8 @@ through `exec_js` or a fake tool call for side-channel state.
 
 ```js
 // Bad — exec_js as a side-channel for state
-.call('get_tried', 'exec_js', () => ({ code: 'JSON.stringify(window.__tried)' }))
-.call('record_tried', 'exec_js', m => ({ code: `window.__tried.push(...)` }))
+Call('get_tried', 'exec_js', () => ({ code: 'JSON.stringify(window.__tried)' }))
+Call('record_tried', 'exec_js', m => ({ code: `window.__tried.push(...)` }))
 
 // Good — memory is the tree's own state
 Memory('tried', (m, cur) => [...(cur ?? []), m.prev[0]])
@@ -265,15 +272,15 @@ branch data via `m.raw.branch.X`.
 ```js
 // tried persists across Until() iterations because it's at the loop level
 Branch(when(...),
-  Tree.name('try_find')
-    Branch(Tree.name('pick_action')
-      Prompt(...)
-      Check(...))
+  Tree(
+    name('try_find'),
+    Branch(Tree(name('pick_action'), Prompt(...), Check(...))),
     Memory(when(...), 'tried', (m, cur) => {
       const tc = m.raw.branch.pick_action?.toolCalls?.[0];
       return [...(cur ?? []), tc.arguments];
-    })
-    .call(when(...), 'wait_for_load', ...))
+    }),
+    Call(when(...), 'wait_for_load', ...),
+  ))
 ```
 
 **One gate for a group, not one gate per step.** If multiple children
@@ -282,18 +289,20 @@ instead of gating each one individually:
 
 ```js
 // Bad — repetitive gates
-.call(when(needsMore), 'scan', ...)
-.call(when(needsMore), 'format', ...)
-.call(when(needsMore), 'pick', ...)
-.call(when(needsMore && pickCalled), 'wait', ...)
+Call(when(needsMore), 'scan', ...)
+Call(when(needsMore), 'format', ...)
+Call(when(needsMore), 'pick', ...)
+Call(when(needsMore && pickCalled), 'wait', ...)
 
 // Good — one gate, inner logic handles the rest
 Branch(when(needsMore),
-  Tree.name('try_find')
-    .call('scan', ...)
-    Memory('format', ...)
-    Branch(Tree.name('pick_action') ...)
-    .call(when(m => m.branch.tried != null), 'wait', ...))
+  Tree(
+    name('try_find'),
+    Call('scan', ...),
+    Memory('format', ...),
+    Branch(Tree(name('pick_action'), ...)),
+    Call(when(m => m.branch.tried != null), 'wait', ...),
+  ))
 ```
 
 **Inline one-use helpers.** If a helper function is only used once,
