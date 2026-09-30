@@ -14,7 +14,7 @@
 // was written ('Prompt(): …').
 
 import {
-  isWhen, isUpdate, isGoback, isGoto, isMax, isCalls, isParameters,
+  isWhen, isUpdate, isMemory, isGoback, isGoto, isMax, isCalls, isParameters,
   isDisableAuto, isToolHookBefore, isToolHookAfter, goback, resolveMax,
 } from './markers.mjs';
 
@@ -143,8 +143,27 @@ export function promptFields(rawArgs, label) {
 export function branchFields(rawArgs, label) {
   const { gate, args } = takeGate(rawArgs, label);
   if (args.length !== 1) throw new TypeError(`${label} expects a single tree argument`);
-  const tree = unwrap(args[0]);
-  return { name: tree.name, tree, gate };
+  // A bare element is shorthand for Tree(element) — normalized in tree.mjs,
+  // where the element machinery lives.
+  const tree = isElement(args[0]) ? args[0] : unwrap(args[0]);
+  return { name: tree.name ?? null, tree, gate };
+}
+
+export function fromFields(rawArgs, label) {
+  const { gate, args } = takeGate(rawArgs, label);
+  if (args.filter(isMemory).length > 1) throw new TypeError(`${label}: memory() may appear only once`);
+  const memoryIndex = args.findIndex(isMemory);
+  let memoryFn = null;
+  if (memoryIndex !== -1) memoryFn = args.splice(memoryIndex, 1)[0].fn;
+  if (args.length !== 1) {
+    throw new TypeError(`${label}: expects one registered tree name, e.g. From('enrich_profile') or From('enrich_profile', memory(m => ({ input: m.item })))`);
+  }
+  const id = args[0];
+  if (typeof id !== 'string' || id.length === 0) {
+    throw new TypeError(`${label}: the tree name must be a non-empty string`);
+  }
+  assertValidName(id, label);
+  return { gate, name: id, memoryFn };
 }
 
 export function callFields(rawArgs, label) {
@@ -290,7 +309,9 @@ export function mapFields(rawArgs, label) {
   if (typeof arrayFn !== 'function') {
     throw new TypeError(`${label}: second argument must be a function returning an array`);
   }
-  const tree = unwrap(args.shift());
+  // A bare element is shorthand for Tree(element) — normalized in tree.mjs.
+  const raw = args.shift();
+  const tree = isElement(raw) ? raw : unwrap(raw);
   if (args.length !== 0) throw new TypeError(`${label}: too many arguments`);
   return { name, arrayFn, tree, gate };
 }
@@ -383,7 +404,9 @@ export function promptRecord({ name = null, value, gate = null, auto = null, opt
   return child;
 }
 
-export const branchRecord = ({ name = null, tree, gate = null }) => ({ kind: 'branch', name, tree, gate });
+export const branchRecord = ({ name = null, tree, gate = null, memory = null }) => ({
+  kind: 'branch', name, tree, gate, ...(memory ? { memory } : {}),
+});
 
 export const callRecord = ({ name = null, tool, argsFn, gate = null, options = {} }) => ({ kind: 'call', name, tool, argsFn, gate, options });
 
@@ -414,6 +437,12 @@ export const isElement = (v) => v != null && v[ELEMENT] === true;
 
 export const Prompt = (...rawArgs) => element('prompt', { record: promptRecord(promptFields(rawArgs, 'Prompt()')) });
 export const Branch = (...rawArgs) => element('branch', { record: branchRecord(branchFields(rawArgs, 'Branch()')) });
+
+// From() — the registry lookup lives in tree.mjs (it owns the registry);
+// records.mjs only shapes the attach: a branch record carrying an entry-time
+// memory patch for the imported tree's own scope.
+export const fromElement = ({ tree, gate = null, memoryFn = null }) =>
+  element('branch', { record: branchRecord({ name: tree?.name ?? null, tree, gate, memory: memoryFn }) });
 export const Call = (...rawArgs) => element('call', { record: callRecord(callFields(rawArgs, 'Call()')) });
 export const Register = (...rawArgs) => element('register', { entry: registerFields(rawArgs, 'Register()') });
 export const Check = (...rawArgs) => element('check', { record: checkRecord(checkFields(rawArgs, 'Check()')) });

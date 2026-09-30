@@ -45,13 +45,22 @@ sentence and keeps LLM authors consistent.
 Tree(
   name('tree_id'),                                  // register into a global registry for reuse
   Branch(Tree(name('navigate'), Prompt(...))),      // attach a sub-branch
+  From('navigate', memory(m => ({ ...m }))),        // or attach it by registered name, seeding its scope
   Prompt(memory => `current memory: ${memory.branch.navigate}`),
 )
 ```
 
 - `name(id)` — names the tree into a global registry so it can be reused
 - `Branch(child)` — attaches a sub-branch (composition/nesting); gated with
-  `Branch(when(cond), child)`
+  `Branch(when(cond), child)`. `child` is a def, or a bare element — shorthand
+  for `Tree(element)`: `Branch(From('x'))`, `Branch(Prompt(...))`.
+- `From('name', [memory(fn)])` — attaches a **registered** tree as if it were
+  a branch (`From('x')` ≡ `Branch(Tree.from('x'))`). `memory(fn)` seeds the
+  import's own scope at entry: `fn(m)` returns the slots to write
+  (`memory(m => ({ input: m.item }))`, or `memory(m => ({ ...m }))` to
+  snapshot the chain). The seed is an entry-time pulse, re-applied on resume;
+  the static `Needs(...)` check skips seeded attaches (keys are dynamic).
+  `Tree.from(id)` still works but is deprecated in its favor.
 - `Prompt(fn)` — defines the LLM prompt; `fn` receives memory and returns
   the prompt string
 - Memory is keyed by branch name (`m.branch.navigate`) — a parent tree
@@ -168,7 +177,7 @@ only children exist. A named tree with zero children is a build error.
 
 **Two Prompts are a sequence.** `Prompt(a), Prompt(b)` runs both, in
 declared order (accumulative, like `Branch(...)`) — NOT last-match-wins. Rule
-of thumb: *doing* elements (`Branch`, `Prompt`, `Call`, `Check`,
+of thumb: *doing* elements (`Branch`, `From`, `Prompt`, `Call`, `Check`,
 `Memory`, `Return`) accumulate; *config* rules (`Model`, `Tools`, `Until`)
 select. Prompt variants are expressed as gated children:
 
@@ -480,6 +489,8 @@ Each('ratings', m => m.branch.clickables,
 ```
 
 **Signature:** `Each(name, arrayFn, tree)` or `Each(when(cond), name, arrayFn, tree)`.
+`tree` is a def or a bare element (shorthand for `Tree(element)`:
+`Each('rows', m => m.rows, From('upsert_row'))`).
 
 **Semantics:**
 - `arrayFn(memory)` returns the array to iterate over (read from memory)

@@ -195,6 +195,7 @@ elements both run. Two `Model(...)` rules resolve to the last match.
 | Element | Kind | Produces |
 |---|---|---|
 | `Branch(tree)` | nested container | the subtree's exported value |
+| `From('name', memory(fn)?)` | attach a registered tree, as if it were a branch | the imported tree's exported value |
 | `Prompt(fn)` | LLM call | the model's text |
 | `Call(tool, argsFn)` | direct tool call, no LLM | the tool's result |
 | `Check(fn, goback(n, max(k)))` | validation | nothing on pass; sets `m.error` on fail |
@@ -377,8 +378,9 @@ reference:
 
 ```js
 const navigate = Tree(name('navigate'), Prompt(...));
-const a = Tree(name('a'), Branch(navigate));
-const b = Tree(name('b'), Branch(Tree.from('navigate')));
+const a = Tree(name('a'), Branch(navigate));          // attach the def
+const b = Tree(name('b'), From('navigate'));          // or by registry name
+// From('navigate', memory(m => ({ ...m }))) snapshots the chain into it.
 ```
 
 ## Runtime options
@@ -501,8 +503,8 @@ a `when(cond)` gate.**
   built from.
 - **Two flavors of elements.**
   - *Steps (accumulative)* — every element applies, in declared order:
-    `Branch`, `Prompt`, `Call`, `Check`, `Memory` (plain and `update()`
-    form), `Return`, `Emit`, `Human`, `Each`.
+    `Branch`, `From`, `Prompt`, `Call`, `Check`, `Memory` (plain and
+    `update()` form), `Return`, `Emit`, `Human`, `Each`.
   - *Rules (selective)* — one value is chosen; the **last matching rule
     wins**: `Model`, `Tools`, `Until`. Put defaults first, gated overrides
     later. An unconditional rule after conditional ones shadows them →
@@ -530,9 +532,15 @@ import { Tree } from 'grandma-kat';
   registry under `id`. The registry is what makes reuse by name possible.
 - A tree without `name(...)` is anonymous: fine for branch/map subtrees
   nobody references.
-- **`Tree.from(id)`** — retrieve a registered definition (throws if unknown).
-  Useful for dropping the same subtree into multiple parents.
-- **`Tree.has(id)`** — `true` if `id` is registered.
+- **`From('name', [memory(fn)])`** — attach a registered tree as if it were a
+  branch: `From('x')` ≡ `Branch(Tree.from('x'))`. `memory(fn)` seeds the
+  import's own scope at entry — `fn(m)` returns the slots to write, e.g.
+  `From('enrich_profile', memory(m => ({ input: m.item })))` or
+  `memory(m => ({ ...m }))` to snapshot the chain into it. The seed is an
+  entry-time pulse (re-applied on resume), and because its keys are known
+  only at run time, the static `Needs(...)` check skips seeded attaches.
+- **`Tree.from(id)`** *(deprecated — use `From(...)`)* — retrieve a registered
+  definition; **`Tree.has(id)`** — `true` if `id` is registered.
 
 ### `name(id)` — directive
 
@@ -547,6 +555,9 @@ Attaches a subtree. On execution: the child runs in a fresh scope linked to
 the current one (reads resolve upward; its internal writes stay internal),
 and its **exported value** — its last executed child's result — is written
 to the current scope under the child's name.
+
+The argument may be a def or a **bare element** — shorthand for wrapping it
+in an anonymous `Tree(...)` (`Branch(From('x'))`, `Branch(Prompt(...))`).
 
 ```js
 Branch(Tree(name('draft'), Prompt(m => `Write about ${m.task}`)))

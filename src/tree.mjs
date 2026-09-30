@@ -14,7 +14,7 @@
 // copy-on-write: every element returns a fresh definition, so sharing a tree
 // across parents is bulletproof.
 
-import { isElement } from './records.mjs';
+import { isElement, fromElement, fromFields } from './records.mjs';
 
 const registry = new Map();
 
@@ -39,6 +39,13 @@ function next(def, patch) {
   patch(d);
   if (d.name != null) registry.set(d.name, d);
   return d;
+}
+
+// A bare element in a subtree slot (Branch(...) / Each(...) third argument) is
+// shorthand for Tree(element) around it: build the anonymous single-child def
+// here, where the element machinery lives.
+function elementToTree(el) {
+  return applyElement(makeDef(), el);
 }
 
 // Apply one element: steps append their prebuilt record; directives patch the
@@ -72,12 +79,20 @@ function applyElement(def, el) {
         d.registers = [...(d.registers ?? []), { ...el.entry, position: d.children.length }];
       });
     default:
-      return next(def, (d) => { d.children.push(el.record); });
+      return next(def, (d) => {
+        const rec = el.record;
+        if ((el.element === 'branch' || el.element === 'map') && isElement(rec?.tree)) {
+          d.children.push({ ...rec, tree: elementToTree(rec.tree) });
+        } else {
+          d.children.push(rec);
+        }
+      });
   }
 }
 
 // Tree is the factory AND the namespace: Tree(element, …) builds a tree;
-// Tree.from()/Tree.has() use the registry. An unnamed tree needs no name():
+// From() attaches a registered tree as an element; Tree.from()/Tree.has()
+// remain as (deprecated) direct lookups. An unnamed tree needs no name():
 // knit() auto-names subtrees after their child (see autoname in knit.mjs) and
 // registers them so resume can find them.
 export function Tree(...elements) {
@@ -86,13 +101,38 @@ export function Tree(...elements) {
   return def;
 }
 
-// Retrieve a registered tree by name (for reuse).
+// Retrieve a registered tree by name. Deprecated: prefer the From() element,
+// which attaches the registered tree in place (and can seed its scope).
+let fromWarned = false;
 Tree.from = (id) => {
+  if (!fromWarned) {
+    fromWarned = true;
+    console.warn(
+      "[grandma-kat] Tree.from() is deprecated — use the From() element instead, " +
+        "e.g. From('name') or From('name', memory(m => ({ ...m })))",
+    );
+  }
   const def = registry.get(id);
   if (!def) throw new Error(`no tree registered under name '${id}'`);
   return def;
 };
 Tree.has = (id) => registry.has(id);
+
+/** Registry lookup without the deprecation warning (engine internals). */
+export function registered(id) {
+  return registry.get(id);
+}
+
+// From('name', [memory(fn)]) — attach a registered tree as if it were a
+// branch. From('x') ≡ Branch(Tree.from('x')); memory(fn) seeds the imported
+// tree's own scope at entry (fn gets the memory view; it returns the slots
+// to write, so memory(m => ({ ...m })) snapshots the chain into the import).
+export function From(...rawArgs) {
+  const { gate, name: id, memoryFn } = fromFields(rawArgs, 'From()');
+  const def = registry.get(id);
+  if (!def) throw new Error(`From('${id}'): no tree registered under name '${id}'`);
+  return fromElement({ tree: def, gate, memoryFn });
+}
 
 /** Register a tree def under its (possibly auto-assigned) name. */
 export function registerTree(tree) {

@@ -5,7 +5,7 @@
 import { Scope, makeView, lookupChain, resetScopeIdCounter } from './memory.mjs';
 import { callLlm, normalizeMessages } from './llm.mjs';
 import { createLogger, createRunId, definitionId } from './logger.mjs';
-import { unwrap, Tree, registerTree } from './tree.mjs';
+import { unwrap, Tree, registerTree, registered } from './tree.mjs';
 import { DEFAULT_MAX } from './markers.mjs';
 
 export class PauseSignal {
@@ -485,6 +485,19 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
           : new Scope(scope);
         if (!branchResume || childScope.parent !== scope) {
           logEvent(exec, 'scope_init', { scopeId: childScope.id, parentScopeId: scope.id }, childScope);
+        }
+        // From('name', memory(fn)): seed the imported tree's own scope at
+        // entry — an entry-time pulse, like Needs, so it is re-applied on
+        // resume. A non-object return is ignored.
+        if (typeof child.memory === 'function') {
+          const patch = await callFn(
+            child.memory,
+            makeView(childScope),
+            `memory fn of From('${child.tree?.name ?? '?'}')`,
+          );
+          if (patch != null && typeof patch === 'object' && !Array.isArray(patch)) {
+            for (const [key, value] of Object.entries(patch)) childScope.slots[key] = value;
+          }
         }
         const out = await execTree(exec, child.tree, childScope, scope, branchResume);
         outcome = {
@@ -1001,14 +1014,14 @@ async function loadNamedTree(runtime, name) {
       return def;
     }
   }
-  if (Tree.has(name)) return Tree.from(name);
+  if (Tree.has(name)) return registered(name);
   const detail = loadError.message ? `: ${loadError.message}` : '';
   throw new KnitError(`tree '${name}' is not registered and loadTree did not provide it${detail}`);
 }
 
 /** Resume-time resolution: the registry is authoritative (hosts reload it), loadTree is the restart fallback. */
 async function resolveTreeForResume(name, runtime) {
-  if (Tree.has(name)) return Tree.from(name);
+  if (Tree.has(name)) return registered(name);
   const loadTree = runtime?.loadTree;
   if (typeof loadTree === 'function') {
     try {
@@ -1417,7 +1430,10 @@ function validateNeeds(tree, runtime, warnings) {
       }
     }
     for (const child of t.children) {
-      if (child.kind === 'branch') walk(child.tree);
+      // A From('name', memory(fn)) seed may satisfy any slot its subtree
+      // needs — the keys are only known at run time, so the static check
+      // skips attach points that carry a seed (the runtime check applies).
+      if (child.kind === 'branch' && !child.memory) walk(child.tree);
     }
   };
   walk(tree);

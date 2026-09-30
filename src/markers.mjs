@@ -1,5 +1,5 @@
 // Marker factories: when(), update(), goback(), goto(), max(), calls(),
-// parameters(), disableAuto(), toolHookBefore(), toolHookAfter().
+// parameters(), disableAuto(), toolHookBefore(), toolHookAfter(), memory().
 // Each marker is a distinct type so the builder can validate argument slots
 // at build time (e.g. reject a bare function in a condition slot).
 
@@ -29,6 +29,23 @@ export function update() {
 }
 
 export const isUpdate = (v) => v != null && v[UPDATE] === true;
+
+const MEMORY = Symbol('grandma-kat/memory');
+
+/**
+ * Marker for From('name', memory(fn)) — the slots to seed into the imported
+ * tree's own scope when it is entered. `fn(m)` returns an object of slot
+ * writes: memory(m => ({ input: m.item })), or memory(m => ({ ...m })) to
+ * snapshot the chain into the import's scope. Positioned like when().
+ */
+export function memory(fn) {
+  if (typeof fn !== 'function') {
+    throw new TypeError('memory(fn) expects a function returning the slots to seed, e.g. memory(m => ({ input: m.item }))');
+  }
+  return Object.freeze({ [MEMORY]: true, fn });
+}
+
+export const isMemory = (v) => v != null && v[MEMORY] === true;
 
 export function goback(n, maxMarker) {
   if (!Number.isInteger(n) || n < 1) {

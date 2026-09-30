@@ -25,7 +25,7 @@ tracking method boundaries.
 | `??` | `?? check: X holds; else goto draft_plan (max 3)` | guard the chunk above; on failure jump to a named child | `Check(m => EXPAND(COND), goto("NAME", max(k)))` | condition **expanded**; the `goto` target and max are literal |
 | `@@` | `@@ upsert_rows: batch_rows` | run the subtree once per array element | `Each("upsert_rows", m => m.batch_rows, SUBTREE)` | name literal; the array is a memory/branch reference |
 | `**` | `** branch: if X is true, run:` or `**` | conditional or unconditional subtree | `Branch(when(cond), SUBTREE)` or `Branch(SUBTREE)` — the subtree may be unnamed | condition text **expanded** when present |
-| `##` | `## contacts: app/contacts/tree.mjs` | import and attach another tree | import its default tree, then `Branch(importedTree)` | tree name and module path are literal |
+| `##` | `## contacts: app/contacts/tree.mjs` | import and attach another tree | import its default tree, then `Branch(importedTree)` — or, once registered, `From("name", memory(fn)?)` | tree name and module path are literal |
 | `\|\|` | `\|\| prompt: ...` | child of the `**`/`()` block above | whatever the indented kind says | — |
 | `()` | `()` … `() goto NAME until COND (max n)` | loop — repeat the enclosed body, jumping back to a named child | a `Branch` whose trailing `Until(goto("NAME"), cond, max(n))` rewinds to that child | the closing `()` carries the target and the exit condition |
 
