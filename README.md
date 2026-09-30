@@ -1,3 +1,5 @@
+> **The chain form is gone.** Elements are the only authoring surface — `.name()`, `.prompt()`, `.branch()` … were removed. Read every example below as element form: `.method(args)` → `Method(args)` and `Tree.name('x')` → `Tree(Name('x'), …)`. See `examples/notation/README.md` for the spec.
+
 <p align="center">
   <img src="images/gramdma-logo.png" alt="Grandma KAT Logo" width="150">
   <img src="images/gramdma-header.png" alt="Grandma KAT" width="400">

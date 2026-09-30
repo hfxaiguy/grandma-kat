@@ -1,7 +1,7 @@
 # `person-scan` — the worked example
 
-The same tree, first in the line notation, then translated to the JS builder.
-This file shows line → chunk → the `.method()` it becomes and why.
+The same tree, first in the line notation, then translated to the JS element
+form. This file shows line → chunk → the element it becomes and why.
 
 ## In the notation
 
@@ -16,24 +16,24 @@ This file shows line → chunk → the `.method()` it becomes and why.
 
 ## Line-by-line translation
 
-| Line | Chunk | Tree method | Notes |
+| Line | Chunk | Element | Notes |
 |---|---|---|---|
 | `++ memory: mem_global` | root session seed | runtime `memory: { mem_global }` | No value here, so it's seeded by the caller, not written in-tree. |
-| `<< output_msg: "..."` | emit greeting | `.emit(m => ({ text: "Hi. This is grandpa-bob" }))` | Quoted → verbatim `text`. |
-| `>> human: input_1` | pause | `.human("input_1")` | Reply read as `m.branch.input_1`. |
-| `-- prompt: ...` | detect person | `.branch(Tree.name("scan_input").prompt(...))` | Named branch so `**` can reference it; prompt expanded to force `yes/no`. |
-| `** branch: if above is true` | gated branch | `.branch(when(m => isYes(m.branch.scan_input)), Tree.name("summarize_people"))` | "above" binds to `scan_input`. |
-| `\|\| prompt: ...` | summarize | inner `.prompt(...)` | Child of `summarize_people`. |
+| `<< output_msg: "..."` | emit greeting | `Emit(m => ({ text: "Hi. This is grandpa-bob" }))` | Quoted → verbatim `text`. |
+| `>> human: input_1` | pause | `Human("input_1")` | Reply read as `m.branch.input_1`. |
+| `-- prompt: ...` | detect person | `Branch(Tree(Name("scan_input"), Prompt(...)))` | Named branch so `**` can reference it; prompt expanded to force `yes/no`. |
+| `** branch: if above is true` | gated branch | `Branch(when(m => isYes(m.branch.scan_input)), Tree(Name("summarize_people"), …))` | "above" binds to `scan_input`. |
+| `\|\| prompt: ...` | summarize | inner `Prompt(...)` | Child of `summarize_people`. |
 
 ## The translation decisions, spelled out
 
-1. **`<<` is `.emit`, not a tool call.** `output_msg` reads as grandma-kat's
+1. **`<<` is `Emit(...)`, not a tool call.** `output_msg` reads as grandma-kat's
    non-blocking output channel: fire `onEmit`, keep going. The quoted string
    is the whole `text`.
 
-2. **`--` becomes a named branch, not a bare `.prompt()`.** The notation
-   refers to results *by name*, and a top-level `.prompt()` is anonymous
-   (`#1`). Wrapping it in `Tree.name("scan_input")` gives the result a stable
+2. **`--` becomes a named branch, not a bare `Prompt(...)`.** The notation
+   refers to results *by name*, and a top-level `Prompt(...)` is anonymous
+   (`#1`). Wrapping it in `Tree(Name("scan_input"), …)` gives the result a stable
    name the `**` condition can use.
 
 3. **The `--` prompt is expanded, not literal.** The seed "does `input_1`

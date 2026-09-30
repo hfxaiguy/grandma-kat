@@ -1,33 +1,33 @@
 # Line notation for grandma-kat trees
 
-A tiny, line-oriented way to sketch a grandma-kat tree before (or instead of)
-writing the builder chain by hand. Each **line** is one **chunk** of the tree —
-a single leaf, or (in the case of a branch) a node whose children are the
-indented lines that follow it.
+A tiny, line-oriented way to sketch a grandma-kat tree before writing the
+`Tree(...)` call by hand. Each **line** is one **chunk** of the tree — a single
+leaf, or (in the case of a branch) a node whose children are the indented
+lines that follow it.
 
-This notation is a *plan*, not a compiler. It trades away the JS builder's
-full power for one thing: you can read the whole control flow top-to-bottom
-in a text file, and a human (or an LLM) can translate it into a `Tree`
-without tracking method boundaries.
+This notation is a *plan*, not a compiler. It trades away the JS API's full
+power for one thing: you can read the whole control flow top-to-bottom in a
+text file, and a human (or an LLM) can translate it into a `Tree` without
+tracking method boundaries.
 
 ## The symbols
 
-| Symbol | Example | Means | Maps to (builder) | Text rule |
+| Symbol | Example | Means | Maps to (element) | Text rule |
 |---|---|---|---|---|
-| `++` | `++ memory: mem_global` | declare a memory slot / session seed, or an update that may be gated | runtime `memory:` seed, `.memory(name, fn)`, or `.memory(update(), name, fn)` / `.memory(when(cond), update(), name, fn)` | name literal; value is data |
-| `++!` | `++! conversation: keep the log` | required memory update — runs every pass, never gated | `.memory(update(), name, fn)` with no `when(...)` gate | name literal; value is data |
-| `<<` | `<< output_msg: "Hi"` | non-blocking output | `.emit(m => ({ text: ... }))` | `"..."` verbatim |
-| `>>` | `>> human: input_1` | pause, ask the human for input | `.human("input_1")` | slot name literal |
-| `!!` | `!! input` | require a memory slot (declared input) | `.needs("input")` | name literal; slot must be seeded by the caller |
-| `--` | `-- prompt: does X ...?` | ask the model | a named `.branch()` wrapping `.prompt()` | text **expanded** into a full prompt |
-| `->` | `-> query_batch: duckdb_query ...` | fixed/direct tool call, no model | `.call("query_batch", "duckdb_query", argsFn)` | call name and tool name literal; arguments **expanded** from context |
-| `#->` | `#-> lookup: "Find a person by name"` | register an inline tool, scoped like a memory slot (inherited by its subtree, overridable by a child) | `.register("lookup", "Find a person by name", (m, args, tools) => …, calls(...), parameters({ … }))` | name literal; the description `"..."` verbatim; the body is JavaScript at the call site; `calls(...)` and `parameters(...)` are markers |
-| `??` | `?? check: X holds; else goto draft_plan (max 3)` | guard the chunk above; on failure jump to a named child | `.check(m => EXPAND(COND), goto("NAME", max(k)))` | condition **expanded**; the `goto` target and max are literal |
-| `@@` | `@@ upsert_rows: batch_rows` | run the subtree once per array element | `.map("upsert_rows", m => m.batch_rows, SUBTREE)` | name literal; the array is a memory/branch reference |
-| `**` | `** branch: if X is true, run:` or `**` | conditional or unconditional subtree | `.branch(when(cond), SUBTREE)` or `.branch(SUBTREE)` — the subtree may be unnamed | condition text **expanded** when present |
-| `##` | `## contacts: app/contacts/tree.mjs` | import and attach another tree | import its factory, build it with the current API, then `.branch(importedTree)` | tree name and module path are literal |
+| `++` | `++ memory: mem_global` | declare a memory slot / session seed, or an update that may be gated | runtime `memory:` seed, `Memory(name, fn)`, or `Memory(update(), name, fn)` / `Memory(when(cond), update(), name, fn)` | name literal; value is data |
+| `++!` | `++! conversation: keep the log` | required memory update — runs every pass, never gated | `Memory(update(), name, fn)` with no `when(...)` gate | name literal; value is data |
+| `<<` | `<< output_msg: "Hi"` | non-blocking output | `Emit(m => ({ text: ... }))` | `"..."` verbatim |
+| `>>` | `>> human: input_1` | pause, ask the human for input | `Human("input_1")` | slot name literal |
+| `!!` | `!! input` | require a memory slot (declared input) | `Needs("input")` | name literal; slot must be seeded by the caller |
+| `--` | `-- prompt: does X ...?` | ask the model | a `Branch` wrapping a `Prompt(...)` | text **expanded** into a full prompt |
+| `->` | `-> query_batch: duckdb_query ...` | fixed/direct tool call, no model | `Call("query_batch", "duckdb_query", argsFn)` | call name and tool name literal; arguments **expanded** from context |
+| `#->` | `#-> lookup: "Find a person by name"` | register an inline tool, scoped like a memory slot (inherited by its subtree, overridable by a child) | `Register("lookup", "Find a person by name", (m, args, tools) => …, calls(...), parameters({ … }))` | name literal; the description `"..."` verbatim; the body is JavaScript at the call site; `calls(...)` and `parameters(...)` are markers |
+| `??` | `?? check: X holds; else goto draft_plan (max 3)` | guard the chunk above; on failure jump to a named child | `Check(m => EXPAND(COND), goto("NAME", max(k)))` | condition **expanded**; the `goto` target and max are literal |
+| `@@` | `@@ upsert_rows: batch_rows` | run the subtree once per array element | `Map("upsert_rows", m => m.batch_rows, SUBTREE)` | name literal; the array is a memory/branch reference |
+| `**` | `** branch: if X is true, run:` or `**` | conditional or unconditional subtree | `Branch(when(cond), SUBTREE)` or `Branch(SUBTREE)` — the subtree may be unnamed | condition text **expanded** when present |
+| `##` | `## contacts: app/contacts/tree.mjs` | import and attach another tree | import its default tree, then `Branch(importedTree)` | tree name and module path are literal |
 | `\|\|` | `\|\| prompt: ...` | child of the `**`/`()` block above | whatever the indented kind says | — |
-| `()` | `()` … `() goto NAME until COND (max n)` | loop — repeat the enclosed body, jumping back to a named child | a `.branch()` whose trailing `.until(goto("NAME"), cond, max(n))` rewinds to that child | the closing `()` carries the target and the exit condition |
+| `()` | `()` … `() goto NAME until COND (max n)` | loop — repeat the enclosed body, jumping back to a named child | a `Branch` whose trailing `Until(goto("NAME"), cond, max(n))` rewinds to that child | the closing `()` carries the target and the exit condition |
 
 `!` marks a chunk as required: `!!` a slot that must already be seeded, `++!`
 an update that must always run. A plain `++` update may be gated or
@@ -35,15 +35,15 @@ conditional; a `++!` update never is.
 
 Every `??` and every `()` names its jump target explicitly with `goto NAME` —
 the notation never relies on an implicit rewind. The target is a named child
-(the builder's `goback(n)` default is a convenience the notation does not use).
+(the `goback(n)` default is a convenience the notation does not use).
 
 ## The four rules
 
 ### 1. One line = one chunk
 
-A chunk is either a single builder method call, or a `**` branch node plus its
-children. Multiple builder calls that conceptually do one thing can live in
-one chunk, but the notation keeps it to one line for readability.
+A chunk is either a single element, or a `**` branch node plus its children.
+Multiple elements that conceptually do one thing can live in one chunk, but
+the notation keeps it to one line for readability.
 
 ### 2. Lines reference each other by name
 
@@ -94,42 +94,78 @@ The notation `.md` is the source of truth for a tree's behavior; the `.mjs` is
 its translation. When the spec changes, update the `.md` first and regenerate
 the `.mjs` from it rather than hand-patching the code, so the two stay in sync.
 
-When converting a notation `.md` sketch into a `.mjs` tree, leave plenty of
-inline comments in the generated code. Comment each translated chunk or small
-group of chunks with the notation line it came from, what the builder call
-does, and why its placement, memory scope, name, gate, or loop boundary
-matters. The `.mjs` file should be understandable without having to keep the
-`.md` sketch open. Explain control-flow and memory decisions, not obvious
-JavaScript syntax.
+A translated tree is one call: `export default Tree(...)` with one element per
+chunk, in order. Elements are the constructors from grandma-kat:
+`Tree, Name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch,
+Map, Call, Check, Emit, Return, Until`.
 
-Prompt text should be written inline at the `.prompt()` call site. Do not pull
-system or user prompt text into separate string constants: keeping translated
-prompt text beside its tree node makes the executable tree self-contained and
-keeps the notation-to-code mapping visible.
+```js
+// chain of chunks…
+//   -- draft_sql: draft or revise the SELECT
+//   ++ selection_sql
+//   >> confirm
+// …becomes, in order:
+export default Tree(
+  Name('caller_list'),
+  Model('strong'),
+  Prompt('draft_sql', () => [{ role: 'system', content: '…' }, { role: 'user', content: '…' }]),
+  Memory(update(), 'selection_sql', (m) => parse(m.branch.draft_sql).sql),
+  Human('confirm'),
+  Return((m) => ({ handled: true })),
+);
+```
+
+Chunks fall into three member classes, and the elements mirror them:
+
+- **Steps** run in sequence and carry the flow (`Prompt`, `Human`, `Emit`,
+  `Call`, `Check`, `Memory` writes, `Branch`, `Map`, `Return`, `Until`).
+- **Declarations** belong to the whole subtree: `Register` (per `#->`) and
+  `Needs` (per `!!`). A `Register` never takes `when()`.
+- **Directives** apply from the position where they appear (last match wins up
+  the execution path): `Name`, `Model`, `Tools`. Write them where the covered
+  steps start — never as a tree header.
+
+Rules of the translation:
+
+- A marker sits **anywhere** among an element's arguments —
+  `Prompt('response', textFn, when(cond), max(6))`. `when(cond)` is always
+  explicit; there is no default gate.
+- `Memory(update(), NAME, fn)` is the `++!`-style required update;
+  `Memory(NAME, fn)` declares/overwrites the slot when execution reaches it.
+- `Register(...)` is a declaration (like `#->`): may sit anywhere in the
+  sequence and is collected onto the def — visible to the whole subtree,
+  overridable by a child.
+- Unnamed subtrees are just `Tree(...)` without `Name(...)`: knit() auto-names
+  them (`${parent}#${k}`) and registers them so resume can find them. Name a
+  subtree only when the sketch names it or the parent reads its result.
+- A `--` prompt is a `Branch` wrapping a named `Prompt` when the sketch needs
+  to reference its result by name; an unnamed prompt is fine otherwise.
+
+### Chunk by chunk
 
 - `++ memory: NAME` → seed the **root scope** with `memory: { NAME: value }`
   in the runtime, or (inside a loop that needs to accumulate) a
-  `.memory('NAME', ...)` write at the level where the value must persist.
-- `++ NAME` as an update → `.memory(update(), "NAME", fn)`; when the write is
-  genuinely optional it may be gated: `.memory(when(cond), update(), "NAME", fn)`.
-- `++! NAME` → `.memory(update(), "NAME", fn)` **unconditional** — do not wrap
+  `Memory('NAME', ...)` write at the level where the value must persist.
+- `++ NAME` as an update → `Memory(update(), "NAME", fn)`; when the write is
+  genuinely optional it may be gated: `Memory(when(cond), update(), "NAME", fn)`.
+- `++! NAME` → `Memory(update(), "NAME", fn)` **unconditional** — do not wrap
   it in `when(...)`. Use it for state the rest of the tree depends on being
   complete (a conversation log, a required counter); a `++!` update never is.
-- `<< label: "TEXT"` → `.emit(m => ({ text: "TEXT" }))`. The quoted string is
-  the verbatim `text`. (grandma-kat's `.emit` fires `onEmit` and does not
+- `<< label: "TEXT"` → `Emit(m => ({ text: "TEXT" }))`. The quoted string is
+  the verbatim `text`. (grandma-kat's `Emit` fires `onEmit` and does not
   pause.) A message may also carry `buttons`: a flat `{ label, value }[]`,
-  e.g. `.emit(m => ({ text: "Ready to call?", buttons: [{ label: "Yes",
+  e.g. `Emit(m => ({ text: "Ready to call?", buttons: [{ label: "Yes",
   value: "yes" }, { label: "Edit", value: "edit" }] }))`. A chat surface
   renders each `label` as a tappable control and feeds its `value` in exactly
   as if the user had typed it — so `value` must read as a valid reply to the
   pause the message belongs to. A surface that cannot render buttons shows
   the text alone; the user can always type the value instead.
-- `>> human: NAME` → `.human("NAME")`. The reply is read back as
+- `>> human: NAME` → `Human("NAME")`. The reply is read back as
   `m.branch.NAME`.
-- `!! NAME` → `.needs("NAME")`. The tree declares the slot as a required input:
+- `!! NAME` → `Needs("NAME")`. The tree declares the slot as a required input:
   knitting without it seeded in `runtime.memory` throws. Unlike `>>`, no pause
   happens — the value must already be present.
-- `-- prompt: BODY` → a **named branch wrapping a `.prompt()`**, so the result
+- `-- prompt: BODY` → a `Branch` wrapping a `Prompt(...)`, so the result
   is referenceable by name (`m.branch.<name>`). If no name is written, assign
   a stable translator-generated name. The BODY is expanded into
   `[{ system }, { user: <referenced memory + BODY + a strict answer-format
@@ -139,48 +175,44 @@ keeps the notation-to-code mapping visible.
   that must act on exactly one call per pass takes `disableAuto()`; `max(n)`
   bounds the loop (exhaustion throws); `toolHookBefore(fn)` /
   `toolHookAfter(fn)` observe and rewrite each call — all three pass through
-  as the same-named markers in `.prompt(…)`.
-- `** branch: if COND run:` → `.branch(when(m => EXPAND(COND)), SUBTREE)`.
+  as the same-named markers in `Prompt(…)`.
+- `** branch: if COND run:` → `Branch(when(m => EXPAND(COND)), SUBTREE)`.
   The COND is expanded into a predicate over the referenced slot. If COND
   says "above is true", bind it to the preceding `--` prompt's named result
   and normalize with a helper like `isYes`.
 - `## NAME: PATH` → import the module at the literal `PATH` and attach its
   tree as a branch. A tree that imports grandma-kat itself exports the built
-  tree (`export default Tree(...)` — see "The element form" below); a
-  dependency-free module exports a factory
-  (`export default ({ Tree, when, max, ... }) => Tree(...)`) which the host
-  builds with its own API — hosts accept both. The imported tree must have a
-  stable name and communicate through ordinary memory, branch results, and
-  visible Grandma KAT events.
-- Bare `**` → an unconditional grouping branch. Translate it as
-  `.branch(SUBTREE)`. Subtrees do **not** need `.name()`: an unnamed subtree
-  takes its child's auto name (`${parent}#${k}`, k = 1-based child position)
-  and is registered so resume can find it. Name the subtree only when the
-  sketch names it or the parent reads its result (`m.branch.<name>`), then
-  translate as `.branch(Tree.name("<name>").branch(SUBTREE))`. `Tree` itself
-  is an unnamed builder, so `Tree.prompt(...)`, `Tree.human(...)`, etc. build
-  the subtree without a `.name()` call.
+  tree (`export default Tree(...)`); a dependency-free module exports a
+  factory (`export default ({ Tree, when, max, ... }) => Tree(...)`) which the
+  host builds with its own API — hosts accept both. The imported tree must
+  have a stable name and communicate through ordinary memory, branch results,
+  and visible Grandma KAT events.
+- Bare `**` → an unconditional grouping branch: `Branch(SUBTREE)`. Subtrees do
+  **not** need `Name()`: an unnamed subtree takes its child's auto name
+  (`${parent}#${k}`, k = 1-based child position) and is registered so resume
+  can find it. Name the subtree only when the sketch names it or the parent
+  reads its result (`m.branch.<name>`): `Branch(Tree(Name("<name>"), SUBTREE))`.
 - `|| KIND ...` → a child of the enclosing branch, at the matching depth.
-- `?? check: COND; else goto NAME (max k)` → `.check(m => EXPAND(COND),
+- `?? check: COND; else goto NAME (max k)` → `Check(m => EXPAND(COND),
   goto("NAME", max(k)))`. The expanded condition returns `true` to pass, or a
   string — the feedback, placed in `m.error` and read by the retried prompt as
   `${m.error ?? '...'}`. The flow always names its target; do not translate it
-  to the builder's `goback(n)` default.
+  to the `goback(n)` default.
 - `()` … `() goto NAME until COND (max n)` → a **branch containing a loop**.
-  The opening `()` becomes `.branch(SUBTREE)`, where the subtree holds the
-  loop body (name it only when the sketch names it). The `||` body runs once
+  The opening `()` becomes `Branch(SUBTREE)`, where the subtree holds the loop
+  body (name it only when the sketch names it). The `||` body runs once
   per pass; the closing `()` becomes a trailing
-  `.until(goto("NAME"), cond, max(n))` inside that subtree, which rewinds to
+  `Until(goto("NAME"), cond, max(n))` inside that subtree, which rewinds to
   the named child while the condition fails. The closing `()`'s text after
   `until` ("there are no more tool calls left") is the condition, expanded
   into a predicate — for a tool-calling loop that's
   `!m.raw.branch.main_prompt?.toolCalls?.length`, bounded by `max(12)`.
-  Children placed **after** the `.until()` (i.e. after the closing `()`) run
+  Elements placed **after** the `Until()` (i.e. after the closing `()`) run
   exactly once, when the loop exits.
-- `-> NAME: TOOL` → `.call('NAME', 'TOOL', m => ARGS)`. The tool executes
+- `-> NAME: TOOL` → `Call('NAME', 'TOOL', m => ARGS)`. The tool executes
   immediately with the expanded arguments; no model is involved. When NAME is
   omitted, assign a stable translator-generated name.
-- `#-> NAME: "DESCRIPTION"` → `.register("NAME", "DESCRIPTION", (m, args,
+- `#-> NAME: "DESCRIPTION"` → `Register("NAME", "DESCRIPTION", (m, args,
   tools) => …, calls(...), parameters({ … }))`. The body is JavaScript,
   written at the call site; the notation names the tool and fixes its
   description verbatim. A register is a **declaration, not a step** — it never
@@ -195,8 +227,8 @@ keeps the notation-to-code mapping visible.
   on the register's home path (its declaring scope chain, then the runtime's
   tools). Only function-kind tools may be declared (a `calls(...)` name that
   resolves to a tree is a build error); each call is logged as a tool result.
-  A prompt offers the tool to the model with `.tools("NAME")`;
-  `.call("NAME", …)` works from any step.
+  A prompt offers the tool to the model with `Tools("NAME")`;
+  `Call("NAME", …)` works from any step.
 
   Return `{ value, memory }` on success — `memory` is an optional
   `{ slot: value }` patch, applied as memory updates and stripped from the
@@ -211,7 +243,7 @@ keeps the notation-to-code mapping visible.
 
   ```js
   // #-> lookup: "Find a person by name and return their phone" calls(search_contacts)
-  .register("lookup", "Find a person by name and return their phone",
+  Register("lookup", "Find a person by name and return their phone",
     async (m, args, tools) => {
       const found = await tools.search_contacts({ query: args.name });
       const hit = (found?.contacts ?? [])[0];
@@ -221,72 +253,15 @@ keeps the notation-to-code mapping visible.
     calls("search_contacts"),
     parameters({ type: "object", properties: { name: { type: "string" } }, required: ["name"] }))
   ```
-- `@@ NAME: ARRAY` → `.map('NAME', m => m.ARRAY, SUBTREE)`. It opens a level:
+- `@@ NAME: ARRAY` → `Map('NAME', m => m.ARRAY, SUBTREE)`. It opens a level:
   the `||` lines below form the per-item subtree. The current element is
   `m.item`, and the per-item results collect under `m.branch.NAME` in the
   parent scope.
 - If a branch does bookkeeping after its useful prompt or tool result, translate
-  an explicit final result as `.return(m => m.branch.<result_name>)` after that
+  an explicit final result as `Return(m => m.branch.<result_name>)` after that
   bookkeeping. Otherwise the branch exports its last executed child, which may
   be a memory update or another internal value. Parent branches then consume
   the explicit result through `m.branch.<branch_name>`.
-
-## The element form (JS)
-
-The translation has two spellings with one meaning. The **element form** is
-preferred for new trees; the **chain** stays fully supported:
-
-```js
-// chain — one method call per chunk
-Tree.name('call_outcome')
-  .model('strong')
-  .prompt('response', textFn, max(6))
-  .register('note_phone', 'Save a phone note', body, calls('contacts__get_contact'))
-  .branch(outcomeTree)
-  .until(() => false, max(100000));
-
-// element — the same chunks as arguments of one call
-export default Tree(
-  Name('call_outcome'),
-  Model('strong'),
-  Prompt('response', textFn, max(6)),
-  Register('note_phone', 'Save a phone note', body, calls('contacts__get_contact')),
-  Branch(outcomeTree),
-  Until(() => false, max(100000)),
-);
-```
-
-| Chunk | Element |
-|---|---|
-| `++ NAME` / `++! NAME` | `Memory([when(cond),] [update(),] NAME, fn)` — `update()` makes it the `++!`-style required update |
-| `<<` | `Emit(m => ({ text, buttons? }))` |
-| `>>` | `Human(NAME, [contextFn])` |
-| `!!` | `Needs(NAME)` |
-| `--` | `Prompt([when(cond),] [name,] value, [max(n)], [disableAuto()], [toolHookBefore/After(fn)], [options])` |
-| `->` | `Call([name,] tool, argsFn, [options])` |
-| `#->` | `Register(name, "description", body, [calls(...)], [parameters({ ... })])` |
-| `??` | `Check(checkFn, [goback(n) / goto(target)], [options])` |
-| `@@` | `Map(name, arrayFn, subtree)` |
-| `**` | `Branch([when(cond),] subtree)` |
-| `()` | `Branch(Tree(…, Until(goto(name), cond, max(n))))` — the loop body is the subtree, the closing `()` its trailing `Until` |
-| `##` | `Branch(importedTree)` — see the rule above |
-| tree name | `Name('id')` |
-| model / tools rules | `Model([when(cond),] 'name')` / `Tools([when(cond),] 'a', 'b')` |
-
-Differences from the chain, on purpose:
-
-- A marker sits **anywhere** among the element's arguments —
-  `Prompt('response', textFn, when(cond), max(6))` — while the chain keeps its
-  first-or-second `when()` rule. `when(cond)` is always explicit; there is no
-  default gate.
-- `Model(...)` / `Tools(...)` are **directives, not steps**: they apply from
-  the position where they appear (last match wins up the execution path), so
-  write them wherever the covered steps start — never as a tree header.
-- `Register(...)` is a **declaration** (like `#->`): it never takes `when()`,
-  may sit anywhere in the sequence, and is collected onto the def — visible to
-  the whole subtree, overridable by a child.
-- `Name('id')` names the tree; unnamed subtrees still auto-name
-  (`${parent}#${k}`) as usual, so `Branch(Tree(...))` needs no `Name`.
 
 ## Known gotcha this notation forces you to face
 

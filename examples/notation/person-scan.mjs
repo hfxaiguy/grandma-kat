@@ -7,14 +7,14 @@
 //   4. if yes, ask: how many people, and what info about them?
 //
 // This is a *teaching* tree: it exists to show how the five-symbol line
-// notation maps onto grandma-kat's builder. See notation.md for the
+// notation maps onto grandma-kat's elements. See notation.md for the
 // line-by-line translation and README.md for the notation spec.
 //
 // HOW IT'S STRUCTURED:
 //
 //   person-scan
-//     ├── greet        — .emit() the verbatim greeting (from `<< output_msg:`)
-//     ├── input_1      — .human() pause, stores the reply (from `>> human:`)
+//     ├── greet        — Emit(...) the verbatim greeting (from `<< output_msg:`)
+//     ├── input_1      — Human(...) pause, stores the reply (from `>> human:`)
 //     ├── scan_input   — named branch wrapping the detect-person prompt
 //     │                   (from `-- prompt:`)
 //     └── summarize_people — gated branch, runs only when scan_input said
@@ -29,7 +29,7 @@
 //   - "above is true" is normalized with isYes, so "yes"/"YES"/"yes, ..."
 //     all count. Anything else skips the branch (a false gate is a no-op).
 //   - The `--` prompt lives in a *named* branch (scan_input) rather than a
-//     bare .prompt(), so the `**` condition can reference its result by name
+//     bare Prompt(...), so the `**` condition can reference its result by name
 //     instead of a fragile auto-name like `#1`.
 
 import grandma, { Tree, when, Name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Map, Call, Check, Emit, Return, Until } from "../../src/index.mjs";
@@ -55,7 +55,7 @@ const isYes = (v) => typeof v === "string" && /^\s*yes\b/i.test(v.trim());
 export const pattern = Tree(Name("person-scan")
   , Model("default")
 
-  // `<< output_msg: "Hi. This is grandpa-bob"` → .emit() the verbatim text.
+  // `<< output_msg: "Hi. This is grandpa-bob"` → Emit(...) the verbatim text.
   , Emit(() => ({ text: "Hi. This is grandpa-bob" }))
 
   // `>> human: input_1` → pause for the human's message.
