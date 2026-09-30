@@ -72,7 +72,7 @@ test('duplicate register names on one tree are a build error', async () => {
     , Call('go', 'x', () => ({})));
   await assert.rejects(
     grandma.knit(dup, mockRuntime(scripted([]))),
-    /duplicate \.register\('x'\)/,
+    /duplicate Register\('x'\)/,
   );
 });
 

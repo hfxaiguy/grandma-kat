@@ -12,7 +12,7 @@ import fs from "node:fs";
 import grandma from "../../src/index.mjs";
 import { pattern } from "./person-scan.mjs";
 
-// .human() checkpoint/resume requires a DB-backed logger (SQLite) — with
+// Human() checkpoint/resume requires a DB-backed logger (SQLite) — with
 // `logger: false` the checkpoint isn't persisted, so resume() can't find it.
 // Each test gets its own throwaway DB.
 function makeRuntime(answers) {
@@ -55,7 +55,7 @@ test("gates in summarize_people when the model says yes", async () => {
     onEmit: (v) => emitted.push(v),
   };
 
-  // First run pauses at .human("input_1").
+  // First run pauses at Human("input_1").
   const paused = await grandma.knit(pattern, runtime);
   assert.equal(paused.status, "waiting");
 

@@ -1,11 +1,11 @@
 // Auto tool-execution loop + tool hooks — the executable spec.
 //
-// Default (.prompt() with tools): call the model, execute every tool call it
+// Default (Prompt() with tools): call the model, execute every tool call it
 // emits, append the results to the prompt's local thread, call again — until a
-// round returns no tool calls. .prompt(disableAuto(), …) keeps the old
-// single-round behavior. .prompt(max(n), …) bounds the rounds (default 3,
-// exhaustion throws). Hooks are marker args on .prompt(), run per tool call:
-//   .prompt(toolHookBefore(fn), toolHookAfter(fn), value)
+// round returns no tool calls. Prompt(disableAuto(), …) keeps the old
+// single-round behavior. Prompt(max(n), …) bounds the rounds (default 3,
+// exhaustion throws). Hooks are marker args on Prompt(), run per tool call:
+//   Prompt(toolHookBefore(fn), toolHookAfter(fn), value)
 //   fn(m, thread, tool_call) — return an updated tool-call shape, or null.
 //
 // These tests are scripted against mock models — no live LLM.
@@ -36,7 +36,7 @@ test('markers validate their arguments', () => {
   assert.doesNotThrow(() => toolHookBefore(when(() => true), () => {}));
 });
 
-test('.prompt() parses auto markers; plain prompts keep their exact JSON shape', () => {
+test('Prompt() parses auto markers; plain prompts keep their exact JSON shape', () => {
   const hb = () => {};
   const ha = () => {};
   const t = Tree(Name('p'), Prompt(toolHookBefore(hb), toolHookAfter(ha), disableAuto(), max(5), m => 'x'));

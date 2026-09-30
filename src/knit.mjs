@@ -167,7 +167,7 @@ export async function resume(checkpointId, runtime) {
     if (!humanEvent) throw new KnitError(`checkpoint '${checkpointId}': no human event found at seq ${cp.seq}`);
     const treeNames = humanEvent.branch_path.split('/');
 
-    // Reconstruct completed .map() item results (keyed by the map's location
+    // Reconstruct completed Map() item results (keyed by the map's location
     // so a paused map can resume from the right item index with its prior
     // results intact). Each completed item logs a `map_item` event with its
     // index + value in the map child's parent scope.
@@ -238,7 +238,7 @@ export async function resume(checkpointId, runtime) {
       current: scopes.get(humanScopeId),
       // One reconstructed scope per tree level (agent → knowledge → … →
       // the paused branch). Each keeps ITS OWN slots — ancestor scopes
-      // (e.g. a parent loop's .memory() state) must survive the resume.
+      // (e.g. a parent loop's Memory() state) must survive the resume.
       // Fallback: a fresh scope when the chain doesn't match.
       levelScopes: (() => {
         // Walk up from the paused scope so each tree level gets the scope it
@@ -260,7 +260,7 @@ export async function resume(checkpointId, runtime) {
       // Which slot is paused — carried so execTree's resume path can route
       // a raw human reply without the caller naming it.
       humanSlot: humanEvent.content?.child ?? "main_input",
-      // Prior .map() items' results, keyed by `${branch_path}/${child}`.
+      // Prior Map() items' results, keyed by `${branch_path}/${child}`.
       // Lets a paused map resume from the paused item instead of restarting.
       mapItemResults,
     };
@@ -388,7 +388,7 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
     // heuristic then treated as a NEW pass and wiped their prev.
     state.pass++;
     if (!resumeState) {
-      // .until() rewinds m.prev at the start of each pass (current-path log).
+      // Until() rewinds m.prev at the start of each pass (current-path log).
       // Never on the resumed pass — its prev was reconstructed from the log
       // and the paused subtree continues from it.
       scope.prev = [];
@@ -464,8 +464,8 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         //
         // Guard: only descend with savedResume when there IS a deeper
         // level to resume into (levelScopes has an entry past stackIdx).
-        // If the paused element was a leaf at THIS level (e.g. .human()
-        // followed by a .branch()), resumeChildStart points at the next
+        // If the paused element was a leaf at THIS level (e.g. Human()
+        // followed by a Branch()), resumeChildStart points at the next
         // sibling — which must run fresh, not consume a nested resume
         // entry it never had.
         const branchResume =
@@ -517,7 +517,7 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         i++;
         continue;
       } else if (child.kind === 'map') {
-        // On resume, a .map() that is (or contains) the paused element must
+        // On resume, a Map() that is (or contains) the paused element must
         // resume from the paused item rather than restart. Same guard as
         // branches: only descend with savedResume when a deeper level exists.
         const mapResume =
@@ -539,7 +539,7 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         }
         // Compute per-entry resume positions. Each stack entry resumes at
         // the child that led to this tree level. The innermost entry
-        // (current tree) resumes at i + 1 (past the .human() child).
+        // (current tree) resumes at i + 1 (past the Human() child).
         // Outer entries resume at the branch/map child's index within
         // THEIR OWN tree (exec.stack[idx].childIndex), so the branch
         // that led here is re-entered with the saved resume state.
@@ -601,7 +601,7 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         }
         continue;
       } else if (child.kind === 'call') {
-        // A .call() to a tree tool descends structurally — the same deeper
+        // A Call() to a tree tool descends structurally — the same deeper
         // guard as branch children resumes a pause inside that subtree.
         const callResume =
           resumeStart != null &&
@@ -743,19 +743,19 @@ async function execPrompt(exec, child, scope, promptResume = null) {
     let result;
     let isError = false;
     try {
-      // Tools are scoped: the prompt's .tools() list (per-prompt options or
+      // Tools are scoped: the prompt's Tools() list (per-prompt options or
       // inherited) is the whole offer, and a call outside it is refused
       // before anything executes — a hallucinated or leaked name cannot
       // reach the registry.
       const c = await ensureCall();
       if (!c.offered.has(ref.name)) {
-        throw new KnitError(`tool '${ref.name}' is not offered to prompt '${child.name}' — it must resolve from that prompt's .tools() scope`);
+        throw new KnitError(`tool '${ref.name}' is not offered to prompt '${child.name}' — it must resolve from that prompt's Tools() scope`);
       }
       const resolved = resolveTool(exec, scope, ref.name);
       if (!resolved) throw new KnitError(`unknown tool '${ref.name}'`);
       if (resolved.kind === 'tool' && resolved.tool.tree !== undefined) {
         // A tree tool: run the tree in a child scope seeded with the call
-        // args; its exported value is the tool result. A .human() inside
+        // args; its exported value is the tool result. A Human() inside
         // pauses the whole run, and on resume the paused call receives the
         // resume state so the subtree continues exactly where it stopped.
         result = await runTreeTool(exec, ref.name, resolved.tool, ref.args, scope, resumeState);
@@ -903,7 +903,7 @@ async function execCall(exec, child, scope, callResume = null) {
   const resolved = resolveTool(exec, scope, child.tool);
   if (!resolved) throw new KnitError(`unknown tool '${child.tool}' (called from '${child.name}')`);
   if (resolved.kind === 'tool' && resolved.tool.tree !== undefined) {
-    // A .call() to a tree tool runs the subtree in place — the argument is
+    // A Call() to a tree tool runs the subtree in place — the argument is
     // the tree's name (a registered/dynamically loaded tree) or a def. A
     // pause inside resumes through the structural branch machinery.
     const result = await runTreeTool(exec, child.tool, resolved.tool, args, scope, callResume);
@@ -1052,7 +1052,7 @@ async function execMemoryUpdate(exec, child, scope) {
     target = target.parent;
   }
   if (!target) {
-    throw new KnitError(`memoryUpdate('${child.name}'): slot '${child.name}' does not exist in the scope chain — declare it with .memory() first or inject it`);
+    throw new KnitError(`Memory(update(), '${child.name}'): slot '${child.name}' does not exist in the scope chain — declare it with Memory() first or inject it`);
   }
   const current = target.slots[child.name];
   const value = await callFn(child.fn, view, `memoryUpdate fn of '${child.name}'`, current);
@@ -1120,7 +1120,7 @@ function callRegister(exec, resolved, args, callSiteScope) {
 }
 
 // A register result may carry a `memory` patch: write it as memory-update
-// records (same scope resolution as .memory(update(), …)) and strip it — the
+// records (same scope resolution as Memory(update(), …)) and strip it — the
 // stored tool result is { value } / { error }. A failed body skips the patch
 // but still loses the memory key.
 function settleRegisterResult(exec, scope, resolved, result) {
@@ -1142,7 +1142,7 @@ function applyMemoryPatch(exec, scope, patch, toolName) {
     let target = scope;
     while (target && !Object.prototype.hasOwnProperty.call(target.slots, name)) target = target.parent;
     if (!target) {
-      throw new KnitError(`register '${toolName}': memory patch slot '${name}' does not exist in the scope chain — declare it with .memory() first`);
+      throw new KnitError(`register '${toolName}': memory patch slot '${name}' does not exist in the scope chain — declare it with Memory() first`);
     }
     target.slots[name] = value;
     logEvent(exec, 'record', {
@@ -1159,7 +1159,7 @@ function applyMemoryPatch(exec, scope, patch, toolName) {
 // Runs a subtree per element of an array. Each invocation gets `m.item`
 // injected. Results are collected into an array in the parent scope.
 //
-// `resume` (non-null when a .human() paused inside one of the item
+// `resume` (non-null when a Human() paused inside one of the item
 // subtrees) carries the mid-execution state so the map resumes at the
 // paused item instead of restarting: prior items' results are replayed from
 // the log, and the paused item continues from its saved child position.
@@ -1297,7 +1297,7 @@ function runtimeDefaultModel(exec) {
   if (models.default) return 'default';
   const keys = Object.keys(models);
   if (keys.length === 1) return keys[0];
-  throw new KnitError('no model resolved (no .model() anywhere and no runtime default)');
+  throw new KnitError('no model resolved (no Model() anywhere and no runtime default)');
 }
 
 async function callFn(fn, view, label, ...extra) {
@@ -1367,12 +1367,12 @@ function validateTree(tree, warnings) {
     throw new KnitError(`tree '${tree.name}' has zero children — a named tree with no children is a build error`);
   }
 
-  // KNOWN FALSE POSITIVE (potential fix, not yet done): a `.memory("messages", ...)`
-  // followed by `.memoryUpdate("messages", ...)` in the same tree triggers this
-  // warning, but that pairing is idiomatic (`.memory()` seeds the slot,
-  // `.memoryUpdate()` appends to it). See tests/runner.test.mjs (memoryUpdate
+  // KNOWN FALSE POSITIVE (potential fix, not yet done): a `Memory("messages", ...)`
+  // followed by `Memory(update(), "messages", ...)` in the same tree triggers this
+  // warning, but that pairing is idiomatic (`Memory()` seeds the slot,
+  // `Memory(update(), )` appends to it). See tests/runner.test.mjs (memoryUpdate
   // idiom) and AGENTS.md. Potential fix: when the duplicate pair is a
-  // `.memory()` immediately followed by a `.memoryUpdate()` of the same name,
+  // `Memory()` immediately followed by a `Memory(update(), )` of the same name,
   // skip the warning instead of pushing it.
   const seen = new Set();
   for (const child of tree.children) {
@@ -1430,7 +1430,7 @@ function collectNames(tree, set) {
   }
 }
 
-// --- inline tool registers (`.register()`) ---
+// --- inline tool registers (`Register()`) ---
 
 // Registers are lexical declarations (see resolveTool): each scope carries
 // the registers declared on its def, and children inherit them. Duplicates on
@@ -1454,7 +1454,7 @@ function validateRuntime(def, runtime) {
 
   // References resolve against the registers visible on their ancestor path
   // (a register is visible to its def's whole subtree) and the runtime's
-  // tools at the bottom. `.tools()` schemas and `.call()` steps resolve at
+  // tools at the bottom. `Tools()` schemas and `Call()` steps resolve at
   // their node's scope; a register's `calls(...)` resolve on its home path.
   const checkRuntimeTool = (name, path) => {
     const entry = tools[name];
@@ -1474,7 +1474,7 @@ function validateRuntime(def, runtime) {
     const seen = new Set();
     for (const entry of t.registers ?? []) {
       if (seen.has(entry.name)) {
-        problems.push(`${path}: duplicate .register('${entry.name}') on one tree`);
+        problems.push(`${path}: duplicate Register('${entry.name}') on one tree`);
       }
       seen.add(entry.name);
       own.set(entry.name, { kind: 'register', entry, path });
@@ -1492,11 +1492,11 @@ function validateRuntime(def, runtime) {
       for (const n of entry.calls ?? []) {
         const hit = own.get(n) ?? (tools[n] ? { kind: 'tool', tool: tools[n] } : null);
         if (!hit) {
-          problems.push(`${path}: .register('${entry.name}') calls('${n}') is not resolvable on its home path`);
+          problems.push(`${path}: Register('${entry.name}') calls('${n}') is not resolvable on its home path`);
           continue;
         }
         if (hit.kind === 'tool' && hit.tool.tree !== undefined) {
-          problems.push(`${path}: .register('${entry.name}') calls('${n}') resolves to a tree tool — bodies may only call function tools`);
+          problems.push(`${path}: Register('${entry.name}') calls('${n}') resolves to a tree tool — bodies may only call function tools`);
         } else if (hit.kind === 'tool') {
           checkRuntimeTool(n, path);
         }
@@ -1517,11 +1517,11 @@ function validateRuntime(def, runtime) {
   const models = runtime.models ?? {};
   for (const name of modelRefs) {
     if (!models[name]) {
-      throw new KnitError(`.model('${name}') references a model not in runtime models (available: ${Object.keys(models).join(', ') || 'none'})`);
+      throw new KnitError(`Model('${name}') references a model not in runtime models (available: ${Object.keys(models).join(', ') || 'none'})`);
     }
   }
   if (modelRefs.size === 0 && !models.default && Object.keys(models).length !== 1) {
-    throw new KnitError('no model resolvable: no .model() rules anywhere and no runtime default (set models.default or provide exactly one model)');
+    throw new KnitError('no model resolvable: no Model() rules anywhere and no runtime default (set models.default or provide exactly one model)');
   }
   for (const [name, entry] of Object.entries(models)) {
     if (typeof entry.handler !== 'function' && !entry.baseURL) {
@@ -1533,7 +1533,7 @@ function validateRuntime(def, runtime) {
   // once per name so an accidental collision is still visible in the log.
   for (const n of registerNames) {
     if (tools[n]) {
-      console.warn(`[grandma-kat] .register('${n}') overrides a runtime tool of the same name (visible in that tree only)`);
+      console.warn(`[grandma-kat] Register('${n}') overrides a runtime tool of the same name (visible in that tree only)`);
     }
   }
 

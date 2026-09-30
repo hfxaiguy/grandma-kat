@@ -1085,11 +1085,11 @@ const tc = (name, args, id = name) => ({
   function: { name, arguments: JSON.stringify(args ?? {}) },
 });
 
-// ── inline tool registers (`.register()`) ──────────────────────────────────
+// ── inline tool registers (`Register(...)`) ────────────────────────────────
 // A register is a declaration: installed into the run's tool table before
 // execution, so position does not matter and a pause cannot lose it.
 
-test('.register() is hoisted: a declaration after its call site still resolves', async () => {
+test('Register(...) is hoisted: a declaration after its call site still resolves', async () => {
   const pattern = Tree(Name('late_register')
     , Call('lookup', () => ({ name: 'Ada' }))
     , Register('lookup', 'Find a person by name', (m, args) => `found:${args.name}`));
@@ -1098,7 +1098,7 @@ test('.register() is hoisted: a declaration after its call site still resolves',
   assert.equal(result, 'found:Ada');
 });
 
-test('.register() fn reads the memory of the scope it is called from', async () => {
+test('Register(...) fn reads the memory of the scope it is called from', async () => {
   const pattern = Tree(Name('register_scope')
     , Register('peek', 'Read the local slot', (m) => m.local ?? 'missing')
     , Branch(
@@ -1111,7 +1111,7 @@ test('.register() fn reads the memory of the scope it is called from', async () 
   assert.equal(memory.inner_scope, 'inner-ctx');
 });
 
-test('.register() exposes the inline tool to the model via .tools()', async () => {
+test('Register(...) exposes the inline tool to the model via Tools(...)', async () => {
   const handler = scripted([
     { content: '', tool_calls: [tc('lookup', { name: 'Ada' })] },
     'reported',
@@ -1127,7 +1127,7 @@ test('.register() exposes the inline tool to the model via .tools()', async () =
   assert.equal(handler.calls[0].tools[0].function.description, 'Find a person by name');
 });
 
-test('.register() error-shaped results are tool errors, not fatal', async () => {
+test('Register(...) error-shaped results are tool errors, not fatal', async () => {
   const handler = scripted([
     { content: '', tool_calls: [tc('flaky', {})] },
     'next',
@@ -1142,7 +1142,7 @@ test('.register() error-shaped results are tool errors, not fatal', async () => 
   assert.equal(memory.isError, true);
 });
 
-test('.register() survives a pause: the tool still resolves after resume', async () => {
+test('Register(...) survives a pause: the tool still resolves after resume', async () => {
   const dbPath = tmpLogger();
   try {
     const pattern = Tree(Name('register_resume')
@@ -1164,7 +1164,7 @@ test('.register() survives a pause: the tool still resolves after resume', async
   }
 });
 
-test('.register() shadows a same-named runtime tool for that run', async () => {
+test('Register(...) shadows a same-named runtime tool for that run', async () => {
   const tools = { lookup: tool(async () => 'host result') };
   const pattern = Tree(Name('register_shadow')
     , Register('lookup', 'Inline keeps the wheel', () => 'inline result')
@@ -1174,7 +1174,7 @@ test('.register() shadows a same-named runtime tool for that run', async () => {
   assert.equal(result, 'inline result');
 });
 
-test('duplicate .register() names fail at knit() start', async () => {
+test('duplicate Register(...) names fail at knit() start', async () => {
   const pattern = Tree(Name('register_dup')
     , Register('lookup', 'One', () => 'a')
     , Register('lookup', 'Two', () => 'b')
@@ -1182,7 +1182,7 @@ test('duplicate .register() names fail at knit() start', async () => {
 
   await assert.rejects(
     grandma.knit(pattern, mockRuntime(scripted(['x']))),
-    /duplicate \.register\('lookup'\)/);
+    /duplicate Register\('lookup'\)/);
 });
 
 test('a .call() to a tree tool runs the subtree with seeded args', async () => {

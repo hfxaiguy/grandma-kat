@@ -1,12 +1,12 @@
 # Auto tool-execution loop + tool hooks
 
-Status: implemented (`src/knit.mjs` `execPrompt`, `src/tree.mjs` `.prompt()`,
+Status: implemented (`src/knit.mjs` `execPrompt`, `src/tree.mjs` `Prompt()`,
 `src/markers.mjs`). Tests: `tests/auto-tools.test.mjs` (the executable spec),
 plus the single-round plumbing tests in `tests/runner.test.mjs`.
 
 ## What it does
 
-A `.prompt()` with tools runs a **local conversation** by default:
+A `Prompt()` with tools runs a **local conversation** by default:
 
 1. The prompt's messages open a thread; round 1 calls the model.
 2. Every tool call the model emits executes — the same resolution and call
@@ -55,13 +55,13 @@ shape, so `definitionId` / host session hashes do not churn on upgrade.
 
 ## Known limits / open edges
 
-- **Tools are scoped and enforced**: the prompt's `.tools()` list (per-prompt
+- **Tools are scoped and enforced**: the prompt's `Tools()` list (per-prompt
   option or inherited) is the whole offer, and a call outside it is refused
   before anything executes — the refusal feeds back as a tool error. Scope
-  `.tools()` to the subtree that needs it; wrap-up prompts should carry none.
+  `Tools()` to the subtree that needs it; wrap-up prompts should carry none.
 - **Rules inherit down the execution stack, including into tree-tool
   subtrees**: a callee tree's prompts also see the caller level's
-  `.tools()`/`.model()` rules (pre-existing). Combined with text-recovery a
+  `Tools()`/`Model()` rules (pre-existing). Combined with text-recovery a
   sufficiently unlucky reply could re-enter a caller-offered tree tool; the
   loop bounds it with `max()`, but a call-boundary cut in `resolveInherited`
   (and its resume story) is future work.

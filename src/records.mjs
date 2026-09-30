@@ -158,7 +158,7 @@ export function callFields(rawArgs, label) {
   }
   const tool = args.shift();
   if (typeof tool !== 'string' || tool.length === 0) {
-    throw new TypeError(`${label}: tool name must be a non-empty string, e.g. .call('navigate', m => ({ url }))`);
+    throw new TypeError(`${label}: tool name must be a non-empty string, e.g. Call('navigate', m => ({ url }))`);
   }
   const argsFn = args.shift();
   if (argsFn === undefined) {
@@ -176,7 +176,7 @@ export function registerFields(rawArgs, label) {
   }
   const name = args.shift();
   if (typeof name !== 'string' || name.length === 0) {
-    throw new TypeError(`${label}: first argument must be the tool name (string), e.g. .register("lookup", "Find a person", (m, args) => …)`);
+    throw new TypeError(`${label}: first argument must be the tool name (string), e.g. Register("lookup", "Find a person", (m, args) => …)`);
   }
   assertValidName(name, label);
   const description = args.shift();
@@ -237,8 +237,8 @@ export function memoryFields(rawArgs, label) {
   if (typeof name !== 'string' || name.length === 0) {
     throw new TypeError(
       updating
-        ? `${label.replace('()', '(update(), …)')}: the slot name (string) must follow update(), e.g. .memory(update(), 'tried', fn)`
-        : `${label}: first argument must be the slot name (string), e.g. .memory('tried', (m, cur) => [...cur ?? [], m.prev[0]])`,
+        ? `${label.replace('()', '(update(), …)')}: the slot name (string) must follow update(), e.g. Memory(update(), 'tried', fn)`
+        : `${label}: first argument must be the slot name (string), e.g. Memory('tried', (m, cur) => [...cur ?? [], m.prev[0]])`,
     );
   }
   assertValidName(name, label);
@@ -258,7 +258,7 @@ export function memoryUpdateFields(rawArgs, label) {
   const { gate, args } = takeGate(rawArgs, label);
   const name = args.shift();
   if (typeof name !== 'string' || name.length === 0) {
-    throw new TypeError(`${label}: first argument must be the slot name (string), e.g. .memoryUpdate('tried', (m, cur) => [...cur, m.prev[0]])`);
+    throw new TypeError(`${label}: first argument must be the slot name (string), e.g. Memory(update(), 'tried', (m, cur) => [...cur, m.prev[0]])`);
   }
   assertValidName(name, label);
   const fn = args.shift();
@@ -273,7 +273,7 @@ export function returnFields(rawArgs, label) {
   const { gate, args } = takeGate(rawArgs, label);
   const fn = args.shift();
   if (typeof fn !== 'function') {
-    throw new TypeError(`${label}: first argument must be a function, e.g. .return(m => "done")`);
+    throw new TypeError(`${label}: first argument must be a function, e.g. Return(m => "done")`);
   }
   if (args.length !== 0) throw new TypeError(`${label}: too many arguments`);
   return { fn, gate };
@@ -283,7 +283,7 @@ export function mapFields(rawArgs, label) {
   const { gate, args } = takeGate(rawArgs, label);
   const name = args.shift();
   if (typeof name !== 'string' || name.length === 0) {
-    throw new TypeError(`${label}: first argument must be the collection name (string), e.g. .map('rated', m => arr, tree)`);
+    throw new TypeError(`${label}: first argument must be the collection name (string), e.g. Map('rated', m => arr, tree)`);
   }
   assertValidName(name, label);
   const arrayFn = args.shift();
@@ -299,7 +299,7 @@ export function humanFields(rawArgs, label) {
   const { gate, args } = takeGate(rawArgs, label);
   const name = args.shift();
   if (typeof name !== 'string' || name.length === 0) {
-    throw new TypeError(`${label}: first argument must be the slot name (string), e.g. .human('approve')`);
+    throw new TypeError(`${label}: first argument must be the slot name (string), e.g. Human('approve')`);
   }
   assertValidName(name, label);
   const contextFn = args.shift() ?? null;
@@ -314,7 +314,7 @@ export function emitFields(rawArgs, label) {
   const { gate, args } = takeGate(rawArgs, label);
   const fn = args.shift();
   if (typeof fn !== 'function') {
-    throw new TypeError(`${label}: first argument must be a function, e.g. .emit(m => ({ text: "hi" }))`);
+    throw new TypeError(`${label}: first argument must be a function, e.g. Emit(m => ({ text: "hi" }))`);
   }
   if (args.length !== 0) throw new TypeError(`${label}: too many arguments`);
   return { fn, gate };
@@ -351,7 +351,7 @@ export function untilFields(rawArgs, label) {
 export function modelRule(rawArgs, label) {
   const { gate, args } = takeGate(rawArgs, label);
   if (args.length !== 1 || typeof args[0] !== 'string') {
-    throw new TypeError(`${label} expects a model name, e.g. .model('cheap')`);
+    throw new TypeError(`${label} expects a model name, e.g. Model('cheap')`);
   }
   return { cond: gate, value: args[0] };
 }
@@ -359,14 +359,14 @@ export function modelRule(rawArgs, label) {
 export function toolsRule(rawArgs, label) {
   const { gate, args } = takeGate(rawArgs, label);
   if (args.length === 0 || args.some((t) => typeof t !== 'string')) {
-    throw new TypeError(`${label} expects tool names, e.g. .tools('navigate', 'click')`);
+    throw new TypeError(`${label} expects tool names, e.g. Tools('navigate', 'click')`);
   }
   return { cond: gate, value: [...args] };
 }
 
 export function needsList(names, label) {
   if (names.length === 0 || names.some((n) => typeof n !== 'string')) {
-    throw new TypeError(`${label} expects branch names, e.g. .needs('draft', 'navigate')`);
+    throw new TypeError(`${label} expects branch names, e.g. Needs('draft', 'navigate')`);
   }
   return [...names];
 }

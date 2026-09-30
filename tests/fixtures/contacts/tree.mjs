@@ -4,9 +4,9 @@
 //
 // Symbols on top of the canonical spec (examples/notation/README.md):
 //
-//   !! NAME   = "requires"  -> .needs(NAME). The slot must be seeded by the
+//   !! NAME   = "requires"  -> Needs(NAME). The slot must be seeded by the
 //               caller (runtime.memory) — the tree refuses to run without it.
-//   ( )       = "loop"      -> a named branch whose trailing .until() rewinds
+//   ( )       = "loop"      -> a named branch whose trailing Until() rewinds
 //               to the branch top. The `|| << emit` inside the loop fires once
 //               per model turn (after each round of tool calls), not once at
 //               the end.
@@ -573,7 +573,7 @@ If the message mentions no person, reply with exactly: NONE`,
         , Tools("upsert_contact")
         // Auto tool loop: one upsert_contact call per person, the results
         // feed back on the prompt's thread, and the model confirms in a
-        // final round. .tools() is scoped to this subtree — no other prompt
+        // final round. Tools() is scoped to this subtree — no other prompt
         // in the app can call anything.
         , Prompt(
           max(12, (m) => `tool-iteration limit: ${m.error ?? "stuck"}`),

@@ -7,7 +7,7 @@
 //   import { tools as contactTools } from "<workspace>/app/contacts/src/tools.js";
 //   const allTools = { ...katTools, ...Object.fromEntries(contactTools.map(t => [t.name, t])) };
 //
-// A branch then just names it: .tools("upsert_contact")
+// A branch then just names it: Tools("upsert_contact")
 
 import { upsertContact } from "./upsert.js";
 import { logMessage } from "./messages.js";

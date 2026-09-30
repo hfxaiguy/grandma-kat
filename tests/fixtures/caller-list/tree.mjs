@@ -27,7 +27,7 @@
 //
 // The tree's only import is the pure walk.js helper module; every database
 // touch goes through a declared host tool, and every memory write uses the
-// marker form .memory(update(), …).
+// marker form Memory(update(), …).
 
 import { findStoredPhone, openFollowups, splitPhones, targetFrom } from "./src/walk.js";
 import { Tree, when, max, update, calls, parameters, disableAuto, Name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Map, Call, Check, Emit, Return, Until } from "../../../src/index.mjs";
