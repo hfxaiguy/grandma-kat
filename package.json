@@ -1,7 +1,7 @@
 {
   "name": "grandma-kat",
   "version": "0.1.0",
-  "description": "Grandma Knits Agent Trees — factory-builder library for composing LLM execution trees",
+  "description": "Grandma Knits Agent Trees — build LLM execution trees from elements",
   "type": "module",
   "main": "src/index.mjs",
   "exports": {

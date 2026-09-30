@@ -1,5 +1,3 @@
-> **The chain form is gone.** Elements are the only authoring surface — `.name()`, `.prompt()`, `.branch()` … were removed. Read every example below as element form: `.method(args)` → `Method(args)` and `Tree.name('x')` → `Tree(Name('x'), …)`. See `examples/notation/README.md` for the spec.
-
 <p align="center">
   <img src="images/gramdma-logo.png" alt="Grandma KAT Logo" width="150">
   <img src="images/gramdma-header.png" alt="Grandma KAT" width="400">
@@ -28,10 +26,28 @@ Grandma KAT is a tiny, zero-dependency JavaScript library for building LLM
 workflows as **explicit trees** instead of open-ended agent loops.
 
 You define the control flow — which prompts run, in what order, what gets
-retried, when to loop, when to stop — as plain data built with a chained
-builder API. A runner (`grandma.knit()`) validates the whole tree up front
-and then executes it, calling the model only for the parts that actually
-need a model.
+retried, when to loop, when to stop — as plain data built with one call:
+`Tree(element, element, …)`. A runner (`grandma.knit()`) validates the whole
+tree up front and then executes it, calling the model only for the parts
+that actually need a model.
+
+```js
+import grandma, { Tree, Name, Prompt, Until, max } from 'grandma-kat';
+
+const pattern = Tree(
+  Name('draft-and-verify'),
+  Prompt(m => `Write one paragraph about ${m.task}.`),
+  Prompt(m => `Does this paragraph stay on topic? Answer "pass" or "fail".\n\n${m.prev[0]}`),
+  Until(m => m.prev[0]?.trim() === 'pass', max(3)),
+);
+
+const { result, memory, runId } = await grandma.knit(pattern, {
+  models: {
+    default: { baseURL: 'http://localhost:8080/v1', apiKey: 'no-key', model: 'LFM2.5-1.2B' },
+  },
+  memory: { task: 'the history of knitting' },
+});
+```
 
 The guiding bet: **the control flow should be yours, and the LLM should only
 do the fuzzy parts.** Modern small models (1–30B params, running locally)
@@ -41,23 +57,6 @@ no?" — and surprisingly bad at sustaining an autonomous multi-step agent
 loop. Grandma KAT is built around that reality: you write the procedure,
 the model fills in the judgment calls, and every judgment call is checked,
 bounded, and logged.
-
-```js
-import grandma, { Tree, when, goback, max } from 'grandma-kat';
-
-const pattern = Tree.name('draft-and-verify')
-  .prompt(m => `Write one paragraph about ${m.task}.`)
-  .prompt(m =>
-    `Does this paragraph stay on topic? Answer "pass" or "fail".\n\n${m.prev[0]}`)
-  .until(m => m.prev[0]?.trim() === 'pass', max(3));
-
-const { result, memory, runId } = await grandma.knit(pattern, {
-  models: {
-    default: { baseURL: 'http://localhost:8080/v1', apiKey: 'no-key', model: 'LFM2.5-1.2B' },
-  },
-  memory: { task: 'the history of knitting' },
-});
-```
 
 ## Where it fits (vs. LangChain & friends)
 
@@ -84,9 +83,9 @@ More concretely:
   it, log it, and test it without a live model.
 
 It's also designed so that **LLMs are good at writing the trees
-themselves**: the builder API is small and patterned, and it fails loudly at
-build time on hallucinated methods, missing branches, or unknown tool
-names — the mistakes an LLM author actually makes.
+themselves**: the `Tree(...)` surface is small and patterned, and it fails
+loudly at build time on hallucinated elements, missing branches, or unknown
+tool names — the mistakes an LLM author actually makes.
 
 And if your alternative is "just hand-roll a `while` loop around
 `fetch()`": that's a fine instinct, and Grandma KAT is roughly that — plus
@@ -95,11 +94,11 @@ SQLite logging, and mock-model testing, for one import and no dependencies.
 
 ## Status
 
-**Alpha** (v0.1.0). Implemented and tested: builder, markers, runner,
-memory scope chain, single-round tool calls, gates, checks/goback/until,
-`.memory()`/`.memoryUpdate()`, `.return()`, `.emit()`, `.human()`
-(pause/resume with DB-backed checkpoints), `.map()`, validation, SQLite +
-console logging.
+**Alpha** (v0.1.0). Implemented and tested: the element surface
+(`Tree(...)`), markers, runner, memory scope chain, the auto tool loop with
+hooks, gates, checks/goback/until, `Memory` (plain and `update()` form),
+`Return`, `Emit`, `Human` (pause/resume with DB-backed checkpoints), `Map`,
+`Register`, validation, SQLite + console logging.
 
 Deferred (designed, not built): tool-call pause mode, escalation promotion,
 YAML authoring layer, `grandma.compile()`.
@@ -126,15 +125,17 @@ A tree that asks a small model to judge a yes/no question, and retries with
 feedback until the model actually answers in the required format:
 
 ```js
-import grandma, { Tree, when, goback, max } from 'grandma-kat';
+import grandma, { Tree, Name, Prompt, Check, goback, max } from 'grandma-kat';
 
-const pattern = Tree.name('judge')
-  .prompt(m => `Is ${m.topic} a good first programming language? Answer ONLY "yes" or "no".`)
-  .check(
+const pattern = Tree(
+  Name('judge'),
+  Prompt(m => `Is ${m.topic} a good first programming language? Answer ONLY "yes" or "no".`),
+  Check(
     m => ['yes', 'no'].includes(m.prev[0].trim().toLowerCase())
       || 'Answer with ONLY the word "yes" or "no".',
     goback(1, max(3)),
-  );
+  ),
+);
 
 const { result } = await grandma.knit(pattern, {
   models: {
@@ -159,21 +160,23 @@ children, which run **sequentially, in declared order**. A container's
 exported value is its last executed child's result.
 
 If a tree performs bookkeeping after producing its useful result, make the
-result explicit with `.return()` after that bookkeeping:
+result explicit with a `Return(...)` after that bookkeeping:
 
 ```js
-const answer = Tree.name('answer')
-  .prompt('response', m => `Answer: ${m.question}`)
-  .memory('audit', m => ({ length: m.branch.response.length }))
-  .return(m => m.branch.response);
+const answer = Tree(
+  Name('answer'),
+  Prompt('response', m => `Answer: ${m.question}`),
+  Memory('audit', m => ({ length: m.branch.response.length })),
+  Return(m => m.branch.response),
+);
 ```
 
 Without the explicit return, the container exports the last bookkeeping value
-instead. `.return()` is also the stable way for a parent to consume a named
+instead. `Return(...)` is also the stable way for a parent to consume a named
 child's intended result via `m.branch.<name>`.
 
 ```js
-Tree.name('draft').prompt(m => `Write about ${m.task}`)
+Tree(Name('draft'), Prompt(m => `Write about ${m.task}`))
 
 // draft        ← container (named tree)
 //  └─ draft#1  ← anonymous prompt child (auto-named at build time)
@@ -181,31 +184,31 @@ Tree.name('draft').prompt(m => `Write about ${m.task}`)
 
 Anonymous children get build-time names like `draft#1` (`#` is reserved in
 your own names). If you reference a child's output, give it an explicit
-name — `.prompt('outline', m => ...)` — positional auto-names shift when
+name — `Prompt('outline', m => ...)` — positional auto-names shift when
 you insert siblings.
 
-**Doing methods accumulate; config methods select.** `.prompt(a).prompt(b)`
-runs both. `.model('x').model('y')` resolves to `'y'` (last match wins).
+**Doing elements accumulate; config rules select.** Two `Prompt(...)`
+elements both run. Two `Model(...)` rules resolve to the last match.
 
 ### The children (leaves)
 
-| Method | Kind | Produces |
+| Element | Kind | Produces |
 |---|---|---|
-| `.branch(tree)` | nested container | the subtree's exported value |
-| `.prompt(fn)` | LLM call | the model's text |
-| `.call(tool, argsFn)` | direct tool call, no LLM | the tool's result |
-| `.check(fn, goback(n, max(k)))` | validation | nothing on pass; sets `m.error` on fail |
-| `.memory(name, fn)` | memory write | the written value (also stored under `name`) |
-| `.memoryUpdate(name, fn)` · `.memory(update(), name, fn)` | memory update (slot must already exist) | the updated value |
-| `.return(fn)` | early exit | stops the tree if `fn` returns non-null |
-| `.emit(fn)` | non-blocking output | calls `runtime.onEmit(value)`, continues |
-| `.human(name, contextFn?)` | human-in-the-loop | pauses execution, waits for input |
-| `.map(name, arrayFn, tree)` | run a subtree per element | array of results, stored under `name` |
+| `Branch(tree)` | nested container | the subtree's exported value |
+| `Prompt(fn)` | LLM call | the model's text |
+| `Call(tool, argsFn)` | direct tool call, no LLM | the tool's result |
+| `Check(fn, goback(n, max(k)))` | validation | nothing on pass; sets `m.error` on fail |
+| `Memory(name, fn)` | memory write | the written value (also stored under `name`) |
+| `Memory(update(), name, fn)` | memory update (slot must already exist) | the updated value |
+| `Return(fn)` | early exit | stops the tree if `fn` returns non-null |
+| `Emit(fn)` | non-blocking output | calls `runtime.onEmit(value)`, continues |
+| `Human(name, contextFn?)` | human-in-the-loop | pauses execution, waits for input |
+| `Map(name, arrayFn, tree)` | run a subtree per element | array of results, stored under `name` |
 
-All of them accept an optional `when(cond)` gate as the first argument:
+Any element may take a `when(cond)` gate, anywhere among its arguments:
 
 ```js
-.branch(when(m => m.branch.check_address === 'no'), tryFindTree)
+Branch(when(m => m.branch.check_address === 'no'), tryFindTree)
 ```
 
 ### Memory: a scope chain
@@ -223,20 +226,20 @@ Inside any prompt/gate/check function, the memory view `m` gives you:
 | `m.prev` | completed siblings' outputs, **most-recent-first** (positional) |
 | `m.raw.branch.X` / `m.raw.prev[i]` | the full **record**: `{ content, reasoning, toolCalls, toolResults, calls }` (container records may also include `children`) |
 | `m.error` | feedback from the last failed check (cleared on pass) |
-| `m.item` | current element inside a `.map()` subtree |
+| `m.item` | current element inside a `Map(...)` subtree |
 | `m.<anything>` | any other name resolves up the scope chain (root inputs, ancestor slots) |
 
 Root inputs come from `memory:` in the runtime. Sessions are just the root
 scope threaded through runs: `knit()` returns `memory`; feed it back into
 the next run.
 
-### Flow control: `.check()` + `goback()` + `max()`
+### Flow control: `Check(...)` + `goback()` + `max()`
 
 Validation is a visible node in the tree, and every backward jump is
 **relative and bounded** — unbounded loops are unconstructible.
 
 ```js
-.check(
+Check(
   m => m.prev[0].length <= 5 || 'Too long. One word only.',
   goback(1, max(3, m => `Judge never answered validly: ${m.error}`)),
 )
@@ -249,20 +252,23 @@ Validation is a visible node in the tree, and every backward jump is
   with it (named slots persist until overwritten).
 - `max(3)` = 1 initial run + 3 retries, then a loud `KnitError`. The
   optional `errFn` controls the failure message.
-- `.until(cond, max(k))` is the same primitive at container scope: re-run
+- `Until(cond, max(k))` is the same primitive at container scope: re-run
   all children until `cond` passes. Omit `max()` and a documented default
   cap (3) applies.
 
 ### Models per step
 
-`.model(name)` on any tree, inherited down: step → parent → root → runtime
-default. Names reference the runtime's `models` map, so "different
-endpoint" and "same endpoint, different model" are one concept:
+`Model(name)` anywhere in a tree applies from that point on and is
+inherited down: step → parent → root → runtime default. Names reference the
+runtime's `models` map, so "different endpoint" and "same endpoint,
+different model" are one concept:
 
 ```js
-const pattern = Tree.name('agent')
-  .model('cheap')                                              // default for this tree
-  .branch(Tree.name('summarize').model('strong').prompt(...))  // override per branch
+const pattern = Tree(
+  Name('agent'),
+  Model('cheap'),                                                   // default for this tree
+  Branch(Tree(Name('summarize'), Model('strong'), Prompt(...))),    // override per branch
+);
 ```
 
 ```js
@@ -275,18 +281,20 @@ await grandma.knit(pattern, {
 ```
 
 Model rules can also be **gated** — declare the default first and
-conditional overrides later (config rules are last-match-wins). The
-condition re-evaluates every time a prompt resolves its model, so the same
-tree can switch models between loop passes as memory changes:
+conditional overrides later (rules are last-match-wins). The condition
+re-evaluates every time a prompt resolves its model, so the same tree can
+switch models between loop passes as memory changes:
 
 ```js
-Tree.name('agent')
-  .model('cheap')                                                    // default first
-  .model(when(m => m.branch.plan?.trim().toLowerCase() === 'hard'),  // gated override
-    'strong')
-  .branch(Tree.name('plan').prompt(m =>
-    `Is this task "easy" or "hard" for a small model? One word: ${m.task}`))
-  .branch(Tree.name('solve').prompt(m => `Solve: ${m.task}`))
+Tree(
+  Name('agent'),
+  Model('cheap'),                                                   // default first
+  Model(when(m => m.branch.plan?.trim().toLowerCase() === 'hard'),  // gated override
+    'strong'),
+  Branch(Tree(Name('plan'), Prompt(m =>
+    `Is this task "easy" or "hard" for a small model? One word: ${m.task}`))),
+  Branch(Tree(Name('solve'), Prompt(m => `Solve: ${m.task}`))),
+)
 // 'plan' runs on 'cheap' (the gate is false before plan exists — note
 // the defensive `?.`); if plan says "hard", 'solve' runs on 'strong'
 ```
@@ -306,24 +314,24 @@ const tools = {
 };
 ```
 
-- `.tools('navigate', 'click')` on a container whitelists tools for its
+- `Tools('navigate', 'click')` on a container whitelists tools for its
   prompt children (inherited down the tree). Opt out per prompt:
-  `.prompt(fn, { tools: [] })`. Default: no tools.
+  `Prompt(fn, { tools: [] })`. Default: no tools.
 - When a prompt's model responds with tool calls, the prompt runs the
   **auto tool loop**: every call executes, the results feed back on the
   prompt's local thread, and the model is called again until it answers
   without calls. `disableAuto()` on the prompt stops after one round,
   `max(n)` bounds the loop, and `toolHookBefore()` / `toolHookAfter()`
-  observe and rewrite each call (see the `.prompt()` reference and
+  observe and rewrite each call (see the `Prompt(...)` reference and
   *Tool hooks*). Calls and results are at `m.raw.prev[0].toolCalls` /
   `.toolResults` (union across rounds); the whole exchange at `.thread`.
-- `.call('navigate', m => ({ url: m.branch.best }))` calls a tool directly,
+- `Call('navigate', m => ({ url: m.branch.best }))` calls a tool directly,
   no LLM involved.
 
 #### Trees as tools
 
 A tree can be exposed as a tool — same name space, same call sites, no new
-builder method:
+element:
 
 ```js
 tools: {
@@ -332,15 +340,15 @@ tools: {
 ```
 
 `tree` is a registered name (resolved by the runtime's `loadTree` hook,
-falling back to the global registry) or a def/builder directly. When the
-model calls a tree tool — or a `.call()` targets one — the engine runs that
+falling back to the global registry) or a def directly. When the
+model calls a tree tool — or a `Call(...)` targets one — the engine runs that
 tree in place, in a child scope **seeded with the call args** as slots (so
-the subtree's `.needs('input')` is satisfied by `{ input: … }`). The
+the subtree's `Needs('input')` is satisfied by `{ input: … }`). The
 subtree's exported value becomes the tool result, exactly like a function
 tool's return.
 
 This is a call, not a handoff: one run, one log, one continuation. The
-subtree's `.emit()`s and `.human()` pauses are the caller's — a pause inside
+subtree's `Emit(...)`s and `Human(...)` pauses are the caller's — a pause inside
 a model-called tree suspends the whole run, and the resumed turn continues
 inside the subtree (the calling prompt round is **replayed from the log**,
 never re-sent to the model, and already-completed sibling tool calls are not
@@ -350,26 +358,27 @@ makes patterns like *route to any workspace tree, then summarize* trivial.
 ### Validation up front
 
 `knit()` sees the whole tree before the first LLM call and fails loudly:
-unresolvable models, `.needs()` with no producer anywhere, unknown tool
+unresolvable models, `Needs(...)` with no producer anywhere, unknown tool
 names (all typos listed in one error), zero-children trees, `#` in names,
 bare functions in condition slots ("did you mean `when()`?"). Soft
 warnings cover duplicate child names, shadowed config rules, and
-`.needs()` on auto-named slots.
+`Needs(...)` on auto-named slots.
 
-`.needs('draft', 'navigate')` declares expected memory inputs: hard build
+`Needs('draft', 'navigate')` declares expected memory inputs: hard build
 error if nothing in the tree (or injected memory) produces them, loud
 runtime error if they don't resolve when the step runs.
 
 ### Reuse
 
-`Tree.name(id)` registers into a global registry. Builder methods return
-new definitions (copy-on-write), so a tree dropped into multiple parents
-can never be mutated through one reference:
+A `Name(id)` element registers the tree into a global registry. Definitions
+are plain immutable data — building applies each element copy-on-write — so a
+tree dropped into multiple parents can never be mutated through one
+reference:
 
 ```js
-const navigate = Tree.name('navigate').prompt(...);
-const a = Tree.name('a').branch(navigate);
-const b = Tree.name('b').branch(Tree.from('navigate'));
+const navigate = Tree(Name('navigate'), Prompt(...));
+const a = Tree(Name('a'), Branch(navigate));
+const b = Tree(Name('b'), Branch(Tree.from('navigate')));
 ```
 
 ## Runtime options
@@ -383,10 +392,10 @@ await grandma.knit(pattern, {
   logger:    true,          // SQLite at ./logs/grandma-kat.db
              // 'path/to.db' | { path } | { log, close } | false (off, default)
   logLevel:  'none',        // 'none' (default) | 'info' | 'debug' (console)
-  onEmit:    (value) => {}, // called by .emit() — non-blocking output channel
+  onEmit:    (value) => {}, // called by Emit(...) — non-blocking output channel
 });
 // → { result, memory, runId }
-// or { status: 'waiting', humanSlot, context, continuation } if .human() paused
+// or { status: 'waiting', humanSlot, context, continuation } if Human(...) paused
 ```
 
 Model entries are either an OpenAI-compatible endpoint
@@ -447,7 +456,7 @@ test('retries until the answer is valid', async () => {
 });
 ```
 
-This repo's own suite runs this way: `npm test` (86 tests, no network).
+This repo's own suite runs this way: `npm test` (no network).
 
 ## Examples in this repo
 
@@ -459,6 +468,8 @@ setup instructions.
   which is promising, click, repeat — with tried-element tracking in memory,
   per-step tool whitelists, and bounded loops throughout. Heavily commented
   for newcomers.
+- `examples/notation/` — the line-notation spec and the worked `person-scan`
+  example it translates to.
 - `examples/find-listings/`, `examples/find-pagination/` — the imperative
   prototypes (pre-tree style) that patterns like find-address are converted
   from, backed by the `browser-mcp` tool server.
@@ -479,58 +490,58 @@ See [LICENSE.md](LICENSE.md).
 ## API reference (the deep end)
 
 Everything below is exact behavior, as implemented. The short version:
-**doing methods accumulate, config methods select (last match wins), gates
-(`when()`) are accepted by all of them.**
+**steps accumulate, rules select (last match wins), and any element may take
+a `when(cond)` gate.**
 
-### Builder semantics
+### Building semantics
 
-- **Immutable builders.** Every method returns a *new* builder over a copied
-  definition (copy-on-write). Sharing a tree across parents is bulletproof —
-  extending one reference never mutates the others.
-- **Two flavors of methods.**
-  - *Accumulative (doing)* — every matching rule applies, in declared order:
-    `.branch()`, `.prompt()`, `.call()`, `.check()`, `.memory()`,
-    `.memoryUpdate()`, `.return()`, `.emit()`, `.human()`, `.map()`.
-  - *Selective (config)* — one value is chosen; the **last matching rule
-    wins**: `.model()`, `.tools()`, `.until()`. Put defaults first, gated
-    overrides later. An unconditional rule after conditional ones shadows
-    them → build-time warning.
-- **Gates.** Any method may take `when(cond)` as its first (or second)
-  argument. Gates re-evaluate lazily whenever the child is reached —
-  including on every loop pass. A gated-out child simply doesn't run: a skip
-  is a non-write, occupying no `m.prev` position. A *bare function* in the
+- **Immutable definitions.** `Tree(...)` applies each element copy-on-write;
+  every step returns a fresh definition. Sharing a tree across parents is
+  bulletproof — extending one tree never mutates the definitions it was
+  built from.
+- **Two flavors of elements.**
+  - *Steps (accumulative)* — every element applies, in declared order:
+    `Branch`, `Prompt`, `Call`, `Check`, `Memory` (plain and `update()`
+    form), `Return`, `Emit`, `Human`, `Map`.
+  - *Rules (selective)* — one value is chosen; the **last matching rule
+    wins**: `Model`, `Tools`, `Until`. Put defaults first, gated overrides
+    later. An unconditional rule after conditional ones shadows them →
+    build-time warning.
+- **Gates.** Any element may take `when(cond)` anywhere among its arguments.
+  Gates re-evaluate lazily whenever the child is reached — including on
+  every loop pass. A gated-out child simply doesn't run: a skip is a
+  non-write, occupying no `m.prev` position. A *bare function* in the
   condition slot throws at build time ("did you mean `when()`?").
 - **Names.** Explicit names must be non-empty and may not contain `#`
   (reserved). Anonymous children are auto-named at `knit()` start:
   `${parentName}#${k}`, where `k` is the 1-based position among **all** of
   the parent's children. A gated-out child keeps its number; loop passes
-  reuse the same slot. Referencing an auto-named slot in `.needs()` →
+  reuse the same slot. Referencing an auto-named slot in `Needs(...)` →
   build-time warning ("if you reference it, you name it").
 - A named tree with **zero children** is a build error.
 
-### `Tree` (static)
+### `Tree(...)` — the factory
 
 ```js
 import { Tree } from 'grandma-kat';
 ```
 
-- **`Tree.name(id)`** — start a new tree and register it in the global
+- **`Tree(Name('id'), …)`** — build a tree and register it in the global
   registry under `id`. The registry is what makes reuse by name possible.
-- **`Tree.prompt(...)`, `Tree.branch(...)`, `Tree.human(...)`, …** — `Tree`
-  is also an unnamed builder: call any builder method directly to start a
-  tree without `.name()` (handy for branch/map subtrees nobody references).
-- **`Tree.from(id)`** — retrieve a registered tree (throws if unknown).
+- A tree without `Name(...)` is anonymous: fine for branch/map subtrees
+  nobody references.
+- **`Tree.from(id)`** — retrieve a registered definition (throws if unknown).
   Useful for dropping the same subtree into multiple parents.
 - **`Tree.has(id)`** — `true` if `id` is registered.
 
-### `.name(id)`
+### `Name(id)` — directive
 
-Names the tree. The root you pass to `knit()` must be named; a `.branch()`
-or `.map()` subtree may be unnamed. The name is also the memory key: a
-completed branch's exported value lands in its parent's scope under this
-name, readable as `m.branch.<name>`.
+Names the tree. The root you pass to `knit()` must be named; a `Branch` or
+`Map` subtree may be unnamed. The name is also the memory key: a completed
+branch's exported value lands in its parent's scope under this name,
+readable as `m.branch.<name>`.
 
-### `.branch([when], tree)` — accumulative
+### `Branch([when], tree)` — step
 
 Attaches a subtree. On execution: the child runs in a fresh scope linked to
 the current one (reads resolve upward; its internal writes stay internal),
@@ -538,10 +549,10 @@ and its **exported value** — its last executed child's result — is written
 to the current scope under the child's name.
 
 ```js
-.branch(Tree.name('draft').prompt(m => `Write about ${m.task}`))
-.branch(when(m => m.branch.verify === 'fail'), reviseTree)
-// Unnamed: no .name() needed. `Tree` is itself an unnamed builder.
-.branch(Tree.prompt(m => `Check ${m.branch.draft}`))
+Branch(Tree(Name('draft'), Prompt(m => `Write about ${m.task}`)))
+Branch(when(m => m.branch.verify === 'fail'), reviseTree)
+// Unnamed: no Name() needed.
+Branch(Tree(Prompt(m => `Check ${m.branch.draft}`)))
 ```
 
 An unnamed subtree is auto-named at `knit()` time after its attaching child
@@ -549,7 +560,7 @@ An unnamed subtree is auto-named at `knit()` time after its attaching child
 rebuild it from the branch path. Name a subtree when you want to read its
 result as `m.branch.<name>`.
 
-### `.prompt([when], [name], value, [options])` — accumulative
+### `Prompt([when], [name], value, [options])` — step
 
 Appends an LLM prompt leaf. `value` is:
 
@@ -559,14 +570,14 @@ Appends an LLM prompt leaf. `value` is:
 - a **function** `(memory) => string | message[]`.
 
 A leading string counts as a name only if a value follows it, so
-`.prompt('just a static string')` is a value, and
-`.prompt('outline', m => ...)` is a named prompt.
+`Prompt('just a static string')` is a value, and
+`Prompt('outline', m => ...)` is a named prompt.
 
 Execution runs the **auto tool loop** (default): resolves the model
-(nearest `.model()` rule up the tree stack, else the runtime default) and
-the tools (per-prompt option, else inherited `.tools()`, else none), then
+(nearest `Model(...)` rule up the tree stack, else the runtime default) and
+the tools (per-prompt option, else inherited `Tools(...)`, else none), then
 keeps a local conversation — every tool call the model emits executes (the
-same resolution and call path as `.call()`), the results are appended to
+same resolution and call path as `Call(...)`), the results are appended to
 the prompt's thread and sent back, and the model is called again until a
 round returns no tool calls. The leaf's value is the **final** round's
 text; the exchange is on the record: `m.raw.prev[0].calls` (per round),
@@ -601,8 +612,8 @@ Hooks run for every tool call the prompt executes (with or without
   `name` are fixed by routing); a throwing hook aborts the run.
 
 ```js
-.tools('lookup')
-.prompt(
+Tools('lookup')
+Prompt(
   toolHookBefore((m, thread, tc) => console.log('→', tc.name, tc.args)),
   toolHookAfter((m, thread, tc) => {
     if (tc.isError) tc.result = { error: `${tc.result} (tell the user to retry)` };
@@ -611,14 +622,14 @@ Hooks run for every tool call the prompt executes (with or without
 )
 ```
 
-### `.call([when], [name], tool, argsOrFn)` — accumulative
+### `Call([when], [name], tool, argsOrFn)` — step
 
 Appends a direct tool-call leaf — no LLM involved.
 
 ```js
-.call('snapshot', () => ({}))                        // anonymous
-.call('get_page', 'snapshot', () => ({}))            // named
-.call(when(m => m.url), 'navigate', m => ({ url: m.url }))
+Call('snapshot', () => ({}))                        // anonymous
+Call('get_page', 'snapshot', () => ({}))            // named
+Call(when(m => m.url), 'navigate', m => ({ url: m.url }))
 ```
 
 `argsOrFn` is a plain value or `(memory) => args`. The tool is looked up in
@@ -627,10 +638,10 @@ JSON). Unknown tool names throw — both at `knit()` start (whole-tree
 validation) and at call time.
 
 If the tool declares `tree`, the call runs that tree in place (args seed the
-subtree's scope, its export is the value). A `.human()` inside the subtree
+subtree's scope, its export is the value). A `Human(...)` inside the subtree
 pauses the whole run and resumes back into this call — see *Trees as tools*.
 
-### `.check([when], fn, [flow])` — accumulative
+### `Check([when], fn, [flow])` — step
 
 Appends a validation leaf. `fn(memory)` returns:
 
@@ -649,60 +660,56 @@ exhaustion throws `KnitError` (the `max()` `errFn` message, or a framework
 default naming the check, the count, and the last feedback). A `goback`
 that would rewind past the first child throws at runtime.
 
-### `.memory([when], name, fn)` — accumulative
+### `Memory([when], name, fn)` — step
 
 Appends a memory-write leaf: pure state, no LLM or tool.
 
 ```js
-.memory('tried', (m, cur) => [...(cur ?? []), m.prev[0]])
+Memory('tried', (m, cur) => [...(cur ?? []), m.prev[0]])
 ```
 
 `fn(memory, currentValue)` returns the value to store under `name` **in the
 current tree's scope** (`currentValue` is `undefined` on first write). The
 written value also appears in `m.prev`, like a prompt's output — which
-makes `.memory()` usable as the collecting final step of a `.map()`
+makes `Memory(...)` usable as the collecting final step of a `Map(...)`
 subtree. Placement matters: a slot written inside a branch stays local to
-that branch; put the `.memory()` at the level where the value needs to
-live (e.g. at loop level to accumulate across `.until()` passes).
+that branch; put the `Memory(...)` at the level where the value needs to
+live (e.g. at loop level to accumulate across `Until(...)` passes).
 
-Add the `update()` marker — first or second argument, like `when()` — and
-the leaf updates an existing slot instead of initializing one:
-`.memory(update(), 'tried', fn)` or `.memory('tried', update(), fn)`.
+Add the `update()` marker anywhere among the arguments and the leaf updates
+an existing slot instead of initializing one:
+`Memory(update(), 'tried', fn)` or `Memory('tried', update(), fn)`.
 
-### `.memoryUpdate([when], name, fn)` — accumulative
+### `Memory(update(), [when], name, fn)` — the update form
 
-Like `.memory()`, but the slot must **already exist** somewhere in the
-scope chain. The update is written back into the scope that owns it — which
-may be an ancestor, so this is how a nested branch updates loop-level
+Like a plain `Memory(...)`, but the slot must **already exist** somewhere in
+the scope chain. The update is written back into the scope that owns it —
+which may be an ancestor, so this is how a nested branch updates loop-level
 state. Throws `KnitError` at runtime if the slot doesn't exist (declare it
-with `.memory()` first, or inject it via runtime `memory`). Also produces
+with `Memory(...)` first, or inject it via runtime `memory`). Also produces
 `m.prev` output.
 
-`.memory(update(), name, fn)` is the same leaf written through the
-`.memory()` method (the marker may also follow the name). Use whichever
-reads better — e.g. keep a seed-then-append pair on one method:
-
 ```js
-.memory('tried', () => [])
+Memory('tried', () => [])
 // ...
-.memory(update(), 'tried', (m, cur) => [...cur, m.prev[0]])
+Memory(update(), 'tried', (m, cur) => [...cur, m.prev[0]])
 ```
 
-### `.return([when], fn)` — accumulative
+### `Return([when], fn)` — step
 
 Appends an early-exit leaf. `fn(memory)` is called; if it returns anything
 other than `undefined`/`null`, the value is recorded (appearing in
 `m.prev`), all remaining children are skipped, and the tree exports that
 value. If it returns `undefined`/`null`, the return is a no-op occupying no
 `m.prev` position. Anonymous (auto-named). Does **not** write a named slot —
-use `.memory()` for that.
+use `Memory(...)` for that.
 
 ```js
-.return(m => m.prev[0].includes('no candidates') ? 'no candidates' : undefined)
-.return(when(m => m.branch.rated.length === 0), m => 'nothing to do')
+Return(m => m.prev[0].includes('no candidates') ? 'no candidates' : undefined)
+Return(when(m => m.branch.rated.length === 0), m => 'nothing to do')
 ```
 
-### `.emit([when], fn)` — accumulative
+### `Emit([when], fn)` — step
 
 Appends a non-blocking output leaf. `fn(memory)` returns a value, which is
 passed to `runtime.onEmit(value)` if provided. The tree continues
@@ -710,9 +717,9 @@ immediately — emit does **not** pause execution, does **not** write to
 `m.prev` or any named slot. It's a pure side-channel output.
 
 ```js
-.emit(m => ({ text: 'Thinking...' }))
-.emit(m => ({ text: `Result: ${m.branch.answer}` }))
-.emit(when(m => m.branch.needsReview), m => ({ text: 'Needs review' }))
+Emit(m => ({ text: 'Thinking...' }))
+Emit(m => ({ text: `Result: ${m.branch.answer}` }))
+Emit(when(m => m.branch.needsReview), m => ({ text: 'Needs review' }))
 ```
 
 Multiple emits per turn are fine. If `onEmit` is not provided in the
@@ -721,7 +728,7 @@ two-channel output model: **emit** (non-blocking, tree continues) and
 **human** (blocking, tree pauses). Both flow through `onEmit`, so bots
 only need one callback to talk to the user.
 
-### `.human([when], name, [contextFn])` — accumulative
+### `Human([when], name, [contextFn])` — step
 
 Appends a human-in-the-loop leaf. When reached, execution **pauses**:
 `knit()` returns `{ status: 'waiting', humanSlot, context, continuation }`.
@@ -730,12 +737,14 @@ runtime)` with `humanInput: { [name]: value }` in the runtime. The human
 input is injected into the scope chain and readable as `m.branch.<name>`.
 
 ```js
-const pattern = Tree.name('chat')
-  .prompt(m => `Draft a response to: ${m.user_input}`)
-  .human('approve', m => ({ draft: m.prev[0] }))
-  .prompt(m => `Finalize: ${m.branch.approve}`);
+const pattern = Tree(
+  Name('chat'),
+  Prompt(m => `Draft a response to: ${m.user_input}`),
+  Human('approve', m => ({ draft: m.prev[0] })),
+  Prompt(m => `Finalize: ${m.branch.approve}`),
+);
 
-// First run — pauses at .human()
+// First run — pauses at Human(...)
 const step1 = await grandma.knit(pattern, runtime);
 // step1.status === 'waiting'
 // step1.context === { draft: '...' }
@@ -758,7 +767,7 @@ logging). The continuation is a checkpoint ID string, not serialized state.
 State is reconstructed from the event log on resume. Checkpoints are
 single-use — deleted after resume.
 
-### `.map([when], name, arrayFn, tree)` — accumulative
+### `Map([when], name, arrayFn, tree)` — step
 
 Appends a per-element iteration leaf. `arrayFn(memory)` returns an array;
 the subtree runs fully, once per element, **sequentially**, each time in a
@@ -766,38 +775,39 @@ fresh child scope with `m.item` set to the raw element. The collected result
 values are stored as an array in the current scope under `name` (also the
 leaf's own value). Empty (or non-array) input → no invocations,
 `m.branch.<name>` is `[]`. The subtree may be unnamed; it takes the
-collection `name` (or the child's auto name for `.branch()`).
+collection `name` (or the child's auto name for `Branch`).
 
 ```js
-.map('ratings', m => m.branch.candidates,
-  Tree.name('rate')
-    .prompt(m => `Rate "${m.item.text}": likely/unlikely`)
-    .check(m => ['likely', 'unlikely'].includes(m.prev[0]) || 'One word.',
-      goback(1, max(2))))
+Map('ratings', m => m.branch.candidates,
+  Tree(Name('rate'),
+    Prompt(m => `Rate "${m.item.text}": likely/unlikely`),
+    Check(m => ['likely', 'unlikely'].includes(m.prev[0]) || 'One word.',
+      goback(1, max(2)))))
 // m.branch.ratings = ['likely', 'unlikely', ...]
 ```
 
-### `.model([when], name)` — selective (last match wins)
+### `Model([when], name)` — rule (last match wins)
 
-Adds a model rule. Resolution order for a prompt: the **innermost** tree on
-the execution stack with a matching rule (last matching rule within that
-tree wins), then the runtime default (the `default` entry in `models`, or
-the only entry). Every referenced name is validated against the runtime
-`models` map at `knit()` start — a typo there fails before any LLM call.
+Adds a model rule, applied from where it appears. Resolution order for a
+prompt: the **innermost** tree on the execution stack with a matching rule
+(last matching rule within that tree wins), then the runtime default (the
+`default` entry in `models`, or the only entry). Every referenced name is
+validated against the runtime `models` map at `knit()` start — a typo there
+fails before any LLM call.
 
-### `.tools([when], ...names)` — selective (last match wins)
+### `Tools([when], ...names)` — rule (last match wins)
 
 Adds a tool-whitelist rule for prompt children (names resolve at the
 prompt's scope — the tree's registers first, then the runtime registry;
-default is no tools). Inherited down the tree like `.model()`;
-override per prompt with `.prompt(fn, { tools: [...] })`. All referenced
+default is no tools). Inherited down the tree like `Model(...)`;
+override per prompt with `Prompt(fn, { tools: [...] })`. All referenced
 names are validated at `knit()` start: one error listing every unknown
 name with its branch path. The offer is **enforced**: a tool call the
 prompt never offered is refused (as an error result) before it can
-execute. Note the sibling method `.call()` (direct tool call) — one letter
-apart, deliberately different jobs.
+execute. Note the sibling element `Call(...)` (direct tool call) — one
+letter apart, deliberately different jobs.
 
-### `.needs(...names)` — accumulative
+### `Needs(...names)` — declaration
 
 Declares memory inputs the tree expects. The validation story for
 LLM-authored trees:
@@ -813,7 +823,7 @@ Consequence: declare needs only for inputs present at **first execution**.
 Loop-carried reads (draft reading `m.branch.verify` on pass 1) must stay
 undeclared and defensive: `${m.branch.verify ?? ''}`.
 
-### `.register(name, description, fn, [calls(...), parameters(...)])` — declaration
+### `Register(name, description, fn, [calls(...), parameters(...)])` — declaration
 
 Declares an **inline tool** that lives in the tree itself — no runtime
 registry entry needed — and is **scoped like a memory slot**: visible to
@@ -824,7 +834,7 @@ so a register also wins over a same-named runtime tool in its subtree (a
 warning is printed at `knit()` start).
 
 ```js
-.register("lookup", "Find a person by name and return their phone",
+Register("lookup", "Find a person by name and return their phone",
   (m, args) => findPerson(m.workspace, args.name))
 ```
 
@@ -834,7 +844,7 @@ warning is printed at `knit()` start).
   function tools, resolved on the register's home path at call time
   (`await tools.sql_query({ ... })`); each nested call is logged like any
   other tool result.
-- Write the body **inline** at the `.register()` call site — multi-line and
+- Write the body **inline** at the `Register(...)` call site — multi-line and
   `async` are fine. Like prompt text, don't hoist the handler into a
   separate constant or module: keeping it beside the tree is what makes the
   tool's dataflow readable.
@@ -849,12 +859,12 @@ warning is printed at `knit()` start).
   empty object schema); `calls(...)` and `parameters(...)` may each appear
   once.
 - A register is a **declaration, not a step**: it does not take `when()`,
-  and its position in the chain is readability only — resolution is
+  and its position in the sequence is readability only — resolution is
   lexical, not positional.
 - Model visibility is unchanged: whitelist the name on a prompt
-  (`.tools('lookup')`) or call it directly (`.call('lookup', m => …)`).
+  (`Tools('lookup')`) or call it directly (`Call('lookup', m => …)`).
 
-### `.until([when], cond, [max])` — selective (last match wins)
+### `Until([when], cond, [max])` — rule (last match wins)
 
 Declares a container-level loop: after all children run, `cond(memory)` is
 evaluated. Truthy → the tree exports and finishes. Falsy → **all** children
@@ -864,11 +874,11 @@ default). With no matching rule (e.g. its gate is false), no loop happens.
 Edge counters reset when an outer loop re-runs the container.
 
 ```js
-.until(m => !isNo(m.branch.check_address),
+Until(m => !isNo(m.branch.check_address),
   max(3, m => `gave up after 3 iterations: ${m.error ?? 'not found'}`))
 ```
 
-Conceptually sugar for an implicit `.check()` at the end of the container
+Conceptually sugar for an implicit `Check(...)` at the end of the container
 with `goback(<all children>, max)` — same primitive, two scopes.
 
 ### Markers
@@ -877,17 +887,17 @@ with `goback(<all children>, max)` — same primitive, two scopes.
 import { when, goback, max, calls, parameters, DEFAULT_MAX } from 'grandma-kat';
 ```
 
-- **`when(cond)`** — wraps a gate function `(memory) => boolean` for use as
-  the first/second argument of any builder method. The wrapper is a
-  distinct type, which is how the builder catches a bare function in the
-  condition slot at build time.
+- **`when(cond)`** — wraps a gate function `(memory) => boolean` for use
+  among any element's arguments. The wrapper is a distinct type, which is
+  how the parser catches a bare function in the condition slot at build
+  time.
 - **`disableAuto()`**, **`toolHookBefore(fn)`**, **`toolHookAfter(fn)`** —
-  prompt-argument markers for the auto tool loop; see the `.prompt()`
+  prompt-argument markers for the auto tool loop; see the `Prompt(...)`
   reference and *Tool hooks* above.
-- **`calls(...)`**, **`parameters(schema)`** — `.register()` arguments: the
-  host function tools the register body may invoke, and the JSON schema the
-  model sees for the inline tool.
-- **`goback(n, max?)`** — the flow marker for `.check()`: rewind `n`
+- **`calls(...)`**, **`parameters(schema)`** — `Register(...)` arguments:
+  the host function tools the register body may invoke, and the JSON schema
+  the model sees for the inline tool.
+- **`goback(n, max?)`** — the flow marker for `Check(...)`: rewind `n`
   children (positive integer). `n` counts children, not the check.
 - **`max(count, errFn?)`** — bounds a backward edge: `count` = maximum
   backward jumps (positive integer; the initial run doesn't count, so
@@ -908,8 +918,9 @@ in declared order, and resolves to
 executed child's value and `memory` is the root scope (JSON-serializable,
 threadable into the next run).
 
-If the tree contains `.human()` and execution reaches one, `knit()` resolves
-to `{ status: 'waiting', humanSlot, context, continuation }` instead.
+If the tree contains `Human(...)` and execution reaches one, `knit()`
+resolves to `{ status: 'waiting', humanSlot, context, continuation }`
+instead.
 
 ### `grandma.resume(continuation, runtime)`
 
