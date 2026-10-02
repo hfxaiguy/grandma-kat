@@ -488,6 +488,15 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         if (!branchResume || childScope.parent !== scope) {
           logEvent(exec, 'scope_init', { scopeId: childScope.id, parentScopeId: scope.id }, childScope);
         }
+        // A versioned From() carries a ref instead of a build-time tree:
+        // resolve it from disk through the host loader, then run it exactly
+        // like any imported branch (deferred ports work on resume too, since
+        // the checkpoint's branch_path names the resolved internal tree).
+        const branchTree =
+          child.tree ?? (typeof child.ref === 'string' ? await loadNamedTree(exec.runtime, child.ref) : null);
+        if (!branchTree) {
+          throw new KnitError(`branch '${child.name}' has no tree (From() could not resolve)`);
+        }
         // From('name', memory(fn)): seed the imported tree's own scope at
         // entry — an entry-time pulse, like Needs, so it is re-applied on
         // resume. A non-object return is ignored.
@@ -495,13 +504,13 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
           const patch = await callFn(
             child.memory,
             makeView(childScope),
-            `memory fn of From('${child.tree?.name ?? '?'}')`,
+            `memory fn of From('${branchTree.name ?? '?'}')`,
           );
           if (patch != null && typeof patch === 'object' && !Array.isArray(patch)) {
             for (const [key, value] of Object.entries(patch)) childScope.slots[key] = value;
           }
         }
-        const out = await execTree(exec, child.tree, childScope, scope, branchResume);
+        const out = await execTree(exec, branchTree, childScope, scope, branchResume);
         outcome = {
           value: out.value,
           record: { content: out.value ?? null, children: { ...childScope.raw } },
@@ -1366,6 +1375,9 @@ function autoname(tree) {
   tree.children.forEach((child, idx) => {
     if (child.name == null) child.name = `${tree.name}#${idx + 1}`;
     if (child.kind === 'branch' || child.kind === 'map') {
+      // A versioned From() is a deferred port: its tree is resolved from
+      // disk at run time, so there is nothing to auto-name or register now.
+      if (!child.tree) return;
       if (child.tree.name == null) {
         child.tree.name = child.name;
         registerTree(child.tree);
@@ -1399,7 +1411,7 @@ function validateTree(tree, warnings) {
       warnings.push(`tree '${tree.name}' has duplicate child name '${child.name}' — the second overwrites the first's memory slot`);
     }
     seen.add(child.name);
-    if (child.kind === 'branch') validateTree(child.tree, warnings);
+    if (child.kind === 'branch' && child.tree) validateTree(child.tree, warnings);
     if (child.kind === 'map') validateTree(child.tree, warnings);
   }
 
@@ -1439,7 +1451,7 @@ function validateNeeds(tree, runtime, warnings) {
       // A From('name', memory(fn)) seed may satisfy any slot its subtree
       // needs — the keys are only known at run time, so the static check
       // skips attach points that carry a seed (the runtime check applies).
-      if (child.kind === 'branch' && !child.memory) walk(child.tree);
+      if (child.kind === 'branch' && !child.memory && child.tree) walk(child.tree);
     }
   };
   walk(tree);
@@ -1449,7 +1461,7 @@ function collectNames(tree, set) {
   set.add(tree.name);
   for (const child of tree.children) {
     set.add(child.name);
-    if (child.kind === 'branch') collectNames(child.tree, set);
+    if (child.kind === 'branch' && child.tree) collectNames(child.tree, set);
     if (child.kind === 'map') collectNames(child.tree, set);
   }
 }
@@ -1573,7 +1585,9 @@ function validateRuntime(def, runtime) {
       activate(i);
       const c = t.children[i];
       if (c.kind === 'call') checkName(c.tool, c.name);
-      if (c.kind === 'branch' || c.kind === 'map') {
+      // A deferred From() (versioned) has no tree to walk at build time —
+      // its model/tool references are validated when the host loads it.
+      if ((c.kind === 'branch' || c.kind === 'map') && c.tree) {
         const childPending = new Map(pendingAncestors);
         for (const e of pendingRegisters) childPending.set(e.name, path);
         walkTree(c.tree, `${path}/${c.name}`, active, childPending);

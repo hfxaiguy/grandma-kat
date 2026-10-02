@@ -14,7 +14,7 @@
 // was written ('Prompt(): …').
 
 import {
-  isWhen, isUpdate, isMemory, isGoback, isGoto, isMax, isCalls, isParameters,
+  isWhen, isUpdate, isMemory, isVersion, isGoback, isGoto, isMax, isCalls, isParameters,
   isDisableAuto, isToolHookBefore, isToolHookAfter, isDescription, isOptional, goback, resolveMax,
 } from './markers.mjs';
 
@@ -152,18 +152,22 @@ export function branchFields(rawArgs, label) {
 export function fromFields(rawArgs, label) {
   const { gate, args } = takeGate(rawArgs, label);
   if (args.filter(isMemory).length > 1) throw new TypeError(`${label}: memory() may appear only once`);
+  if (args.filter(isVersion).length > 1) throw new TypeError(`${label}: version() may appear only once`);
   const memoryIndex = args.findIndex(isMemory);
   let memoryFn = null;
   if (memoryIndex !== -1) memoryFn = args.splice(memoryIndex, 1)[0].fn;
+  const versionIndex = args.findIndex(isVersion);
+  let versionRef = null;
+  if (versionIndex !== -1) versionRef = args.splice(versionIndex, 1)[0].text;
   if (args.length !== 1) {
-    throw new TypeError(`${label}: expects one registered tree name, e.g. From('enrich_profile') or From('enrich_profile', memory(m => ({ input: m.item })))`);
+    throw new TypeError(`${label}: expects one registered tree name, e.g. From('enrich_profile') or From('enrich_profile', version('v1'), memory(m => ({ input: m.item })))`);
   }
   const id = args[0];
   if (typeof id !== 'string' || id.length === 0) {
     throw new TypeError(`${label}: the tree name must be a non-empty string`);
   }
   assertValidName(id, label);
-  return { gate, name: id, memoryFn };
+  return { gate, name: id, memoryFn, version: versionRef };
 }
 
 export function callFields(rawArgs, label) {
@@ -442,8 +446,8 @@ export function promptRecord({ name = null, value, gate = null, auto = null, opt
   return child;
 }
 
-export const branchRecord = ({ name = null, tree, gate = null, memory = null }) => ({
-  kind: 'branch', name, tree, gate, ...(memory ? { memory } : {}),
+export const branchRecord = ({ name = null, tree, gate = null, memory = null, ref = null }) => ({
+  kind: 'branch', name, tree, gate, ...(memory ? { memory } : {}), ...(ref ? { ref } : {}),
 });
 
 export const callRecord = ({ name = null, tool, argsFn, gate = null, options = {} }) => ({ kind: 'call', name, tool, argsFn, gate, options });
@@ -479,8 +483,10 @@ export const Branch = (...rawArgs) => element('branch', { record: branchRecord(b
 // From() — the registry lookup lives in tree.mjs (it owns the registry);
 // records.mjs only shapes the attach: a branch record carrying an entry-time
 // memory patch for the imported tree's own scope.
-export const fromElement = ({ tree, gate = null, memoryFn = null }) =>
-  element('branch', { record: branchRecord({ name: tree?.name ?? null, tree, gate, memory: memoryFn }) });
+export const fromElement = ({ tree, gate = null, memoryFn = null, ref = null, name = null }) =>
+  element('branch', {
+    record: branchRecord({ name: name ?? tree?.name ?? null, tree, gate, memory: memoryFn, ref }),
+  });
 export const Call = (...rawArgs) => element('call', { record: callRecord(callFields(rawArgs, 'Call()')) });
 export const Register = (...rawArgs) => element('register', { entry: registerFields(rawArgs, 'Register()') });
 export const Check = (...rawArgs) => element('check', { record: checkRecord(checkFields(rawArgs, 'Check()')) });

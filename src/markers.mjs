@@ -119,6 +119,24 @@ export function optional() {
   return Object.freeze({ [OPTIONAL]: true });
 }
 
+const VERSION = Symbol('grandma-kat/version');
+
+/**
+ * Marker for From('name', version('v1')) — pin the imported tree to a
+ * snapshot. Values: 'vN', 'prod', or 'draft'. Unlike an unversioned From(),
+ * a versioned one is NOT resolved from the build-time registry: the host
+ * resolves `name@version` from disk at run time (see runtime.loadTree), so a
+ * name the process never imported still works. Positioned like memory().
+ */
+export function version(text) {
+  if (typeof text !== 'string' || !/^(v[0-9]+|prod|draft)$/.test(text)) {
+    throw new TypeError("version(text) expects 'vN', 'prod' or 'draft'");
+  }
+  return Object.freeze({ [VERSION]: true, text });
+}
+
+export const isVersion = (v) => v != null && v[VERSION] === true;
+
 export const isOptional = (v) => v != null && v[OPTIONAL] === true;
 
 const CALLS = Symbol('grandma-kat/calls');

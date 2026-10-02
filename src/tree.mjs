@@ -140,7 +140,14 @@ export function registered(id) {
 // tree's own scope at entry (fn gets the memory view; it returns the slots
 // to write, so memory(m => ({ ...m })) snapshots the chain into the import).
 export function From(...rawArgs) {
-  const { gate, name: id, memoryFn } = fromFields(rawArgs, 'From()');
+  const { gate, name: id, memoryFn, version } = fromFields(rawArgs, 'From()');
+  if (version) {
+    // Versioned From is a deferred port: the tree is resolved from disk at
+    // run time through the host's loadTree, so the process never needs to
+    // have imported it. The branch keeps the bare logical name (stable slot);
+    // the ref carries the version.
+    return fromElement({ tree: null, gate, memoryFn, ref: `${id}@${version}`, name: id });
+  }
   const def = registry.get(id);
   if (!def) throw new Error(`From('${id}'): no tree registered under name '${id}'`);
   return fromElement({ tree: def, gate, memoryFn });
