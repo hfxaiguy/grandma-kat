@@ -14,9 +14,12 @@ the `.mjs` alone is how the two drift until neither can be trusted.
 
 ```
 app/<name>/
-  tree.md      # the notation sketch — behavior
-  tree.mjs     # the translation — execution, with inline comments citing the .md
+  tree.spec.md # the notation sketch — behavior
+  tree.mjs     # the translation — execution, with inline comments citing the spec
 ```
+
+A pattern names the same pair with the tree: `patterns/<name>.spec.md` beside
+`patterns/<name>.mjs`.
 
 The `.md` carries a fenced block whose first line names the tree and its file:
 
@@ -32,7 +35,7 @@ Every `Tree(...)` in the `.mjs` is built from that block, one element per
 notation line, in order. The `.mjs` header says so:
 
 ```js
-// Generated from tree.md, the source of truth for this tree's behavior.
+// Generated from tree.spec.md, the source of truth for this tree's behavior.
 ```
 
 ## The notation, in one breath
