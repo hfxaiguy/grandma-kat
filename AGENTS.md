@@ -731,9 +731,10 @@ top-to-bottom. Lives entirely under `examples/notation/`:
 - `examples/notation/person-scan.test.mjs` — mock-model tests (no network)
   for the translated tree.
 
-Symbols: `++` memory, `<<` emit, `>>` human, `--` prompt, `**` gated branch,
-`||` nesting prefix (plus `->` direct calls, `#->` registers, `??` checks,
-`@@` per-element subtrees, `()` loops, `!!` needs, `##` imported trees). It
+Symbols: `++` memory, `<<` emit, `>>` human, `--` prompt, `**` gated branch
+(closed by `***`), `||` nesting prefix (plus `->` direct calls, `#->`
+registers, `??` checks, `@@` per-element subtrees, `()` loops, `!!` needs,
+`##` imported trees). It
 intentionally *forces* the author to face the "gated branch needs a clean
 boolean" issue: since a `** if above is true` decision depends on a bare
 `--` prompt's output, the translator must add a strict answer-format

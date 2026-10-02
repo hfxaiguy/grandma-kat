@@ -12,6 +12,7 @@ form. This file shows line → chunk → the element it becomes and why.
 -- prompt: does `input_1` contain information about a person
 ** branch: if above is true, run:
 || prompt: how many people and what kind of information is present in `input_1`
+***
 ```
 
 ## Line-by-line translation
@@ -24,6 +25,7 @@ form. This file shows line → chunk → the element it becomes and why.
 | `-- prompt: ...` | detect person | `Branch(Tree(name("scan_input"), Prompt(...)))` | Named branch so `**` can reference it; prompt expanded to force `yes/no`. |
 | `** branch: if above is true` | gated branch | `Branch(when(m => isYes(m.branch.scan_input)), Tree(name("summarize_people"), …))` | "above" binds to `scan_input`. |
 | `\|\| prompt: ...` | summarize | inner `Prompt(...)` | Child of `summarize_people`. |
+| `***` | close the branch | — | Delimiter, not a chunk: ends `summarize_people`, at the same depth as its `**`. |
 
 ## The translation decisions, spelled out
 
