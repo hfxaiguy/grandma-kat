@@ -7,6 +7,7 @@ form. This file shows line → chunk → the element it becomes and why.
 
 ```text
 ++ memory: mem_global
+// the greeting goes first, before we know who we are talking to
 << output_msg: "Hi. This is grandpa-bob"
 >> human: input_1
 -- prompt: does `input_1` contain information about a person
@@ -20,6 +21,7 @@ form. This file shows line → chunk → the element it becomes and why.
 | Line | Chunk | Element | Notes |
 |---|---|---|---|
 | `++ memory: mem_global` | root session seed | runtime `memory: { mem_global }` | No value here, so it's seeded by the caller, not written in-tree. |
+| `// the greeting goes first…` | comment | *(nothing)* | Dropped before translation — no element, no name; the line below is unaffected. |
 | `<< output_msg: "..."` | emit greeting | `Emit(m => ({ text: "Hi. This is grandpa-bob" }))` | Quoted → verbatim `text`. |
 | `>> human: input_1` | pause | `Human("input_1")` | Reply read as `m.branch.input_1`. |
 | `-- prompt: ...` | detect person | `Branch(Tree(name("scan_input"), Prompt(...)))` | Named branch so `**` can reference it; prompt expanded to force `yes/no`. |

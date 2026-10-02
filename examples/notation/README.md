@@ -30,6 +30,12 @@ tracking method boundaries.
 | `##` | `## contacts: app/contacts/tree.mjs` | import and attach another tree | import its default tree, then `Branch(importedTree)` — or, once registered, `From("name", memory(fn)?)` | tree name and module path are literal |
 | `\|\|` | `\|\| prompt: ...` | child of the `**`/`()` block above | whatever the indented kind says | — |
 | `()` | `()` … `() goto NAME until COND (max n)` | loop — repeat the enclosed body, jumping back to a named child | a `Branch` whose trailing `Until(goto("NAME"), cond, max(n))` rewinds to that child | the closing `()` carries the target and the exit condition |
+| `//` | `// why this branch exists` | a comment — free text, kept for the reader | *(nothing)* | everything after `//` to the end of the line is read, then dropped |
+
+`//` is the **only** comment marker. `#` is not a comment: `##` (import) and
+`#->` (register) are chunks that do something, so never write a comment as
+`# ...`. Strip a `//` line, including its `|` prefixes, before translating —
+it emits no element and references nothing.
 
 `!` marks a chunk as required: `!!` a slot that must already be seeded, `++!`
 an update that must always run. A plain `++` update may be gated or
@@ -47,6 +53,10 @@ A chunk is either a single element, or a `**` branch node plus its children.
 Multiple elements that conceptually do one thing can live in one chunk, but
 the notation keeps it to one line for readability. The closing `***` is a
 **delimiter**, not a chunk — it just ends the branch it matches.
+
+A `//` line is **not a chunk** either: it is a comment and drops out before
+translation. It may sit on its own line (at any `|` depth) or trail a chunk on
+the same line, and it never becomes an element or a name.
 
 ### 2. Lines reference each other by name
 

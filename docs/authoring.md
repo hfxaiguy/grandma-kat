@@ -116,7 +116,8 @@ mistakes surface immediately, with the path to the offending node:
 ## See also
 
 - [`examples/notation/README.md`](../examples/notation/README.md) — the
-  line-notation sketch layer you write a tree in first.
+  line-notation sketch layer you write a tree in first (`//` comments run to
+  the end of the line; `##` and `#->` are chunks, never comments).
 - [`docs/auto-tool-loop.md`](auto-tool-loop.md) — how a prompt calls tools.
 - [`docs/values-flow.md`](values-flow.md) — `m.branch` / `m.prev` / `m.raw`,
   and how values move between scopes.

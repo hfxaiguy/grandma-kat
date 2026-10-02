@@ -734,7 +734,9 @@ top-to-bottom. Lives entirely under `examples/notation/`:
 Symbols: `++` memory, `<<` emit, `>>` human, `--` prompt, `**` gated branch
 (closed by `***`), `||` nesting prefix (plus `->` direct calls, `#->`
 registers, `??` checks, `@@` per-element subtrees, `()` loops, `!!` needs,
-`##` imported trees). It
+`##` imported trees). `//` is the comment marker — it runs to the end of the
+line and drops out before translation; `#` alone is **not** a comment, since
+`##` and `#->` are chunks that build elements. It
 intentionally *forces* the author to face the "gated branch needs a clean
 boolean" issue: since a `** if above is true` decision depends on a bare
 `--` prompt's output, the translator must add a strict answer-format
