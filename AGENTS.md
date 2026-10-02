@@ -741,6 +741,10 @@ boolean" issue: since a `** if above is true` decision depends on a bare
 instruction to the prompt and a normalizer (e.g. `isYes`) to the condition.
 See README.md for the gotcha and person-scan for the concrete fix.
 
+**Writing the tree, not just sketching it:** `docs/authoring.md` is the
+code-first authoring guide — push the work into JavaScript, keep prompts for
+real model decisions, and how to read the common build errors.
+
 ## Design Discussion (Open)
 
 The following points are under active discussion — proposals and tradeoffs,

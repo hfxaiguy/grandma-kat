@@ -153,6 +153,10 @@ router, OpenAI itself). Point `baseURL` at it, set `model`, done.
 
 ## Core concepts
 
+> **New to writing trees?** Read [`docs/authoring.md`](docs/authoring.md)
+> first: the code-first rule, where logic belongs, and every common build error
+> explained.
+
 ### Trees are containers; prompts are always children
 
 A named tree is a pure container with config. All *doing* lives in its
