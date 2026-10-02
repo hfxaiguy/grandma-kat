@@ -70,6 +70,18 @@ function applyElement(def, el) {
     case 'needs':
       return next(def, (d) => {
         for (const n of el.names) if (!d.needs.includes(n)) d.needs.push(n);
+        // Descriptions ride alongside `needs` (which stays a plain string
+        // list for resolution checks). Only carry the map when one was
+        // written — an undescribed def keeps its exact old shape, so
+        // definition ids and host session hashes do not churn.
+        if (el.descriptions && Object.keys(el.descriptions).length) {
+          d.needsDescriptions = { ...(d.needsDescriptions ?? {}), ...el.descriptions };
+        }
+        // Optional names are declared inputs that may be absent; knit skips
+        // them in the resolution check and hosts leave them out of `required`.
+        if (Array.isArray(el.optional) && el.optional.length) {
+          d.needsOptional = [...new Set([...(d.needsOptional ?? []), ...el.optional])];
+        }
       });
     case 'register':
       // Positional: `position` is the index of the next child to run, so the

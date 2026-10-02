@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Tree, when, update, goback, max, calls, parameters, name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until } from '../src/index.mjs';
+import { Tree, when, update, goback, max, calls, parameters, name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until, description, optional } from '../src/index.mjs';
 
 test('definitions are immutable: building never mutates shared trees', () => {
   const sub = Tree(name('sub'), Prompt(m => 'x'));
@@ -80,9 +80,51 @@ test('Until() parses condition and max', () => {
   assert.throws(() => Tree(name('a'), Prompt(m => 'x'), Until('nope')), /function/);
 });
 
-test('Needs() dedupes', () => {
-  const t = Tree(name('a'), Needs('x', 'y', 'x'));
+test('Needs() declares one input per call, merged across calls', () => {
+  const t = Tree(name('a'), Needs('x'), Needs('y'), Needs('x'));
   assert.deepEqual(t.needs, ['x', 'y']);
+  assert.throws(() => Tree(name('a'), Needs('x', 'y')), /one input per call/);
+});
+
+test('Needs() carries a description per slot', () => {
+  const t = Tree(name('a'), Needs('input', description('the user message')), Needs('company', description('an optional company')));
+  assert.deepEqual(t.needs, ['input', 'company']);
+  assert.deepEqual(t.needsDescriptions, { input: 'the user message', company: 'an optional company' });
+
+  // No marker: the def keeps its exact old shape (no needsDescriptions key).
+  assert.equal('needsDescriptions' in Tree(name('a'), Needs('x')), false);
+});
+
+test('Needs() marks a slot optional', () => {
+  const t = Tree(name('a'), Needs('input', description('the message')), Needs('tone', optional(), description('voice')));
+  assert.deepEqual(t.needs, ['input', 'tone']);
+  assert.deepEqual(t.needsOptional, ['tone']);
+  assert.deepEqual(t.needsDescriptions, { input: 'the message', tone: 'voice' });
+
+  // Markers may appear in either order after the name.
+  assert.deepEqual(Tree(name('a'), Needs('tone', description('voice'), optional())).needsOptional, ['tone']);
+
+  // No marker: the def keeps its exact old shape (no needsOptional key).
+  assert.equal('needsOptional' in Tree(name('a'), Needs('x')), false);
+  // Repeated Needs() calls merge their optional lists.
+  const merged = Tree(name('m'), Needs('a', optional()), Needs('b', optional()));
+  assert.deepEqual(merged.needs, ['a', 'b']);
+  assert.deepEqual(merged.needsOptional, ['a', 'b']);
+});
+
+test('Needs() validates optional placement', () => {
+  assert.throws(() => Tree(name('a'), Needs(optional())), /must follow/);
+  assert.throws(() => Tree(name('a'), Needs('x', optional(), optional())), /already optional/);
+});
+
+test('Needs() validates description placement', () => {
+  assert.throws(() => Tree(name('a'), Needs(description('whoops'))), /must follow/);
+  assert.throws(
+    () => Tree(name('a'), Needs('x', description('one'), description('two'))),
+    /already has a description/,
+  );
+  assert.throws(() => Tree(name('a'), Needs('x', description(''))), /non-empty/);
+  assert.throws(() => Tree(name('a'), Needs('x', 42)), /expects one name/);
 });
 
 test('Register() validates its arguments', () => {

@@ -18,7 +18,8 @@ tracking method boundaries.
 | `++!` | `++! conversation: keep the log` | required memory update — runs every pass, never gated | `Memory(update(), name, fn)` with no `when(...)` gate | name literal; value is data |
 | `<<` | `<< output_msg: "Hi"` | non-blocking output | `Emit(m => ({ text: ... }))` | `"..."` verbatim |
 | `>>` | `>> human: input_1` | pause, ask the human for input | `Human("input_1")` | slot name literal |
-| `!!` | `!! input` | require a memory slot (declared input) | `Needs("input")` | name literal; slot must be seeded by the caller |
+| `!!` | `!! input` | require a memory slot (declared input) | `Needs("input")` — optionally `Needs("input", description("..."))` | name literal; slot must be seeded by the caller; the optional `description("...")` annotates that input |
+| `!!?` | `!!? tone` | declare an optional input slot (documented, may be absent) | `Needs("tone", optional())` — optionally with `description("...")` | name literal; absence does not throw |
 | `--` | `-- prompt: does X ...?` | ask the model | a `Branch` wrapping a `Prompt(...)` | text **expanded** into a full prompt |
 | `->` | `-> query_batch: duckdb_query ...` | fixed/direct tool call, no model | `Call("query_batch", "duckdb_query", argsFn)` | call name and tool name literal; arguments **expanded** from context |
 | `#->` | `#-> lookup: "Find a person by name"` | register an inline tool, usable from its point onward (positional) and scoped like a memory slot (inherited by its subtree, overridable by a child) | `Register("lookup", "Find a person by name", (m, args, tools) => …, calls(...), parameters({ … }))` | name literal; the description `"..."` verbatim; the body is JavaScript at the call site; `calls(...)` and `parameters(...)` are markers |
@@ -169,7 +170,17 @@ Rules of the translation:
   knitting without it seeded in `runtime.memory` throws. Unlike `>>`, no pause
   happens — the value must already be present. Put `!!` at the top of the
   tree: "given to me" (an ancestor scope, injected memory, or call args),
-  never produced by a sibling.
+  never produced by a sibling. Each `!!`/`!!?` line is its own `Needs(...)`
+  call — declare each input separately, so a marker always belongs to one name.
+  A `description("...")` right after a name —
+  `Needs("input", description("the user's message"))` — records a
+  caller-facing note on that input; a host that turns the tree into a tool can
+  show it as the parameter's description, and it changes nothing at run time.
+- `!!? NAME` → `Needs("NAME", optional())`. The same declared input, but its
+  absence does **not** throw: it is documented (a host lists it in the tool
+  schema without adding it to `required`) and may be seeded, while the tree
+  tolerates it being undefined. `description("...")` and `optional()` may
+  follow the name in either order.
 - `-- prompt: BODY` → a `Branch` wrapping a `Prompt(...)`, so the result
   is referenceable by name (`m.branch.<name>`). If no name is written, assign
   a stable translator-generated name. The BODY is expanded into

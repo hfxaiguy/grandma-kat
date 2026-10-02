@@ -370,7 +370,9 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
   // the child scope is empty, so this is the parent chain; for a tree tool
   // the call args were seeded into the child scope first.
   if (!resumeState) {
+    const optionalNeeds = new Set(tree.needsOptional ?? []);
     for (const need of tree.needs) {
+      if (optionalNeeds.has(need)) continue; // declared but may be absent
       if (lookupChain(scope, need) === undefined) {
         throw new KnitError(`tree '${tree.name}' needs '${need}', but it does not resolve in scope`);
       }
@@ -1421,7 +1423,9 @@ function validateNeeds(tree, runtime, warnings) {
   const injected = new Set(Object.keys(runtime.memory ?? {}));
 
   const walk = (t) => {
+    const optionalNeeds = new Set(t.needsOptional ?? []);
     for (const need of t.needs) {
+      if (optionalNeeds.has(need)) continue; // declared but may be absent
       if (need.includes('#')) {
         warnings.push(`tree '${t.name}' needs auto-named slot '${need}' — give that child an explicit name ("if you reference it, you name it")`);
       }

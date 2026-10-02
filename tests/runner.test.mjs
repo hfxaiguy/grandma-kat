@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import grandma, { Tree, when, update, goback, max, KnitError, disableAuto, name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until } from '../src/index.mjs';
+import grandma, { Tree, when, update, goback, max, KnitError, disableAuto, name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until, optional } from '../src/index.mjs';
 import { scripted, mockRuntime, tool } from './helpers.mjs';
 
 function tmpLogger() {
@@ -129,6 +129,19 @@ test('needs: missing input throws; injected memory satisfies', async () => {
 
   const satisfied = Tree(name('t'), Needs('task'), Prompt(m => `got ${m.task}`));
   const { result } = await grandma.knit(satisfied, mockRuntime(scripted(['ok']), { memory: { task: 'injected' } }));
+  assert.equal(result, 'ok');
+});
+
+test('needs: optional inputs may be absent or seeded', async () => {
+  // Absent: the tree still knits (no trip), the slot reads undefined.
+  const absent = Tree(name('opt'), Needs('task', optional()), Prompt(m => `got:${m.task ?? 'none'}`));
+  const none = await grandma.knit(absent, mockRuntime(scripted(['ok'])));
+  assert.equal(none.result, 'ok');
+  assert.equal(none.memory.task, undefined);
+
+  // Seeded: the optional slot resolves like any other input.
+  const seeded = Tree(name('opt2'), Needs('task', optional()), Prompt(m => `got:${m.task}`));
+  const { result } = await grandma.knit(seeded, mockRuntime(scripted(['ok']), { memory: { task: 'injected' } }));
   assert.equal(result, 'ok');
 });
 

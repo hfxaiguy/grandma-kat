@@ -32,7 +32,7 @@ export { Tree, From } from './tree.mjs';
 // The element surface: Tree(name('agent'), Prompt('ask', …), Branch(sub), …)
 // — markers may sit anywhere among an element's arguments.
 export { name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until } from './records.mjs';
-export { when, update, memory, goback, goto, max, calls, parameters, disableAuto, toolHookBefore, toolHookAfter, isWhen, isUpdate, isMemory, isGoback, isGoto, isMax, isCalls, isParameters, isDisableAuto, isToolHookBefore, isToolHookAfter, DEFAULT_MAX } from './markers.mjs';
+export { when, update, memory, goback, goto, max, calls, parameters, disableAuto, toolHookBefore, toolHookAfter, description, optional, isWhen, isUpdate, isMemory, isGoback, isGoto, isMax, isCalls, isParameters, isDisableAuto, isToolHookBefore, isToolHookAfter, isDescription, isOptional, DEFAULT_MAX } from './markers.mjs';
 export { knit, resume, KnitError, PauseSignal } from './knit.mjs';
 export { createLogger } from './logger.mjs';
 

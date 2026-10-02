@@ -15,7 +15,7 @@
 
 import {
   isWhen, isUpdate, isMemory, isGoback, isGoto, isMax, isCalls, isParameters,
-  isDisableAuto, isToolHookBefore, isToolHookAfter, goback, resolveMax,
+  isDisableAuto, isToolHookBefore, isToolHookAfter, isDescription, isOptional, goback, resolveMax,
 } from './markers.mjs';
 
 // --- tree defs ------------------------------------------------------------
@@ -385,11 +385,49 @@ export function toolsRule(rawArgs, label) {
   return { cond: gate, value: [...args] };
 }
 
-export function needsList(names, label) {
-  if (names.length === 0 || names.some((n) => typeof n !== 'string')) {
-    throw new TypeError(`${label} expects branch names, e.g. Needs('draft', 'navigate')`);
+/**
+ * Parse one Needs(...) call into { names, descriptions, optional }. A Needs()
+ * declares ONE input — its name string, plus optional description('...') and
+ * optional() markers that annotate it. Write separate Needs() calls for
+ * separate slots, so a marker always belongs to exactly one name.
+ */
+export function needsList(rawArgs, label) {
+  let name = null;
+  const descriptions = {};
+  const optional = [];
+  for (const arg of rawArgs) {
+    if (isDescription(arg)) {
+      if (name === null) {
+        throw new TypeError(`${label}: description('...') must follow the name it describes`);
+      }
+      if (descriptions[name] !== undefined) {
+        throw new TypeError(`${label}: '${name}' already has a description`);
+      }
+      descriptions[name] = arg.text;
+      continue;
+    }
+    if (isOptional(arg)) {
+      if (name === null) {
+        throw new TypeError(`${label}: optional() must follow the name it marks optional`);
+      }
+      if (optional.includes(name)) {
+        throw new TypeError(`${label}: '${name}' is already optional`);
+      }
+      optional.push(name);
+      continue;
+    }
+    if (typeof arg !== 'string' || arg.length === 0) {
+      throw new TypeError(`${label} expects one name, e.g. Needs('input'), optionally with description('...') or optional()`);
+    }
+    if (name !== null) {
+      throw new TypeError(`${label} declares one input per call — write Needs('${name}'), Needs('${arg}') instead`);
+    }
+    name = arg;
   }
-  return [...names];
+  if (name === null) {
+    throw new TypeError(`${label} expects one name, e.g. Needs('input')`);
+  }
+  return { names: [name], descriptions, optional };
 }
 
 // --- record builders ------------------------------------------------------
@@ -465,4 +503,12 @@ export const Tools = (...rawArgs) => {
   const rule = toolsRule(rawArgs, 'Tools()');
   return element('tools', { gate: rule.cond, names: rule.value });
 };
-export const Needs = (...names) => element('needs', { names: needsList(names, 'Needs()') });
+export const Needs = (...rawArgs) => {
+  const { names, descriptions, optional } = needsList(rawArgs, 'Needs()');
+  const fields = { names };
+  // Carry descriptions/optional only when written, so an undescribed tree
+  // keeps the exact same element shape (and def JSON) as before.
+  if (Object.keys(descriptions).length) fields.descriptions = descriptions;
+  if (optional.length) fields.optional = optional;
+  return element('needs', fields);
+};

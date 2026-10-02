@@ -89,6 +89,38 @@ export function resolveMax(marker) {
   return { count: marker.count, errFn: marker.errFn };
 }
 
+const DESCRIPTION = Symbol('grandma-kat/description');
+
+/**
+ * Marker for Needs('input', description('...')) — a caller-facing note on one
+ * required input slot. It attaches to the name immediately before it. A host
+ * that turns the tree into a tool (e.g. a function-calling schema) can surface
+ * the text as that parameter's description; hosts that ignore it lose nothing.
+ */
+export function description(text) {
+  if (typeof text !== 'string' || text.trim() === '') {
+    throw new TypeError('description(text) expects a non-empty string');
+  }
+  return Object.freeze({ [DESCRIPTION]: true, text });
+}
+
+export const isDescription = (v) => v != null && v[DESCRIPTION] === true;
+
+const OPTIONAL = Symbol('grandma-kat/optional');
+
+/**
+ * Marker for Needs('name', optional()) — declare an input slot that is
+ * documented and may be seeded, but is NOT required: knitting without it does
+ * not throw, and a host building a tool schema leaves it out of `required`.
+ * It attaches to the name before it; combine with description('...') in either
+ * order.
+ */
+export function optional() {
+  return Object.freeze({ [OPTIONAL]: true });
+}
+
+export const isOptional = (v) => v != null && v[OPTIONAL] === true;
+
 const CALLS = Symbol('grandma-kat/calls');
 const PARAMETERS = Symbol('grandma-kat/parameters');
 
