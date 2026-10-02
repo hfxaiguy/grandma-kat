@@ -1012,6 +1012,7 @@ async function loadNamedTree(runtime, name) {
     if (loaded != null) {
       const def = unwrap(loaded);
       if (def.name == null) def.name = name;
+      if (Array.isArray(def.children)) autoname(def);
       registerTree(def);
       return def;
     }
@@ -1031,6 +1032,7 @@ async function resolveTreeForResume(name, runtime) {
       if (loaded != null) {
         const def = unwrap(loaded);
         if (def.name == null) def.name = name;
+        if (Array.isArray(def.children)) autoname(def);
         registerTree(def);
         return def;
       }
