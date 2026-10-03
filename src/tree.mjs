@@ -135,10 +135,11 @@ export function registered(id) {
   return registry.get(id);
 }
 
-// From('name', [memory(fn)]) — attach a registered tree as if it were a
-// branch. From('x') ≡ Branch(Tree.from('x')); memory(fn) seeds the imported
-// tree's own scope at entry (fn gets the memory view; it returns the slots
-// to write, so memory(m => ({ ...m })) snapshots the chain into the import).
+// From('name', [memory(fn)]) — attach a tree as if it were a branch. The name
+// is resolved from the registry at build time; if it is not registered yet it
+// is deferred to the host's loadTree at run time (so load order does not
+// matter). From('x') ≡ Branch(Tree.from('x')) when 'x' is registered; memory(fn)
+// seeds the imported tree's own scope at entry.
 export function From(...rawArgs) {
   const { gate, name: id, memoryFn, version } = fromFields(rawArgs, 'From()');
   if (version) {
@@ -149,7 +150,13 @@ export function From(...rawArgs) {
     return fromElement({ tree: null, gate, memoryFn, ref: `${id}@${version}`, name: id });
   }
   const def = registry.get(id);
-  if (!def) throw new Error(`From('${id}'): no tree registered under name '${id}'`);
+  if (!def) {
+    // Not registered yet — e.g. an app attaching another app whose module has
+    // not been imported in this process. Defer to the host's loadTree at run
+    // time (the same path a versioned From uses) instead of failing at build
+    // time, so load order does not matter.
+    return fromElement({ tree: null, gate, memoryFn, ref: id, name: id });
+  }
   return fromElement({ tree: def, gate, memoryFn });
 }
 

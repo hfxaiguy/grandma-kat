@@ -74,8 +74,21 @@ test('From() is a positional step: when() gates it, the value flows like a branc
   assert.equal(out.result, 'got:gated run');
 });
 
-test('an unregistered name throws at build time', () => {
-  assert.throws(() => From('from_nope'), /no tree registered under name 'from_nope'/);
+test('an unregistered From() defers to the host loader at run time', async () => {
+  // Build time: no throw — the branch carries a ref and resolves via loadTree.
+  const deferred = Tree(name('from_deferred'), From('from_nope'), Return((m) => m.prev[0]));
+  await assert.rejects(
+    grandma.knit(deferred, { memory: {}, models, logger: false }),
+    /is not registered and loadTree did not provide it/,
+  );
+  // With a host loader it resolves.
+  const loaded = Tree(name('from_loader_target'), Return(() => 'loaded'));
+  const out = await grandma.knit(
+    Tree(name('from_deferred_ok'), From('from_loader_target'), Return((m) => m.prev[0])),
+    { memory: {}, models, logger: false, loadTree: async (n) => (n === 'from_loader_target' ? loaded : null) },
+  );
+  assert.equal(out.result, 'loaded');
+  // Argument-shape mistakes are still build-time errors.
   assert.throws(() => From(), /expects one registered tree name/);
   assert.throws(() => From('from_inner', memory(() => ({})), when(() => true), 'extra'), /expects one registered tree name/);
 });

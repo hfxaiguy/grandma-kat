@@ -28,7 +28,7 @@
 
 import { knit, resume, KnitError, PauseSignal } from './knit.mjs';
 
-export { Tree, From } from './tree.mjs';
+export { Tree, From, registerTree } from './tree.mjs';
 // The element surface: Tree(name('agent'), Prompt('ask', …), Branch(sub), …)
 // — markers may sit anywhere among an element's arguments.
 export { name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until } from './records.mjs';

@@ -1,7 +1,8 @@
 // From('name', version('v1'|'prod'|'draft')) — a deferred port resolved from
 // disk by the host loader at run time, so the process never needs to have
-// imported the tree. From('name') without version() stays a build-time
-// registry lookup.
+// imported the tree. From('name') without version() uses the build-time
+// registry when the name is registered, and otherwise defers to the host
+// loader too (so load order does not matter).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -36,8 +37,13 @@ test('version() validates its argument', () => {
   assert.equal(version('draft').text, 'draft');
 });
 
-test('From(name) without version() still needs the registry', () => {
-  assert.throws(() => From('nope_unregistered'), /no tree registered/);
+test('From(name) without version() defers to the registry or the host loader', async () => {
+  // Build time: no throw — it resolves from the registry, else from loadTree.
+  const tree = Tree(name('from_no_version'), From('nope_unregistered'), Return((m) => m.prev[0]));
+  await assert.rejects(
+    grandma.knit(tree, { memory: {}, models, logger: false }),
+    /is not registered and loadTree did not provide it/,
+  );
 });
 
 test('From(name, version(vN)) defers to the host loader and runs it', async () => {
