@@ -1,22 +1,22 @@
 # Examples
 
-Runnable, real-world material for learning Grandma KAT — organized as a
-before/after pair:
+Runnable, real-world material for learning Grandma KAT — two tree examples
+plus the imperative prototypes they replace:
 
 | Directory | Style | What it does |
 |---|---|---|
 | **`find-address/`** | **Grandma KAT tree** | Finds a business's street address on its website by browsing around |
+| **`tree-smith/`** | **Grandma KAT tree** | Writes a brand-new tree at run time — the model authors a pattern, compiles it and runs it in place |
 | `find-listings/` | Imperative prototype | Detects listing pages (directories, team pages) and analyzes each entry |
 | `find-pagination/` | Imperative prototype | Detects pagination on a page and clicks through it |
 | `lib/` | Shared plumbing | Config, direct LLM calls, file logging, MCP client for the prototypes |
 | `browser-mcp/` | Tool server | CDP-backed Chrome, exposed as an MCP server (the browser tools) |
 
-**Start with `find-address/`.** It's the only converted tree — heavily
-commented for newcomers — and the two prototypes are the "before" picture:
-the same kind of web task written as imperative scripts, which is exactly
-the style a grandma-kat tree replaces. Comparing them is the fastest way to
-see what the library buys you (validation, bounded retries, gates, memory,
-structured logs).
+**Start with `find-address/`.** It's the heavily commented web-task tree —
+and the two prototypes are the "before" picture: the same kind of web task
+written as imperative scripts, which is exactly the style a grandma-kat tree
+replaces. Comparing them is the fastest way to see what the library buys you
+(validation, bounded retries, gates, memory, structured logs).
 
 ## find-address — the tree (start here)
 
@@ -59,6 +59,35 @@ Tree features demonstrated: `Branch()`, `Prompt()` (string fn + message
 arrays), `Call()`, `Check()` + `goback()` + `max()`, `Memory()` /
 `Memory(update(), …)`, `Return()`, `Until()`, `when()` gates, per-branch
 `Tools()`.
+
+## tree-smith — trees that write trees
+
+The self-extending example: give it a task, and a strong model authors a
+complete grandma-kat pattern for it; the smith evaluates the source into a
+definition and runs it **in place** — same run, same call log, same
+pause/resume machinery as the smith itself. The author isn't blind — it can
+inspect real data with tools (`sql_query` over a demo contacts table) and
+test-run candidates in a draft slot before answering. Build errors and
+unknown references repair back through the author (`m.error` + `goback`);
+run-time failures come back as `isError` results and re-invoke, bounded.
+
+```sh
+# from the repo root, with a model in grandma-kat.config.json
+node examples/tree-smith/entry.mjs "find Harbr Group contacts without phone numbers"
+```
+
+No model needed to study it: `node examples/tree-smith/tree-smith.test.mjs`
+runs the whole loop — happy path, eval-error repair, unknown-reference
+repair, bounded re-invoke, `From(...)` imports, cross-run reuse, author-side
+data exploration, and draft-slot test-runs — against a scripted mock.
+
+Tree features demonstrated: `Register(...)` (inline tools), `Emit()`,
+model-called tree tools, dynamic definitions behind registry aliases,
+authoring with tools (explore + draft test-runs), `From('name', memory(…))`
+for composing/reusing registered trees with remapped inputs, and the
+`Check()`/`goback()` repair loop. See
+[`tree-smith/README.md`](tree-smith/README.md) for the slot mechanics, the
+in-place vs. isolated tradeoff, and the unsandboxed-eval note.
 
 ## find-listings / find-pagination — the prototypes (before)
 
@@ -114,8 +143,8 @@ given. Their LLM calls are logged as one JSON file per call under
 - `mcp.mjs` — starts `browser-mcp/scrape-server.mjs` over stdio and wraps
   `client.callTool`.
 
-The tree example uses `config.mjs` and `mcp.mjs` too — models and tools are
-just runtime arguments to `grandma.knit()`.
+The tree examples use `config.mjs` (and `mcp.mjs`) too — models and tools
+are just runtime arguments to `grandma.knit()`.
 
 ## browser-mcp/ — the tool server
 
