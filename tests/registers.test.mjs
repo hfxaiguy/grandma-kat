@@ -198,3 +198,40 @@ test('a model-called register applies its patch and the tool result is { value }
   assert.equal(memory.rec.count, 1);
   assert.deepEqual(memory.rec.results, [{ name: 'bump', result: { value: 1 }, isError: false }]);
 });
+
+// ── host context ───────────────────────────────────────────────────────────
+
+test('a register receives runtime.context as a fourth argument', async () => {
+  const seen = [];
+  const pattern = Tree(name('ctx1')
+    , Register('use_ctx', 'read the host context', (m, args, tools, ctx) => {
+      seen.push(Object.keys(ctx ?? {}).sort());
+      return ctx?.greet?.('world') ?? 'no context';
+    })
+    , Call('out', 'use_ctx', () => ({}))
+    , Memory('got', (m) => m.branch.out));
+
+  const { memory } = await grandma.knit(pattern, {
+    ...mockRuntime(scripted([])),
+    context: { greet: (who) => `hello ${who}`, secret: () => null },
+  });
+  assert.equal(memory.got, 'hello world');
+  assert.deepEqual(seen, [['greet', 'secret']]);
+});
+
+test('a host tool execute receives { view, context }', async () => {
+  let second;
+  const pattern = Tree(name('ctx2')
+    , Call('probe', 'probe_tool', () => ({}))
+    , Memory('got', (m) => m.branch.probe));
+
+  const { memory } = await grandma.knit(pattern, {
+    ...mockRuntime(scripted([]), {
+      tools: { probe_tool: tool((args, extra) => { second = extra; return 'ok'; }) },
+    }),
+    context: { tag: 'ctx' },
+  });
+  assert.equal(memory.got, 'ok');
+  assert.ok(second && 'view' in second, 'the call-site view is still passed');
+  assert.deepEqual(second.context, { tag: 'ctx' });
+});

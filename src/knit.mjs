@@ -791,7 +791,7 @@ async function execPrompt(exec, child, scope, promptResume = null) {
         // { value }). Registry tools ignore the extra argument.
         result = resolved.kind === 'register'
           ? await callRegister(exec, resolved, ref.args, scope)
-          : await resolved.tool.execute(ref.args, { view: makeView(scope) });
+          : await resolved.tool.execute(ref.args, { view: makeView(scope), context: exec.runtime.context });
         result = settleRegisterResult(exec, scope, resolved, result);
       }
       // Tools may return error-shaped results instead of throwing.
@@ -945,7 +945,7 @@ async function execCall(exec, child, scope, callResume = null) {
   try {
     result = resolved.kind === 'register'
       ? await callRegister(exec, resolved, args, scope)
-      : await resolved.tool.execute(args, { view });
+      : await resolved.tool.execute(args, { view, context: exec.runtime.context });
     result = settleRegisterResult(exec, scope, resolved, result);
   } catch (err) {
     // A thrown tool error leaves no value to route — log it for diagnosis.
@@ -1122,7 +1122,7 @@ function registerToolSet(exec, entry, declaringScope) {
       }
       const value = target.kind === 'register'
         ? await callFn(target.entry.fn, makeView(declaringScope), `register '${name}'`, args ?? {}, registerToolSet(exec, target.entry, target.declaringScope))
-        : await target.tool.execute(args ?? {}, { view: makeView(declaringScope) });
+        : await target.tool.execute(args ?? {}, { view: makeView(declaringScope), context: exec.runtime.context });
       logEvent(exec, 'tool_result', {
         tool: name,
         args: args ?? {},
@@ -1144,6 +1144,9 @@ function callRegister(exec, resolved, args, callSiteScope) {
     `register '${resolved.entry.name}'`,
     args,
     registerToolSet(exec, resolved.entry, resolved.declaringScope),
+    // The host context (runtime.context), so a register body can reach things
+    // the host owns — secrets, clients — without exposing an app tool.
+    exec.runtime.context,
   );
 }
 
