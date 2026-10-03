@@ -35,7 +35,7 @@ export { name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Eac
 export { when, update, memory, version, goback, goto, max, calls, parameters, disableAuto, toolHookBefore, toolHookAfter, description, optional, isWhen, isUpdate, isMemory, isVersion, isGoback, isGoto, isMax, isCalls, isParameters, isDisableAuto, isToolHookBefore, isToolHookAfter, isDescription, isOptional, DEFAULT_MAX } from './markers.mjs';
 export { knit, resume, KnitError, PauseSignal } from './knit.mjs';
 export { createLogger } from './logger.mjs';
-export { runLogTools } from './runlog.mjs';
+export { runLogTools, runLogToolFromQuery } from './runlog.mjs';
 
 export const grandma = { knit, resume };
 export default grandma;
