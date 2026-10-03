@@ -194,3 +194,31 @@ test('element Register + Call resolve calls(...) at knit start', async () => {
   assert.deepEqual(seen, [{ q: 'hi' }]);
   assert.deepEqual(memory.result, { value: 'echo:hi' });
 });
+
+test('host seeds in runtime.memory survive a resume', async () => {
+  const dbPath = path.join(os.tmpdir(), `grandma-kat-seeds-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+  try {
+    const emitted = [];
+    const tree = Tree(
+      name('seed_demo'),
+      Branch(Tree(
+        Human('input'),
+        Emit((m) => ({ text: `ws:${m.workspace ?? 'none'} guide:${String(m.guide ?? 'none').slice(0, 3)}` })),
+        Until(() => false, max(5)),
+      )),
+    );
+    const rt = (memory) => ({ ...mockRuntime(scripted([]), { logger: dbPath, memory }), onEmit: (v) => emitted.push(v) });
+
+    const first = await grandma.knit(tree, rt({ workspace: 'WS', guide: 'GUIDE' }));
+    assert.equal(first.status, 'waiting', 'paused at the human leaf');
+
+    const second = await grandma.resume(first.continuation, {
+      ...rt({ workspace: 'WS', guide: 'GUIDE' }),
+      humanInput: { input: 'hi' },
+    });
+    assert.equal(second.status, 'waiting');
+    assert.equal(emitted.at(-1).text, 'ws:WS guide:GUI', 'host seeds are re-applied on resume');
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+});

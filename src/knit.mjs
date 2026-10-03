@@ -188,6 +188,15 @@ export async function resume(checkpointId, runtime) {
     }
     resetScopeIdCounter(maxScopeId + 1);
 
+    // Host seeds (runtime.memory) are applied on the initial knit but are not
+    // logged, so a resumed turn would otherwise lose them (workspace path,
+    // tool guidance, host constants). Re-apply them to the root scope.
+    if (rootScope) {
+      for (const [k, v] of Object.entries(runtime.memory ?? {})) {
+        rootScope.slots[k] = v;
+      }
+    }
+
     // Route the human's reply into the scopes. Keyed objects keep the
     // legacy per-slot API; a raw reply is filled into the paused slot that
     // the checkpoint's human event already named (see injectHumanInput).
