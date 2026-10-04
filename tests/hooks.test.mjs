@@ -4,8 +4,11 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import grandma, {
-  Tree, name, Branch, Human, Hook, onEmit, Emit, Memory, Return, update,
+  Tree, name, Branch, Human, Hook, onEmit, onHuman, Goto, Emit, Memory, Return, update,
 } from "../src/index.mjs";
 
 const run = (tree, runtime = {}) => grandma.knit(tree, runtime);
@@ -13,6 +16,8 @@ const run = (tree, runtime = {}) => grandma.knit(tree, runtime);
 // validateRuntime insists on a resolvable model even for prompt-free trees.
 const mock = { model: "mock", handler: async () => ({ content: "" }) };
 const rt = () => ({ models: { default: mock } });
+// Resuming needs a checkpoint store (a temp log db).
+const logPath = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), "kat-hooks-")), "log.db");
 
 test("onEmit hook runs in the declarer's scope and sees each emit", async () => {
   const collector = Tree(name("collector"),
@@ -76,4 +81,55 @@ test("Hook() requires an onEmit()/onHuman() trigger", () => {
     () => Tree(name("bad"), Hook("emit", Tree(name("x"), Return(() => 1)))),
     /onEmit\(\) or onHuman\(\)/,
   );
+});
+
+test("onHuman hook redirects the reply to an ancestor Human", async () => {
+  const redirectHook = Tree(name("redirect_hook"),
+    Goto("start_input", (m) => m.input),
+  );
+  const inner = Tree(name("redirect_inner"),
+    Emit(() => "inner emit"),
+    Human("inner_wait"),
+    Return(() => "inner done"),
+  );
+  const tree = Tree(name("redirect_root"),
+    Hook(onHuman(), redirectHook),
+    Branch(inner),
+    Human("start_input"),
+    Return((m) => `start=${m.start_input}`),
+  );
+
+  const logger = logPath();
+  const runtime = () => ({ models: { default: mock }, logger });
+  const first = await run(tree, runtime());
+  assert.equal(first.status, "waiting");
+  assert.equal(first.humanSlot, "inner_wait");
+
+  const second = await run(tree, { ...runtime(), _continuation: first.continuation, humanInput: "go" });
+  assert.equal(second.result, "start=go", "the reply was redirected to start_input");
+});
+
+test("onHuman hook without a Goto delivers the reply normally", async () => {
+  const observer = Tree(name("observer_hook"),
+    Memory(update(), "heard", (m, cur) => [...(Array.isArray(cur) ? cur : []), m.input]),
+  );
+  const inner = Tree(name("deliver_inner"),
+    Human("wakeme"),
+    Return((m) => m.wakeme),
+  );
+  const tree = Tree(name("deliver_root"),
+    Memory("heard", () => []),
+    Hook(onHuman(), observer),
+    Branch(inner),
+    Return((m) => m.heard),
+  );
+
+  const logger = logPath();
+  const runtime = () => ({ models: { default: mock }, logger });
+  const first = await run(tree, runtime());
+  assert.equal(first.status, "waiting");
+  assert.equal(first.humanSlot, "wakeme");
+
+  const second = await run(tree, { ...runtime(), _continuation: first.continuation, humanInput: "hello" });
+  assert.deepEqual(second.result, ["hello"], "the hook observed the reply; delivery was normal");
 });

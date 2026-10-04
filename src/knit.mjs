@@ -300,6 +300,10 @@ export async function resume(checkpointId, runtime) {
       seq: cp.seq,
       tools: { ...(runtime.tools ?? {}) },
     };
+    // onHuman hooks fire before delivery: a hook may redirect (Goto) the reply
+    // to an ancestor Human instead of the paused slot.
+    const redirect = await fireHumanHooks(exec, resumeState, runtime.humanInput);
+    if (redirect) applyRedirect(resumeState, redirect);
     try {
       const outcome = await execTree(exec, stack[0].tree, rootScope, rootScope, resumeState);
       logger.deleteCheckpoint(checkpointId);
@@ -1188,6 +1192,58 @@ function assertPauseFree(tree, seen = new Set()) {
     if ((child.kind === 'branch' || child.kind === 'map') && child.tree) assertPauseFree(child.tree, seen);
   }
   for (const h of tree.hooks ?? []) if (h.tree) assertPauseFree(h.tree, seen);
+}
+
+/**
+ * Fire the onHuman hooks visible from the paused scope chain, innermost scope
+ * first, before the reply is delivered. A hook that redirects does so by
+ * executing Goto(...): the signal is returned so the caller can re-target the
+ * resume; `deliver`/`defer` and side effects are otherwise ignored. Returns the
+ * GotoSignal (a redirect) or null.
+ */
+async function fireHumanHooks(exec, resumeState, value) {
+  const { stack, levelScopes } = resumeState;
+  for (let idx = stack.length - 1; idx >= 0; idx -= 1) {
+    const tree = stack[idx]?.tree;
+    const home = levelScopes[idx];
+    for (const hook of tree?.hooks ?? []) {
+      if (hook.trigger !== 'human') continue;
+      try {
+        await runHook(exec, { ...hook, home }, value);
+      } catch (err) {
+        if (err instanceof GotoSignal) return err;
+        throw err;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Re-target a resume to the Human slot named by a redirecting Goto: drop the
+ * frames below the owning level, resume that level at the Human child, and arm
+ * the slot with the redirect value so it consumes instead of pausing.
+ */
+function applyRedirect(resumeState, signal) {
+  const { stack } = resumeState;
+  let level = -1;
+  for (let idx = stack.length - 1; idx >= 0; idx -= 1) {
+    const children = stack[idx]?.tree?.children ?? [];
+    if (children.some((c) => c.kind === 'human' && c.name === signal.target)) { level = idx; break; }
+  }
+  if (level === -1) {
+    throw new KnitError(`Goto('${signal.target}'): no Human() slot with that name in scope`);
+  }
+  const targetIdx = stack[level].tree.children.findIndex((c) => c.kind === 'human' && c.name === signal.target);
+  resumeState.stack = stack.slice(0, level + 1);
+  resumeState.levelScopes = resumeState.levelScopes.slice(0, level + 1);
+  resumeState.stack[level].resumeChildStart = targetIdx;
+  resumeState.humanSlot = signal.target;
+  if (signal.applied) {
+    const scope = resumeState.levelScopes[level];
+    if (!scope.armed) scope.armed = Object.create(null);
+    scope.armed[signal.target] = signal.value;
+  }
 }
 
 // Writes to a named memory slot AND produces m.prev output (like a prompt).
