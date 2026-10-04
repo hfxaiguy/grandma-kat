@@ -133,3 +133,28 @@ test("onHuman hook without a Goto delivers the reply normally", async () => {
   const second = await run(tree, { ...runtime(), _continuation: first.continuation, humanInput: "hello" });
   assert.deepEqual(second.result, ["hello"], "the hook observed the reply; delivery was normal");
 });
+
+test("a reply equal to an offered button value bypasses onHuman", async () => {
+  const redirectHook = Tree(name("btn_hook"),
+    Goto("start_input", (m) => m.input),
+  );
+  const inner = Tree(name("btn_inner"),
+    Emit(() => ({ text: "Send this?", buttons: [{ label: "Send", value: "send" }] })),
+    Human("reply"),
+    Return((m) => `replied:${m.reply}`),
+  );
+  const tree = Tree(name("btn_root"),
+    Hook(onHuman(), redirectHook),
+    Branch(inner),
+    Return((m) => m.prev[0]),
+  );
+
+  const logger = logPath();
+  const runtime = () => ({ models: { default: mock }, logger });
+  const first = await run(tree, runtime());
+  assert.equal(first.status, "waiting");
+  assert.equal(first.humanSlot, "reply");
+
+  const second = await run(tree, { ...runtime(), _continuation: first.continuation, humanInput: "send" });
+  assert.equal(second.result, "replied:send", "the button value was delivered, not redirected");
+});

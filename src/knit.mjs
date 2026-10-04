@@ -301,8 +301,12 @@ export async function resume(checkpointId, runtime) {
       tools: { ...(runtime.tools ?? {}) },
     };
     // onHuman hooks fire before delivery: a hook may redirect (Goto) the reply
-    // to an ancestor Human instead of the paused slot.
-    const redirect = await fireHumanHooks(exec, resumeState, runtime.humanInput);
+    // to an ancestor Human instead of the paused slot. A reply that exactly
+    // equals a button value offered at the pause is a pressed button (an exact
+    // answer) — it bypasses the hooks and is delivered.
+    const offeredButtons = Array.isArray(humanEvent.content?.buttons) ? humanEvent.content.buttons : [];
+    const isButton = typeof runtime.humanInput === 'string' && offeredButtons.includes(runtime.humanInput);
+    const redirect = isButton ? null : await fireHumanHooks(exec, resumeState, runtime.humanInput);
     if (redirect) applyRedirect(resumeState, redirect);
     try {
       const outcome = await execTree(exec, stack[0].tree, rootScope, rootScope, resumeState);
@@ -611,7 +615,9 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         const context = child.contextFn
           ? await callFn(child.contextFn, view, `human context of '${child.name}'`)
           : {};
-        const humanSeq = logEvent(exec, 'human', { child: child.name, context }, scope);
+        const offered = Array.isArray(exec.lastButtons) ? exec.lastButtons : [];
+        exec.lastButtons = null;
+        const humanSeq = logEvent(exec, 'human', { child: child.name, context, buttons: offered }, scope);
         // Emit context before pausing — bots only need onEmit to talk.
         if (Object.keys(context).length > 0 && typeof exec.runtime.onEmit === 'function') {
           await exec.runtime.onEmit(context);
@@ -1136,6 +1142,11 @@ async function execEmit(exec, child, scope) {
   const view = makeView(scope);
   const value = await callFn(child.fn, view, `emit fn of '${child.name}'`);
   logEvent(exec, 'emit', { child: child.name, value }, scope);
+  // Remember the button values this emit offered: a reply that exactly equals
+  // one is a pressed button (a confirm), not free text — see the Human() pause.
+  if (value && typeof value === 'object' && Array.isArray(value.buttons) && value.buttons.length) {
+    exec.lastButtons = value.buttons.map((b) => b && b.value).filter((v) => typeof v === 'string');
+  }
   if (typeof exec.runtime.onEmit === 'function') {
     await exec.runtime.onEmit(value);
   }
