@@ -222,3 +222,23 @@ function makeToolHook(kind, label, rawArgs) {
 
 export const isToolHookBefore = (v) => v != null && v[TOOL_HOOK_BEFORE] === true;
 export const isToolHookAfter = (v) => v != null && v[TOOL_HOOK_AFTER] === true;
+
+const HOOK_TRIGGER = Symbol('grandma-kat/hookTrigger');
+
+/**
+ * Markers for Hook(onEmit(), tree) / Hook(onHuman(), tree) — the event a hook
+ * tree fires on. onEmit() fires once per Emit() the declaring tree (or a
+ * descendant) runs, seeded with the emitted value as `input`. onHuman() fires
+ * when human input arrives at a Human() pause within that coverage, seeded
+ * with the reply. A hook is positional (like Register) and runs in the
+ * declarer's scope, as if From()'d at its point; hook trees must be pause-free.
+ */
+export function onEmit() {
+  return Object.freeze({ [HOOK_TRIGGER]: true, trigger: 'emit' });
+}
+
+export function onHuman() {
+  return Object.freeze({ [HOOK_TRIGGER]: true, trigger: 'human' });
+}
+
+export const isHookTrigger = (v) => v != null && v[HOOK_TRIGGER] === true;

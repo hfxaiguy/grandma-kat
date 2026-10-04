@@ -31,8 +31,8 @@ import { knit, resume, KnitError, PauseSignal } from './knit.mjs';
 export { Tree, From, registerTree } from './tree.mjs';
 // The element surface: Tree(name('agent'), Prompt('ask', …), Branch(sub), …)
 // — markers may sit anywhere among an element's arguments.
-export { name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until } from './records.mjs';
-export { when, update, memory, version, goback, goto, max, calls, parameters, disableAuto, toolHookBefore, toolHookAfter, description, optional, isWhen, isUpdate, isMemory, isVersion, isGoback, isGoto, isMax, isCalls, isParameters, isDisableAuto, isToolHookBefore, isToolHookAfter, isDescription, isOptional, DEFAULT_MAX } from './markers.mjs';
+export { name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Hook, Return, Until } from './records.mjs';
+export { when, update, memory, version, goback, goto, max, calls, parameters, disableAuto, toolHookBefore, toolHookAfter, onHuman, onEmit, description, optional, isWhen, isUpdate, isMemory, isVersion, isGoback, isGoto, isMax, isCalls, isParameters, isDisableAuto, isToolHookBefore, isToolHookAfter, isHookTrigger, isDescription, isOptional, DEFAULT_MAX } from './markers.mjs';
 export { knit, resume, KnitError, PauseSignal } from './knit.mjs';
 export { createLogger } from './logger.mjs';
 export { runLogTools, runLogToolFromQuery } from './runlog.mjs';

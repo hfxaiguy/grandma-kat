@@ -345,6 +345,14 @@ async function execTree(exec, tree, scope, parentScope, resumeState = null) {
   // table can be attached here whole. Re-attached on every entry, so resumed
   // levels get theirs back too.
   scope.registers = tree?.registers ?? null;
+  // Hooks are positional like registers (see validateTree): every scope
+  // carries the hooks declared on its def, tagged with the scope that owns
+  // them (their `home`), so resolution walks the chain and a hook runs in its
+  // declarer's scope. Re-attached on every entry, so resumed levels get
+  // theirs back.
+  scope.hooks = Array.isArray(tree?.hooks) && tree.hooks.length
+    ? tree.hooks.map((h) => ({ ...h, home: scope }))
+    : null;
   if (resumeState) {
     // Resume path: resume() already reconstructed a scope per tree level
     // with that level's own slots, so the scope passed in is correct —
@@ -1059,7 +1067,9 @@ async function resolveTreeForResume(name, runtime) {
   throw new KnitError(`cannot resume: tree '${name}' is not registered (call .name() to register)`);
 }
 
-// Calls runtime.onEmit(value) then continues. No state mutation.
+// Calls runtime.onEmit(value) then continues. Then fires the tree's own
+// `onEmit` hooks (positional declarations, innermost scope first). Hooks do
+// not nest: a hook's own emits must not re-fire hooks.
 async function execEmit(exec, child, scope) {
   const view = makeView(scope);
   const value = await callFn(child.fn, view, `emit fn of '${child.name}'`);
@@ -1067,6 +1077,59 @@ async function execEmit(exec, child, scope) {
   if (typeof exec.runtime.onEmit === 'function') {
     await exec.runtime.onEmit(value);
   }
+  if ((exec.inHook ?? 0) === 0) {
+    for (const hook of resolveHooks(scope, 'emit')) {
+      await runHook(exec, hook, value);
+    }
+  }
+}
+
+/** Hooks of `trigger` visible from `scope`, innermost scope first. */
+function resolveHooks(scope, trigger) {
+  const out = [];
+  for (let s = scope; s; s = s.parent) {
+    for (const h of s.hooks ?? []) {
+      if (h.trigger === trigger) out.push(h);
+    }
+  }
+  return out;
+}
+
+/**
+ * Run one hook tree in its declarer's scope, seeded with the event value as
+ * `input`. A hook must be pause-free (checked once per run) and does not nest.
+ */
+async function runHook(exec, hook, value) {
+  const tree = hook.tree ?? (hook.ref ? await loadNamedTree(exec.runtime, hook.ref) : null);
+  if (!tree) throw new KnitError('Hook(): the hook tree did not resolve');
+  if (!exec.hookChecked) exec.hookChecked = new Set();
+  if (!exec.hookChecked.has(tree)) {
+    assertPauseFree(tree);
+    exec.hookChecked.add(tree);
+  }
+  const home = hook.home ?? null;
+  const hookScope = new Scope(home);
+  hookScope.slots.input = value;
+  exec.inHook = (exec.inHook ?? 0) + 1;
+  try {
+    const out = await execTree(exec, tree, hookScope, home, null);
+    return out.value;
+  } finally {
+    exec.inHook -= 1;
+  }
+}
+
+/** A hook tree that pauses would strand the run inside the hook — build error. */
+function assertPauseFree(tree, seen = new Set()) {
+  if (!tree || seen.has(tree)) return;
+  seen.add(tree);
+  for (const child of tree.children ?? []) {
+    if (child.kind === 'human') {
+      throw new KnitError(`Hook(): tree '${tree.name ?? '?'}' must be pause-free (it has Human('${child.name}'))`);
+    }
+    if ((child.kind === 'branch' || child.kind === 'map') && child.tree) assertPauseFree(child.tree, seen);
+  }
+  for (const h of tree.hooks ?? []) if (h.tree) assertPauseFree(h.tree, seen);
 }
 
 // Writes to a named memory slot AND produces m.prev output (like a prompt).

@@ -15,7 +15,7 @@
 
 import {
   isWhen, isUpdate, isMemory, isVersion, isGoback, isGoto, isMax, isCalls, isParameters,
-  isDisableAuto, isToolHookBefore, isToolHookAfter, isDescription, isOptional, goback, resolveMax,
+  isDisableAuto, isToolHookBefore, isToolHookAfter, isDescription, isOptional, isHookTrigger, goback, resolveMax,
 } from './markers.mjs';
 
 // --- tree defs ------------------------------------------------------------
@@ -345,6 +345,27 @@ export function emitFields(rawArgs, label) {
   return { fn, gate };
 }
 
+/**
+ * Hook(onEmit()|onHuman(), tree) — a positional declaration (like Register):
+ * the hook runs from its point in the sequence onward, in the declaring tree's
+ * scope, covering that tree's own emits/pauses and every descendant's. The
+ * second argument is the hook tree: a def (Tree(...)), a bare subtree element,
+ * or a registered name (a string, resolved at run time via the host loader).
+ */
+export function hookFields(rawArgs, label) {
+  const args = [...rawArgs];
+  const trigger = args.shift();
+  if (!isHookTrigger(trigger)) {
+    throw new TypeError(`${label}: first argument must be onEmit() or onHuman()`);
+  }
+  const tree = args.shift();
+  if (tree === undefined) {
+    throw new TypeError(`${label}: second argument must be the hook tree`);
+  }
+  if (args.length !== 0) throw new TypeError(`${label}: too many arguments`);
+  return { trigger: trigger.trigger, tree };
+}
+
 export function untilFields(rawArgs, label) {
   const { gate, args } = takeGate(rawArgs, label);
   let jumpTarget = null;
@@ -495,6 +516,7 @@ export const Return = (...rawArgs) => element('return', { record: returnRecord(r
 export const Each = (...rawArgs) => element('map', { record: mapRecord(mapFields(rawArgs, 'Each()')) });
 export const Human = (...rawArgs) => element('human', { record: humanRecord(humanFields(rawArgs, 'Human()')) });
 export const Emit = (...rawArgs) => element('emit', { record: emitRecord(emitFields(rawArgs, 'Emit()')) });
+export const Hook = (...rawArgs) => element('hook', hookFields(rawArgs, 'Hook()'));
 export const Until = (...rawArgs) => element('until', { record: untilRecord(untilFields(rawArgs, 'Until()')) });
 
 export const name = (value) => {

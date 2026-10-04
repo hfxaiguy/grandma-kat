@@ -35,6 +35,8 @@ function next(def, patch) {
     // keep the exact same JSON shape — definition ids and host session
     // hashes are computed over the def and must not churn on upgrade.
     ...(def.registers ? { registers: [...def.registers] } : {}),
+    // Hooks likewise ride only when declared, for the same reason.
+    ...(def.hooks ? { hooks: [...def.hooks] } : {}),
   };
   patch(d);
   if (d.name != null) registry.set(d.name, d);
@@ -89,6 +91,22 @@ function applyElement(def, el) {
       // build error (enforced by knit.mjs validation).
       return next(def, (d) => {
         d.registers = [...(d.registers ?? []), { ...el.entry, position: d.children.length }];
+      });
+    case 'hook':
+      // Positional like Register: `position` is the index of the next child
+      // to run, so the hook covers this tree from there on — and, through the
+      // scope chain, every descendant it enters. The hook tree may be a def,
+      // a bare element (wrapped like Branch), or a name string (deferred to
+      // the host loader at run time).
+      return next(def, (d) => {
+        const t = el.tree;
+        const tree = typeof t === 'string' ? null : (isElement(t) ? elementToTree(t) : t);
+        d.hooks = [...(d.hooks ?? []), {
+          trigger: el.trigger,
+          position: d.children.length,
+          tree,
+          ref: typeof t === 'string' ? t : null,
+        }];
       });
     default:
       return next(def, (d) => {
