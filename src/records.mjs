@@ -393,6 +393,27 @@ export function untilFields(rawArgs, label) {
   return { check: checkFn, max: resolveMax(maxMarker), jumpType, jumpTarget, gate };
 }
 
+/**
+ * Goto(target, [valueFn]) — a directive (a tree step, like Emit/Human): jump
+ * to the Human() slot named `target` in this tree or an ancestor, optionally
+ * filling it with valueFn(m)'s result. An armed target proceeds instead of
+ * pausing; an unfilled Goto moves execution there and waits. `target` is the
+ * slot name, not a branch name.
+ */
+export function gotoFields(rawArgs, label) {
+  const { gate, args } = takeGate(rawArgs, label);
+  const target = args.shift();
+  if (typeof target !== 'string' || target.length === 0) {
+    throw new TypeError(`${label}: first argument must be the name of a Human() slot`);
+  }
+  const valueFn = args.shift() ?? null;
+  if (valueFn !== null && typeof valueFn !== 'function') {
+    throw new TypeError(`${label}: second argument (valueFn) must be a function if provided`);
+  }
+  if (args.length !== 0) throw new TypeError(`${label}: too many arguments`);
+  return { target, valueFn, gate };
+}
+
 // Selective rules (last match wins) and declared inputs.
 export function modelRule(rawArgs, label) {
   const { gate, args } = takeGate(rawArgs, label);
@@ -490,6 +511,9 @@ export const emitRecord = ({ fn, gate = null }) => ({ kind: 'emit', name: null, 
 export const untilRecord = ({ check, max, jumpType = null, jumpTarget = null, gate = null }) =>
   ({ kind: 'until', name: null, check, max, jumpType, jumpTarget, gate });
 
+export const gotoRecord = ({ target, valueFn = null, gate = null }) =>
+  ({ kind: 'goto', name: null, target, valueFn, gate });
+
 // --- the element surface --------------------------------------------------
 
 const ELEMENT = Symbol('grandma-kat/element');
@@ -518,6 +542,7 @@ export const Human = (...rawArgs) => element('human', { record: humanRecord(huma
 export const Emit = (...rawArgs) => element('emit', { record: emitRecord(emitFields(rawArgs, 'Emit()')) });
 export const Hook = (...rawArgs) => element('hook', hookFields(rawArgs, 'Hook()'));
 export const Until = (...rawArgs) => element('until', { record: untilRecord(untilFields(rawArgs, 'Until()')) });
+export const Goto = (...rawArgs) => element('goto', { record: gotoRecord(gotoFields(rawArgs, 'Goto()')) });
 
 export const name = (value) => {
   assertValidName(value, 'name()');

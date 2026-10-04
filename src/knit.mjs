@@ -16,6 +16,20 @@ export class PauseSignal {
   }
 }
 
+/**
+ * Thrown by a Goto() element. It unwinds to (and is caught by) the frame that
+ * owns the named Human() slot — possibly several trees up — where the slot is
+ * armed with the value (if any) and execution continues. An unhandled signal
+ * (no such Human in scope) is a build error, surfaced by knit()/resume().
+ */
+export class GotoSignal {
+  constructor(target, value) {
+    this.target = target;
+    this.value = value;
+    this.applied = value !== undefined;
+  }
+}
+
 export class KnitError extends Error {
   constructor(message, details) {
     super(message);
@@ -71,6 +85,9 @@ export async function knit(rootInput, runtime = {}) {
         context: err.context,
         continuation: err.checkpointId,
       };
+    }
+    if (err instanceof GotoSignal) {
+      throw new KnitError(`Goto('${err.target}'): no Human() slot with that name in scope`);
     }
     throw err;
   } finally {
@@ -298,6 +315,9 @@ export async function resume(checkpointId, runtime) {
           continuation: err.checkpointId,
         };
       }
+      if (err instanceof GotoSignal) {
+        throw new KnitError(`Goto('${err.target}'): no Human() slot with that name in scope`);
+      }
       // Keep the checkpoint on failure: the pause is still the last good
       // state, so the same continuation can be retried (or the caller can
       // abandon it). Deleting here would strand a paused conversation.
@@ -477,6 +497,7 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
       }
 
       let outcome;
+      try {
       if (child.kind === 'branch') {
         // On resume, pass the resume state to the branch child that's
         // at the resume position so the inner tree can continue from its
@@ -572,6 +593,17 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
             : null;
         outcome = await execMap(exec, child, scope, mapResume);
       } else if (child.kind === 'human') {
+        // An armed slot is a pending delivery (a filled Goto) — consume it
+        // once and proceed instead of pausing. Slots are durable state; the
+        // arm is the one-shot event, so a loop's rewind still waits.
+        if (scope.armed && Object.prototype.hasOwnProperty.call(scope.armed, child.name)) {
+          const value = scope.armed[child.name];
+          delete scope.armed[child.name];
+          scope.slots[child.name] = value;
+          scope.raw[child.name] = { content: value };
+          logEvent(exec, 'human', { child: child.name, delivered: true }, scope);
+          outcome = { value, record: { content: value } };
+        } else {
         const context = child.contextFn
           ? await callFn(child.contextFn, view, `human context of '${child.name}'`)
           : {};
@@ -594,6 +626,7 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         const checkpointId = `${exec.runId}:${humanSeq}`;
         exec.logger.saveCheckpoint(checkpointId, exec.runId, humanSeq, resumePositions);
         throw new PauseSignal(checkpointId, child.name, context);
+        }
       } else if (child.kind === 'emit') {
         await execEmit(exec, child, scope);
         i++;
@@ -654,11 +687,36 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
             ? savedResume
             : null;
         outcome = await execCall(exec, child, scope, callResume);
+      } else if (child.kind === 'goto') {
+        const gview = makeView(scope);
+        const value = child.valueFn
+          ? await callFn(child.valueFn, gview, `goto value of '${child.name}'`)
+          : undefined;
+        logEvent(exec, 'flow', { type: 'goto-send', target: child.target, from: child.name }, scope);
+        throw new GotoSignal(child.target, value);
       } else {
         outcome = await execCall(exec, child, scope);
       }
       record(exec, scope, i, child.name, outcome);
       i++;
+      } catch (err) {
+        // A Goto() unwinds to the frame that owns the target Human() slot.
+        // Intermediate frames rethrow; this one arms the slot and jumps.
+        if (err instanceof GotoSignal) {
+          const targetIdx = tree.children.findIndex((c) => c.kind === 'human' && c.name === err.target);
+          if (targetIdx !== -1) {
+            logEvent(exec, 'flow', { type: 'goto', target: err.target, childIndex: targetIdx }, scope);
+            rewind(scope, targetIdx);
+            if (err.applied) {
+              if (!scope.armed) scope.armed = Object.create(null);
+              scope.armed[err.target] = err.value;
+            }
+            i = targetIdx;
+            continue;
+          }
+        }
+        throw err;
+      }
     }
 
     // All children processed — no until looped back. Exit the tree.
