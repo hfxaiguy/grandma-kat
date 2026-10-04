@@ -38,6 +38,39 @@ notation line, in order. The `.mjs` header says so:
 // Generated from tree.spec.md, the source of truth for this tree's behavior.
 ```
 
+## The file's prose, and the `## Guide` host contract
+
+The fenced block is the *behavior*. The rest of the `.md` is prose about the
+tree — `## The flow`, `## Requirements`, and so on — for humans and for the
+authoring LLM. One prose section is a contract with the **host**: `## Guide`.
+
+```md
+## Guide
+
+To send an email, call this tree with the request. …
+After a send, relay the returned `text` — and nothing else.
+```
+
+`## Guide` is **caller-facing usage text**: the host reads it into the guidance
+it gives the model that decides whether and how to call this tree as a tool
+(a host that registers trees as tools — the BOB harness — parses the section and
+injects it as tool guidance). Write it for that reader, and nobody else:
+
+- **When to call** — the trigger, in the caller's words.
+- **What to pass** — each `Needs(...)` slot and what it means.
+- **What to do with the result** — e.g. "relay the returned `text`".
+- **Boundaries** — when *not* to call it, or what not to do by hand instead.
+
+Do **not** put the tree's own implementation or authoring philosophy in it. A
+line like "write the tree in code, not prompts" is for the tree's prompts and
+code, not its caller; in `## Guide` it is noise the caller cannot act on. A host
+may derive the tool's short description from elsewhere in the file (the BOB
+harness uses the first prose paragraph), so don't restate it here. Keep the
+section short: it rides in the caller's prompt on every turn.
+
+KAT itself never reads `## Guide` — it is a host convention, honored by hosts
+that expose trees as tools and ignored by those that do not.
+
 ## The notation, in one breath
 
 The symbols are defined once, authoritatively, in
