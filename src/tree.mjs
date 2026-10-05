@@ -105,6 +105,7 @@ function applyElement(def, el) {
           trigger: el.trigger,
           position: d.children.length,
           tree,
+          gate: el.gate ?? null,
           ref: typeof t === 'string' ? t : null,
         }];
       });

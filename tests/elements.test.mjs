@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import grandma, { Tree, name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until, when, max, update, calls, parameters, disableAuto, toolHookBefore, toolHookAfter, goback, goto } from '../src/index.mjs';
+import grandma, { Tree, name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until, when, max, update, calls, parameters, disableAuto, goback, goto } from '../src/index.mjs';
 import { scripted, mockRuntime, tool } from './helpers.mjs';
 
 // ── the def shape is the contract ──────────────────────────────────────────
@@ -53,7 +53,7 @@ test('the kitchen sink builds one tree with the exact shape', () => {
     Call('t', 'tool', f.callArgs),
     Call('named', 'tool2', f.callArgs, { tools: ['a'] }),
     Prompt('response', 'static text'),
-    Prompt(max(6), toolHookBefore(f.hook), toolHookAfter(f.hook), disableAuto(), 'p2', f.text, { tools: ['b'] }),
+    Prompt(max(6), disableAuto(), 'p2', f.text, { tools: ['b'] }),
     Check(f.check, flow),
     Register('lookup', 'find one', f.body, calls('echo'), parameters(schema)),
     Branch(when(f.cond), sub),
@@ -80,10 +80,9 @@ test('the kitchen sink builds one tree with the exact shape', () => {
   assert.deepEqual(plain.options, {});
 
   const configured = tree.children[9];
-  assert.deepEqual(Object.keys(configured.auto), ['max', 'disabled', 'hooks']);
+  assert.deepEqual(Object.keys(configured.auto), ['max', 'disabled']);
   assert.equal(configured.auto.max.count, 6);
   assert.equal(configured.auto.disabled, true);
-  assert.equal(configured.auto.hooks.before[0].fn, f.hook);
   assert.deepEqual(configured.options, { tools: ['b'] });
 
   assert.equal(tree.children[3].gate, null, 'untouched children keep gate: null');

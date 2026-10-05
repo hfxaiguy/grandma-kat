@@ -4,9 +4,11 @@
 // emits, append the results to the prompt's local thread, call again — until a
 // round returns no tool calls. Prompt(disableAuto(), …) keeps the old
 // single-round behavior. Prompt(max(n), …) bounds the rounds (default 3,
-// exhaustion throws). Hooks are marker args on Prompt(), run per tool call:
-//   Prompt(toolHookBefore(fn), toolHookAfter(fn), value)
-//   fn(m, thread, tool_call) — return an updated tool-call shape, or null.
+// exhaustion throws). Tool hooks are positional Hook()s, run per tool call:
+//   Hook(toolBefore() | toolAfter(), [when(cond)], Tree(...))
+// The hook tree runs in the declarer's scope with the call seeded as `call`; a
+// toolBefore Return is merged into the call's args, a toolAfter Return over the
+// call ref. They are no longer prompt markers.
 //
 // These tests are scripted against mock models — no live LLM.
 
@@ -15,7 +17,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import grandma, { Tree, when, max, disableAuto, toolHookBefore, toolHookAfter, name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until } from '../src/index.mjs';
+import grandma, { Tree, when, max, disableAuto, toolBefore, toolAfter, Hook, name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until } from '../src/index.mjs';
 import { scripted, mockRuntime, tool } from './helpers.mjs';
 
 const tc = (name, args, id = name) => ({
@@ -29,28 +31,27 @@ function tmpLogger() {
 
 // ── builder: marker parsing ───────────────────────────────────────────────
 
-test('markers validate their arguments', () => {
-  assert.throws(() => toolHookBefore('nope'), /function/);
-  assert.throws(() => toolHookAfter(), /function/);
-  assert.throws(() => toolHookBefore(when(() => true)), /function/);
-  assert.doesNotThrow(() => toolHookBefore(when(() => true), () => {}));
+test('Hook() requires a trigger, a tree, and an optional when() gate', () => {
+  assert.throws(() => Hook('nope', Tree()), /onEmit\(\), onHuman\(\), toolBefore\(\) or toolAfter\(\)/);
+  assert.throws(() => Hook(toolBefore()), /hook tree is required/);
+  assert.throws(() => Hook(toolBefore(), () => Tree()), /built at build time/);
+  assert.throws(() => Hook(toolBefore(), Tree(), 'extra'), /too many arguments/);
+  const t = Tree(name('p'), Hook(toolBefore(), when(() => true), Tree(Memory('x', () => 1))));
+  assert.equal(t.hooks.length, 1);
+  assert.equal(t.hooks[0].trigger, 'toolBefore');
+  assert.equal(typeof t.hooks[0].gate, 'function');
+  assert.equal(t.hooks[0].position, 0);
 });
 
 test('Prompt() parses auto markers; plain prompts keep their exact JSON shape', () => {
-  const hb = () => {};
-  const ha = () => {};
-  const t = Tree(name('p'), Prompt(toolHookBefore(hb), toolHookAfter(ha), disableAuto(), max(5), m => 'x'));
+  const t = Tree(name('p'), Prompt(disableAuto(), max(5), m => 'x'));
   const child = t.children[0];
   assert.equal(child.auto.disabled, true);
   assert.equal(child.auto.max.count, 5);
-  assert.deepEqual(child.auto.hooks.before.map((h) => h.fn), [hb]);
-  assert.deepEqual(child.auto.hooks.after.map((h) => h.fn), [ha]);
+  assert.ok(!('hooks' in child.auto), 'tool hooks are positional Hook()s now, not prompt markers');
 
   const plain = Tree(name('p2'), Prompt(m => 'x'));
   assert.ok(!('auto' in plain.children[0]), 'no auto key when nothing was configured — def hashes stay stable');
-
-  const t2 = Tree(name('p3'), Prompt(toolHookBefore(hb), toolHookBefore(ha), m => 'x'));
-  assert.deepEqual(t2.children[0].auto.hooks.before.map((h) => h.fn), [hb, ha], 'multiple hooks keep argument order');
 
   assert.throws(() => Tree(name('p4'), Prompt(disableAuto(), disableAuto(), m => 'x')), /duplicate disableAuto/);
   assert.throws(() => Tree(name('p4'), Prompt(max(2), max(3), m => 'x')), /duplicate max/);
@@ -194,22 +195,20 @@ test('a call outside the prompt whitelist is refused, not executed', async () =>
   assert.match(refusal.content, /not offered to prompt 'main'/);
 });
 
-// ── runner: hooks ─────────────────────────────────────────────────────────
+// ── runner: tool hooks ────────────────────────────────────────────────────
 
-test('hooks run per tool call, in order: before → execute → after', async () => {
+test('tool hooks run per call, in order: before → execute → after', async () => {
   const seq = [];
   const handler = scripted([
     { content: '', tool_calls: [tc('a', { q: '1' }), tc('b', { q: '2' })] },
     'done',
   ]);
-  const mk = (name) => tool(async (args) => { seq.push(`exec:${name}:${args.q}`); return `r-${name}`; });
+  const mk = (nm) => tool(async (args) => { seq.push(`exec:${nm}:${args.q}`); return `r-${nm}`; });
   const pattern = Tree(name('agent')
     , Tools('a', 'b')
-    , Prompt(
-      toolHookBefore((m, thread, t) => { seq.push(`before:${t.name}:${t.args.q}`); assert.ok(Array.isArray(thread)); }),
-      toolHookAfter((m, thread, t) => { seq.push(`after:${t.name}:${t.result}`); assert.equal(t.isError, false); }),
-      m => 'go',
-    ));
+    , Hook(toolBefore(), Tree(Memory('log', (m) => { seq.push(`before:${m.call.name}:${m.call.args.q}`); })))
+    , Hook(toolAfter(), Tree(Memory('log', (m) => { seq.push(`after:${m.call.name}:${m.call.result}`); })))
+    , Prompt(m => 'go'));
 
   await grandma.knit(pattern, mockRuntime(handler, { tools: { a: mk('a'), b: mk('b') } }));
 
@@ -219,7 +218,7 @@ test('hooks run per tool call, in order: before → execute → after', async ()
   ]);
 });
 
-test('hook return values replace the call shape (null keeps the current one)', async () => {
+test('tool hook Returns merge into the call (null keeps it)', async () => {
   const received = [];
   const handler = scripted([
     { content: '', tool_calls: [tc('search', { q: 'raw' })] },
@@ -227,61 +226,88 @@ test('hook return values replace the call shape (null keeps the current one)', a
   ]);
   const pattern = Tree(name('agent')
     , Tools('search')
-    , Prompt(
-      toolHookBefore(() => null), // null → keep the current shape
-      toolHookBefore((m, thread, t) => ({ args: { q: 'rewritten' } })), // replaces args
-      toolHookAfter(() => ({ result: 'REDACTED' })), // replaces the result
-      m => 'go',
-    ));
+    , Hook(toolBefore(), Tree(Return(() => null)))                     // keep the call
+    , Hook(toolBefore(), Tree(Return(() => ({ q: 'rewritten' }))))     // patch the args
+    , Hook(toolAfter(), Tree(Return(() => ({ result: 'REDACTED' }))))  // rewrite the result
+    , Prompt(m => 'go'));
 
   await grandma.knit(pattern, mockRuntime(handler, {
     tools: { search: tool(async (args) => { received.push(args); return 'secret'; }) },
   }));
 
-  assert.deepEqual(received, [{ q: 'rewritten' }], 'the rewritten args are what executed');
+  assert.deepEqual(received, [{ q: 'rewritten' }], 'the merged args are what executed');
   const toolMsg = handler.calls[1].messages.find((msg) => msg.role === 'tool');
   assert.equal(toolMsg.content, 'REDACTED', 'the rewritten result is what the model sees');
 });
 
-test('a throwing hook aborts the run loudly', async () => {
+test('a throwing tool hook aborts the run loudly', async () => {
   const handler = scripted([{ content: '', tool_calls: [tc('search', {})] }]);
   const pattern = Tree(name('agent')
     , Tools('search')
-    , Prompt(toolHookBefore(() => { throw new Error('boom'); }), m => 'go'));
+    , Hook(toolBefore(), Tree(Memory('x', () => { throw new Error('boom'); })))
+    , Prompt(m => 'go'));
 
   await assert.rejects(
     grandma.knit(pattern, mockRuntime(handler, { tools: { search: tool(async () => 'x') } })),
-    /toolHookBefore of 'search' threw: boom/,
+    /boom/,
   );
 });
 
-test('hook gates: when() skips the hook for that call', async () => {
+test('a tool hook when() gate skips the hook tree for that call', async () => {
   let called = 0;
   const handler = scripted([{ content: '', tool_calls: [tc('search', {})] }, 'done']);
   const pattern = Tree(name('agent')
     , Tools('search')
-    , Prompt(toolHookBefore(when(() => false), () => { called++; }), m => 'go'));
+    , Hook(toolBefore(), when((m) => m.call.name === 'other'), Tree(Memory('n', () => { called++; })))
+    , Prompt(m => 'go'));
 
   await grandma.knit(pattern, mockRuntime(handler, { tools: { search: tool(async () => 'x') } }));
-  assert.equal(called, 0);
+  assert.equal(called, 0, 'the gate saw the call name and skipped the tree');
 
   const handler2 = scripted([{ content: '', tool_calls: [tc('search', {})] }, 'done']);
   const pattern2 = Tree(name('agent2')
     , Tools('search')
-    , Prompt(toolHookBefore(when(() => true), () => { called++; }), m => 'go'));
+    , Hook(toolBefore(), when((m) => m.call.name === 'search'), Tree(Memory('n', () => { called++; })))
+    , Prompt(m => 'go'));
   await grandma.knit(pattern2, mockRuntime(handler2, { tools: { search: tool(async () => 'x') } }));
   assert.equal(called, 1);
 });
 
-test('hooks run with disableAuto() too — they observe calls, not the loop', async () => {
+test('tool hooks run with disableAuto() too — they observe calls, not the loop', async () => {
   let called = 0;
   const handler = scripted([{ content: '', tool_calls: [tc('search', {})] }]);
   const pattern = Tree(name('agent')
     , Tools('search')
-    , Prompt(disableAuto(), toolHookAfter(() => { called++; }), m => 'go'));
+    , Hook(toolAfter(), Tree(Memory('n', () => { called++; })))
+    , Prompt(disableAuto(), m => 'go'));
 
   await grandma.knit(pattern, mockRuntime(handler, { tools: { search: tool(async () => 'x') } }));
   assert.equal(called, 1);
+});
+
+test('a fired tool hook logs a `hook` event (the WebUI line)', async () => {
+  const dbPath = tmpLogger();
+  try {
+    const handler = scripted([{ content: '', tool_calls: [tc('search', { q: 'x' })] }, 'done']);
+    const pattern = Tree(name('agent')
+      , Tools('search')
+      , Hook(toolBefore(), Tree(name('ctx_hook'), Memory('n', () => 1)))
+      , Prompt(m => 'go'));
+    await grandma.knit(pattern, mockRuntime(handler, { logger: dbPath, tools: { search: tool(async () => 'x') } }));
+
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    const rows = db.prepare("SELECT content FROM calls WHERE kind = 'hook'").all();
+    db.close();
+    assert.equal(rows.length, 1, 'one hook firing, one event');
+    const c = JSON.parse(rows[0].content);
+    assert.deepEqual(
+      { trigger: c.trigger, hook: c.hook, slot: c.slot, phase: c.phase, tool: c.tool },
+      { trigger: 'toolBefore', hook: 'ctx_hook', slot: 'call', phase: 'Before', tool: 'search' },
+    );
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
 });
 
 // ── runner: resume ────────────────────────────────────────────────────────
@@ -302,12 +328,9 @@ test('resume: replayed calls do not re-run hooks, and the loop continues past th
     ]);
     const pattern = Tree(name('outer')
       , Tools('interviewer')
-      , Prompt(
-        toolHookBefore(() => { counts.before++; }),
-        toolHookAfter(() => { counts.after++; }),
-        'main',
-        m => 'go',
-      ));
+      , Hook(toolBefore(), Tree(Memory('n', () => { counts.before++; })))
+      , Hook(toolAfter(), Tree(Memory('n', () => { counts.after++; })))
+      , Prompt('main', m => 'go'));
 
     const step1 = await grandma.knit(pattern, mockRuntime(handler1, { logger: dbPath, tools }));
     assert.equal(step1.status, 'waiting');

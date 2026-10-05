@@ -326,9 +326,9 @@ const tools = {
   **auto tool loop**: every call executes, the results feed back on the
   prompt's local thread, and the model is called again until it answers
   without calls. `disableAuto()` on the prompt stops after one round,
-  `max(n)` bounds the loop, and `toolHookBefore()` / `toolHookAfter()`
-  observe and rewrite each call (see the `Prompt(...)` reference and
-  *Tool hooks*). Calls and results are at `m.raw.prev[0].toolCalls` /
+  `max(n)` bounds the loop, and positional
+  `Hook(toolBefore()/toolAfter(), …)` trees observe and rewrite each call
+  (see *Tool hooks*). Calls and results are at `m.raw.prev[0].toolCalls` /
   `.toolResults` (union across rounds); the whole exchange at `.thread`.
 - `Call('navigate', m => ({ url: m.branch.best }))` calls a tool directly,
   no LLM involved.
@@ -606,34 +606,44 @@ Prompt-argument markers tune it:
   recorded but never fed back.
 - **`max(n[, errFn])`** — bound the rounds (default `DEFAULT_MAX`, 3);
   exhaustion throws `KnitError` with the `errFn(m)` message.
-- **`toolHookBefore(fn)`** / **`toolHookAfter(fn)`** — per-call hooks (see
-  *Tool hooks* below); optional `when(cond)` first argument skips the hook
-  for a call.
+- Positional tool hooks — `Hook(toolBefore(), [when(cond)], tree)` /
+  `Hook(toolAfter(), …)` — observe and rewrite each call (see *Tool hooks*
+  below).
 
 Options: `{ tools: [...] }` — per-prompt tool whitelist, replacing the
 inherited one (`{ tools: [] }` opts out of tools entirely). Unknown option
 keys throw at build time.
 
-### `toolHookBefore(...)` / `toolHookAfter(...)` — prompt markers
+### `Hook(toolBefore() | toolAfter(), [when(cond)], tree)` — tool hooks
 
-Hooks run for every tool call the prompt executes (with or without
-`disableAuto()`), `fn(m, thread, tool_call)`:
+A positional `Hook()` (like `Register`): from its point onward it covers every
+tool call the declaring tree — or any descendant prompt — executes.
+`toolBefore` fires before the call, `toolAfter` after it. (It covers prompt
+tool calls, i.e. the auto loop; a direct `Call(...)` step is not hooked.) The
+hook tree runs
+in the declarer's scope, pause-free, with the call seeded under **`call`**
+(not `input`): `call = { id, name, args }` before, `+ { result, isError }`
+after. A `when(cond)` gate sees `m.call` and skips the tree when false (no
+model cost).
 
-- `m` — the memory view at the prompt.
-- `thread` — the live message array; hook edits are respected.
-- `tool_call` — `{ id, name, args }` before the call,
-  `{ id, name, args, result, isError }` after. Return an object to replace
-  it (fields merge; `null`/`undefined` keeps the current shape; `id` and
-  `name` are fixed by routing); a throwing hook aborts the run.
+The hook tree's `Return` is merged into the call:
+
+- `toolBefore` — the returned object is spread into `call.args`, so
+  `Return(() => ({ context }))` adds `context` and keeps the model's args.
+- `toolAfter` — the returned object is spread over the call ref, so
+  `Return(() => ({ result: 'REDACTED' }))` rewrites what the model sees.
+- `null` / `undefined` keeps the call unchanged; a throw aborts the run.
 
 ```js
-Tools('lookup')
-Prompt(
-  toolHookBefore((m, thread, tc) => console.log('→', tc.name, tc.args)),
-  toolHookAfter((m, thread, tc) => {
-    if (tc.isError) tc.result = { error: `${tc.result} (tell the user to retry)` };
-  }),
-  m => 'find Ada',
+Tree(
+  Tools('email'),
+  Hook(toolBefore(),
+    when((m) => m.call.name === 'email'),
+    Tree(
+      Prompt('build_context', (m) => [ /* … */ ]),
+      Return((m) => ({ context: m.branch.build_context })),
+    )),
+  Prompt('response', m => 'send it'),
 )
 ```
 
@@ -913,9 +923,9 @@ import { when, goback, max, calls, parameters, DEFAULT_MAX } from 'grandma-kat';
   among any element's arguments. The wrapper is a distinct type, which is
   how the parser catches a bare function in the condition slot at build
   time.
-- **`disableAuto()`**, **`toolHookBefore(fn)`**, **`toolHookAfter(fn)`** —
-  prompt-argument markers for the auto tool loop; see the `Prompt(...)`
-  reference and *Tool hooks* above.
+- **`disableAuto()`** — prompt-argument marker for the auto tool loop; see
+  the `Prompt(...)` reference. Tool hooks are positional `Hook()`s:
+  `Hook(toolBefore()/toolAfter(), [when(cond)], tree)` (see *Tool hooks*).
 - **`calls(...)`**, **`parameters(schema)`** — `Register(...)` arguments:
   the host function tools the register body may invoke, and the JSON schema
   the model sees for the inline tool.

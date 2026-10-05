@@ -754,8 +754,6 @@ async function execPrompt(exec, child, scope, promptResume = null) {
   const auto = child.auto ?? null;
   const autoOn = auto?.disabled !== true;
   const bound = auto?.max ?? { count: DEFAULT_MAX, errFn: null };
-  const hooksBefore = auto?.hooks?.before ?? [];
-  const hooksAfter = auto?.hooks?.after ?? [];
 
   const record = {
     content: null, reasoning: null, toolCalls: [], toolResults: [], calls: [], model: null,
@@ -827,35 +825,15 @@ async function execPrompt(exec, child, scope, promptResume = null) {
     thread = normalizeMessages(value);
   }
 
-  // Hooks: (m, thread, tool_call) per call, before and after execution.
-  // Returning a value replaces the tool-call shape (null keeps the current
-  // one); id/name stay fixed by routing; a throwing hook aborts the run. A
-  // when(cond) gate skips the hook for that call.
-  const runHooks = async (hooks, tc, phase) => {
-    let current = tc;
-    for (const h of hooks) {
-      if (h.gate != null && !(await callFn(h.gate, view, `toolHook${phase} gate of '${tc.name}'`))) continue;
-      const out = await callFn(h.fn, view, `toolHook${phase} of '${tc.name}'`, thread, current);
-      if (out == null) continue;
-      if (typeof out !== 'object' || Array.isArray(out)) {
-        throw new KnitError(`toolHook${phase} of '${tc.name}' must return an updated tool call object (or null)`);
-      }
-      if (out.name !== undefined && out.name !== tc.name) {
-        throw new KnitError(`toolHook${phase} of '${tc.name}' may not rename the tool to '${out.name}' — routing is fixed`);
-      }
-      current = { ...current, ...out, id: current.id, name: current.name };
-    }
-    return current;
-  };
-
-  // One tool call: before-hooks → resolve + execute (+ register settle) →
-  // after-hooks. `resumeState` marks the call that paused inside a tree
-  // tool: its before-hook already ran pre-pause, so it is skipped here.
+  // One tool call: positional tool hooks → resolve + execute (+ register
+  // settle) → positional tool hooks. `resumeState` marks the call that paused
+  // inside a tree tool: its before-hook already ran pre-pause, so it is
+  // skipped here.
   const runCall = async (tc, resumeState) => {
     const name = tc.function?.name;
     const parsed = (() => { try { return JSON.parse(tc.function.arguments); } catch { return tc.function.arguments; } })();
     let ref = { id: tc.id, name, args: parsed };
-    if (!resumeState) ref = await runHooks(hooksBefore, ref, 'Before');
+    if (!resumeState) ref = await fireToolHooks(exec, scope, 'Before', ref);
 
     let result;
     let isError = false;
@@ -895,7 +873,7 @@ async function execPrompt(exec, child, scope, promptResume = null) {
       result = `error: ${err.message}`;
     }
 
-    const after = await runHooks(hooksAfter, { ...ref, result, isError }, 'After');
+    const after = await fireToolHooks(exec, scope, 'After', { ...ref, result, isError });
     return { id: ref.id, name: ref.name, args: ref.args, result: after.result, isError: Boolean(after.isError) };
   };
 
@@ -1175,10 +1153,44 @@ function resolveHooks(scope, trigger) {
 }
 
 /**
- * Run one hook tree in its declarer's scope, seeded with the event value as
- * `input`. A hook must be pause-free (checked once per run) and does not nest.
+ * Run the positional tool hooks (`Hook(toolBefore()/toolAfter(), …)`) visible
+ * from `scope`, innermost first. Each hook tree runs in its declarer's scope,
+ * paused-free, with the call seeded as `call`. A `toolBefore` hook's Return is
+ * spread into the call's args; a `toolAfter` hook's Return is spread over the
+ * call ref (so it can replace `result` / set `isError`). A null/undefined
+ * Return leaves the call unchanged; a throw aborts the run. Tool hooks never
+ * nest (exec.inHook guards them against hooking their own calls).
  */
-async function runHook(exec, hook, value) {
+async function fireToolHooks(exec, scope, phase, ref) {
+  if ((exec.inHook ?? 0) > 0) return ref;
+  const trigger = phase === 'After' ? 'toolAfter' : 'toolBefore';
+  let current = ref;
+  for (const hook of resolveHooks(scope, trigger)) {
+    const out = await runHook(exec, hook, current, { slot: 'call', detail: { phase, tool: current.name } });
+    current = applyToolHookReturn(current, out, phase);
+  }
+  return current;
+}
+
+/** Merge a tool hook's Return into the call: args for `toolBefore`, the whole
+ *  ref for `toolAfter`. */
+function applyToolHookReturn(current, out, phase) {
+  if (out == null) return current;
+  if (phase === 'Before') {
+    const patch = typeof out === 'object' && !Array.isArray(out) ? out : {};
+    return { ...current, args: { ...(current.args ?? {}), ...patch } };
+  }
+  if (typeof out === 'object' && !Array.isArray(out)) return { ...current, ...out };
+  return { ...current, result: out };
+}
+
+/**
+ * Run one hook tree in its declarer's scope. The event value is seeded under
+ * `opts.slot` (default `input`); a `when(cond)` gate is evaluated with that
+ * value in scope and skips the tree when false. A hook must be pause-free
+ * (checked once per run) and does not nest.
+ */
+async function runHook(exec, hook, value, opts = {}) {
   const tree = hook.tree ?? (hook.ref ? await loadNamedTree(exec.runtime, hook.ref) : null);
   if (!tree) throw new KnitError('Hook(): the hook tree did not resolve');
   if (!exec.hookChecked) exec.hookChecked = new Set();
@@ -1188,7 +1200,18 @@ async function runHook(exec, hook, value) {
   }
   const home = hook.home ?? null;
   const hookScope = new Scope(home);
-  hookScope.slots.input = value;
+  const slot = opts.slot ?? 'input';
+  if (value !== undefined) hookScope.slots[slot] = value;
+  if (hook.gate != null) {
+    const ok = await callFn(hook.gate, makeView(hookScope), `gate of hook '${tree.name ?? '?'}'`);
+    if (!ok) return null;
+  }
+  logEvent(exec, 'hook', {
+    trigger: hook.trigger,
+    hook: tree.name ?? hook.ref ?? null,
+    slot,
+    ...(opts.detail ?? {}),
+  }, hookScope);
   exec.inHook = (exec.inHook ?? 0) + 1;
   try {
     const out = await execTree(exec, tree, hookScope, home, null);

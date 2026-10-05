@@ -1,5 +1,6 @@
 // Marker factories: when(), update(), goback(), goto(), max(), calls(),
-// parameters(), disableAuto(), toolHookBefore(), toolHookAfter(), memory().
+// parameters(), disableAuto(), onEmit(), onHuman(), toolBefore(), toolAfter(),
+// memory().
 // Each marker is a distinct type so the builder can validate argument slots
 // at build time (e.g. reject a bare function in a condition slot).
 
@@ -173,8 +174,6 @@ export function parameters(schema) {
 export const isParameters = (v) => v != null && v[PARAMETERS] === true;
 
 const DISABLE_AUTO = Symbol('grandma-kat/disableAuto');
-const TOOL_HOOK_BEFORE = Symbol('grandma-kat/toolHookBefore');
-const TOOL_HOOK_AFTER = Symbol('grandma-kat/toolHookAfter');
 
 /**
  * Marker for `.prompt(disableAuto(), …)` — keep that prompt single-round:
@@ -187,51 +186,16 @@ export function disableAuto() {
 
 export const isDisableAuto = (v) => v != null && v[DISABLE_AUTO] === true;
 
-/**
- * Markers for `.prompt(toolHookBefore([when(cond)], fn), …)` — hooks run per
- * tool call of that prompt, `fn(m, thread, tool_call)`, before and after the
- * call executes. Returning a value replaces the tool-call shape (null keeps
- * the current one); a throwing hook aborts the run. An optional when() gate
- * skips the hook for that call.
- */
-export function toolHookBefore(...rawArgs) {
-  return makeToolHook(TOOL_HOOK_BEFORE, 'toolHookBefore', rawArgs);
-}
-
-export function toolHookAfter(...rawArgs) {
-  return makeToolHook(TOOL_HOOK_AFTER, 'toolHookAfter', rawArgs);
-}
-
-function makeToolHook(kind, label, rawArgs) {
-  const args = [...rawArgs];
-  const whenIndex = args.findIndex(isWhen);
-  if (whenIndex === -1) {
-    if (args.length !== 1) {
-      throw new TypeError(`${label}([when(cond)], fn): expects exactly one hook function`);
-    }
-  } else if (whenIndex > 1 || args.length !== 2) {
-    throw new TypeError(`${label}([when(cond)], fn): when() must be first or second, followed by the hook function`);
-  }
-  const gate = whenIndex === -1 ? null : args.splice(whenIndex, 1)[0].cond;
-  const fn = args[0];
-  if (typeof fn !== 'function') {
-    throw new TypeError(`${label}([when(cond)], fn): hook must be a function`);
-  }
-  return Object.freeze({ [kind]: true, fn, gate });
-}
-
-export const isToolHookBefore = (v) => v != null && v[TOOL_HOOK_BEFORE] === true;
-export const isToolHookAfter = (v) => v != null && v[TOOL_HOOK_AFTER] === true;
-
 const HOOK_TRIGGER = Symbol('grandma-kat/hookTrigger');
 
 /**
- * Markers for Hook(onEmit(), tree) / Hook(onHuman(), tree) — the event a hook
- * tree fires on. onEmit() fires once per Emit() the declaring tree (or a
- * descendant) runs, seeded with the emitted value as `input`. onHuman() fires
- * when human input arrives at a Human() pause within that coverage, seeded
- * with the reply. A hook is positional (like Register) and runs in the
- * declarer's scope, as if From()'d at its point; hook trees must be pause-free.
+ * Markers for the event a Hook() tree fires on. onEmit() fires once per Emit()
+ * the declaring tree (or a descendant) runs, seeded with the emitted value as
+ * `input`. onHuman() fires when human input arrives at a Human() pause within
+ * that coverage, seeded with the reply. toolBefore() / toolAfter() fire once
+ * per tool call executed by a covered prompt, seeded with the call as `call`.
+ * A hook is positional (like Register) and runs in the declarer's scope, as if
+ * From()'d at its point; hook trees must be pause-free.
  */
 export function onEmit() {
   return Object.freeze({ [HOOK_TRIGGER]: true, trigger: 'emit' });
@@ -239,6 +203,14 @@ export function onEmit() {
 
 export function onHuman() {
   return Object.freeze({ [HOOK_TRIGGER]: true, trigger: 'human' });
+}
+
+export function toolBefore() {
+  return Object.freeze({ [HOOK_TRIGGER]: true, trigger: 'toolBefore' });
+}
+
+export function toolAfter() {
+  return Object.freeze({ [HOOK_TRIGGER]: true, trigger: 'toolAfter' });
 }
 
 export const isHookTrigger = (v) => v != null && v[HOOK_TRIGGER] === true;

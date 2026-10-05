@@ -12,7 +12,9 @@
 - **Surface**: element literal —
   `Tree(name("x"), Model("strong"), Prompt(...), Register(...), Branch(...), Until(...))`.
   Markers ride inside elements: `when(cond)`, `max(n)`, `calls(...)`,
-  `parameters(...)`, `toolHookBefore/After(...)`, `update()`. Condition is
+  `parameters(...)`, `update()`. Hooks are positional `Hook()` elements:
+  `Hook(toolBefore()/toolAfter()/onEmit()/onHuman(), [when(cond)], tree)`.
+  Condition is
   always explicit (`when(cond)`); argless `when()` is rejected — no implicit
   default gate.
 - **`Model("strong")` is a positioned directive element** — model rules apply

@@ -14,8 +14,8 @@ import * as gk from '../../src/index.mjs';
 export const FACTORY_NAMES = [
   'Tree', 'name', 'Needs', 'Model', 'Tools', 'Branch', 'From', 'Prompt',
   'Call', 'Check', 'Until', 'Memory', 'Return', 'Each', 'Emit', 'Human',
-  'Register', 'goback', 'max', 'goto', 'when', 'update', 'memory',
-  'disableAuto', 'parameters', 'calls', 'toolHookBefore', 'toolHookAfter',
+  'Register', 'Hook', 'goback', 'max', 'goto', 'when', 'update', 'memory',
+  'disableAuto', 'onEmit', 'onHuman', 'toolBefore', 'toolAfter', 'parameters', 'calls',
 ];
 const FACTORY_VALUES = FACTORY_NAMES.map((n) => gk[n]);
 

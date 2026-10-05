@@ -76,10 +76,10 @@ test("a hook tree with a Human() pause is rejected at run time", async () => {
   await assert.rejects(() => run(tree, rt()), /pause-free/);
 });
 
-test("Hook() requires an onEmit()/onHuman() trigger", () => {
+test("Hook() requires an onEmit()/onHuman()/toolBefore()/toolAfter() trigger", () => {
   assert.throws(
     () => Tree(name("bad"), Hook("emit", Tree(name("x"), Return(() => 1)))),
-    /onEmit\(\) or onHuman\(\)/,
+    /onEmit\(\), onHuman\(\), toolBefore\(\) or toolAfter\(\)/,
   );
 });
 

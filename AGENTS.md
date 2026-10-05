@@ -732,7 +732,7 @@ top-to-bottom. Lives entirely under `examples/notation/`:
   for the translated tree.
 
 Symbols: `++` memory, `<<` emit, `>>` human, `--` prompt, `**` gated branch
-(closed by `***`), `||` nesting prefix (plus `->` direct calls, `#->`
+(closes by dedent; `***` is an optional closer), `||` nesting prefix (plus `->` direct calls, `#->`
 registers, `??` checks, `@@` per-element subtrees, `()` loops, `!!` needs,
 `##` imported trees). `//` is the comment marker — it runs to the end of the
 line and drops out before translation; `#` alone is **not** a comment, since
@@ -913,8 +913,8 @@ tool calls. See `docs/auto-tool-loop.md` for the full contract (record
 shape, resume, hooks). `disableAuto()` restores the single-round behaviour
 for steps that act on exactly one call per pass (`find-address`'s
 `pick_action` is the canonical example); `max(n)` bounds the loop and
-exhaustion throws; `toolHookBefore`/`toolHookAfter` observe and rewrite
-each call.
+exhaustion throws; positional `Hook(toolBefore()/toolAfter(), …)` trees
+observe and rewrite each call (see `README.md` *Tool hooks*).
 
 The original single-round rationale — the tree controls retries, visible
 and debuggable; small models make poor recovery choices in an opaque loop —

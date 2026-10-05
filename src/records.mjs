@@ -15,7 +15,7 @@
 
 import {
   isWhen, isUpdate, isMemory, isVersion, isGoback, isGoto, isMax, isCalls, isParameters,
-  isDisableAuto, isToolHookBefore, isToolHookAfter, isDescription, isOptional, isHookTrigger, goback, resolveMax,
+  isDisableAuto, isDescription, isOptional, isHookTrigger, goback, resolveMax,
 } from './markers.mjs';
 
 // --- tree defs ------------------------------------------------------------
@@ -86,12 +86,10 @@ export function takeGate(rawArgs, label) {
   return { gate: marker.cond, args };
 }
 
-// Splice the auto-loop markers (disableAuto(), max(), toolHookBefore/After())
-// out of an argument list, wherever they sit.
+// Splice the auto-loop markers (disableAuto(), max()) out of an argument list,
+// wherever they sit.
 export function takeAuto(args, label) {
   const auto = {};
-  const before = [];
-  const after = [];
   let sawDisable = false;
   let sawMax = false;
   for (let i = 0; i < args.length; ) {
@@ -103,8 +101,6 @@ export function takeAuto(args, label) {
       args.splice(i, 1);
       continue;
     }
-    if (isToolHookBefore(a)) { before.push(a); args.splice(i, 1); continue; }
-    if (isToolHookAfter(a)) { after.push(a); args.splice(i, 1); continue; }
     if (isMax(a)) {
       if (sawMax) throw new TypeError(`${label}: duplicate max()`);
       sawMax = true;
@@ -113,11 +109,6 @@ export function takeAuto(args, label) {
       continue;
     }
     i++;
-  }
-  if (before.length || after.length) {
-    auto.hooks = {};
-    if (before.length) auto.hooks.before = before.map((h) => ({ fn: h.fn, gate: h.gate }));
-    if (after.length) auto.hooks.after = after.map((h) => ({ fn: h.fn, gate: h.gate }));
   }
   return auto;
 }
@@ -346,24 +337,29 @@ export function emitFields(rawArgs, label) {
 }
 
 /**
- * Hook(onEmit()|onHuman(), tree) — a positional declaration (like Register):
- * the hook runs from its point in the sequence onward, in the declaring tree's
- * scope, covering that tree's own emits/pauses and every descendant's. The
- * second argument is the hook tree: a def (Tree(...)), a bare subtree element,
- * or a registered name (a string, resolved at run time via the host loader).
+ * Hook(onEmit()|onHuman()|toolBefore()|toolAfter(), [when(cond)], tree) — a
+ * positional declaration (like Register): the hook runs from its point in the
+ * sequence onward, in the declaring tree's scope, covering that tree's own
+ * events and every descendant's. The tree is a def (Tree(...)), a bare subtree
+ * element, or a registered name (a string, resolved at run time). An optional
+ * when(cond) gate, evaluated with the event seeded, skips the hook for that
+ * event.
  */
 export function hookFields(rawArgs, label) {
-  const args = [...rawArgs];
+  const { gate, args } = takeGate(rawArgs, label);
   const trigger = args.shift();
   if (!isHookTrigger(trigger)) {
-    throw new TypeError(`${label}: first argument must be onEmit() or onHuman()`);
+    throw new TypeError(`${label}: first argument must be onEmit(), onHuman(), toolBefore() or toolAfter()`);
   }
   const tree = args.shift();
   if (tree === undefined) {
-    throw new TypeError(`${label}: second argument must be the hook tree`);
+    throw new TypeError(`${label}: a hook tree is required — a Tree(...), a bare element, or a registered name`);
+  }
+  if (typeof tree === 'function') {
+    throw new TypeError(`${label}: the hook tree must be built at build time (a Tree(...), a bare element, or a name) — a function returning a Tree is not supported`);
   }
   if (args.length !== 0) throw new TypeError(`${label}: too many arguments`);
-  return { trigger: trigger.trigger, tree };
+  return { trigger: trigger.trigger, tree, gate };
 }
 
 export function untilFields(rawArgs, label) {

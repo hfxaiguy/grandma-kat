@@ -199,14 +199,15 @@ Rules of the translation:
   tool call the model emits executes, the results feed back on the prompt's
   thread, and the model is asked again until it answers without calls. A step
   that must act on exactly one call per pass takes `disableAuto()`; `max(n)`
-  bounds the loop (exhaustion throws); `toolHookBefore(fn)` /
-  `toolHookAfter(fn)` observe and rewrite each call — all three pass through
-  as the same-named markers in `Prompt(…)`.
+  bounds the loop (exhaustion throws); positional
+  `Hook(toolBefore()/toolAfter(), [when(cond)], tree)` elements observe and
+  rewrite each call.
 - `** branch: if COND run:` → `Branch(when(m => EXPAND(COND)), SUBTREE)`.
   The COND is expanded into a predicate over the referenced slot. If COND
   says "above is true", bind it to the preceding `--` prompt's named result
-  and normalize with a helper like `isYes`. The SUBTREE is every `||` line up
-  to the branch's closing `***` (same `|` depth as its opening `**`).
+  and normalize with a helper like `isYes`. The SUBTREE is every `||` line
+  until a line returns to the opener's `|` depth (an explicit `***` there is
+  optional).
 - `## NAME: PATH` → import the module at the literal `PATH` and attach its
   tree as a branch. A tree that imports grandma-kat itself exports the built
   tree (`export default Tree(...)`); a dependency-free module exports a

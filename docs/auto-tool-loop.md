@@ -19,9 +19,10 @@ A `Prompt()` with tools runs a **local conversation** by default:
    value is that round's text.
 5. `disableAuto()` on the prompt stops after one round (results recorded,
    never fed back). `max(n[, errFn])` bounds the rounds — default
-   `DEFAULT_MAX` (3) — and exhaustion throws `KnitError`. Hooks run per
-   call: `toolHookBefore([when(cond)], fn)` / `toolHookAfter([when(cond)], fn)`,
-   `fn(m, thread, tool_call)`, mutation-by-return, throws abort.
+   `DEFAULT_MAX` (3) — and exhaustion throws `KnitError`. Positional
+   `Hook(toolBefore()/toolAfter(), [when(cond)], tree)` trees run per call,
+   seeded with `call`; mutation-by-return; throws abort (see the README's
+   *Tool hooks*).
 
 Tool errors are fed back as tool messages (the model can recover), bounded
 by `max()`.
