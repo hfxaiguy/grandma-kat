@@ -198,8 +198,9 @@ export function registerFields(rawArgs, label) {
     throw new TypeError(`${label}: second argument must be a non-empty description (string) — the model reads it`);
   }
   const fn = args.shift();
-  if (typeof fn !== 'function') {
-    throw new TypeError(`${label}: third argument must be the tool function, e.g. (m, args) => result`);
+  const isTree = fn != null && typeof fn === 'object' && fn.kind === 'tree';
+  if (typeof fn !== 'function' && !isTree) {
+    throw new TypeError(`${label}: third argument must be the tool function or a Tree(...), e.g. Register("lookup", "Find a person", (m, args) => …)`);
   }
   let callsList = null;
   let schema = null;
@@ -214,12 +215,15 @@ export function registerFields(rawArgs, label) {
       throw new TypeError(`${label}: unexpected argument — the options are calls(...) and parameters(...)`);
     }
   }
+  if (isTree && callsList) {
+    throw new TypeError(`${label}: a tree-backed register declares its own tools — drop calls(...)`);
+  }
   return {
     name,
     description,
     parameters: schema ?? { type: 'object', properties: {} },
     ...(callsList ? { calls: callsList } : {}),
-    fn,
+    ...(isTree ? { tree: fn } : { fn }),
   };
 }
 

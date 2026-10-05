@@ -1261,6 +1261,38 @@ test('a Call() to a tree tool runs the subtree with seeded args', async () => {
   assert.equal(handler.calls[0].messages[0].content, 'hello Ada'); // seeded slot
 });
 
+test('a Register(...) whose body is a Tree runs in place and resumes through its pause', async () => {
+  const child = Tree(name('cap_child')
+    , Emit(() => 'cap:before')
+    , Human('go')
+    , Emit(m => `cap:after:${m.go}`)
+    , Return(m => ({ went: true, reply: m.go })));
+
+  const handler = scripted([
+    { content: '', tool_calls: [tc('cap', {})] },
+    'host done',
+  ]);
+  const runtime = mockRuntime(handler, { logger: tmpLogger() });
+  const pattern = Tree(name('host')
+    , Register('cap', 'Run the capability; it gates itself', child)
+    , Tools('cap')
+    , Prompt('act', () => 'go')
+    , Memory('seen', m => m.raw.branch.act.toolResults[0].result));
+
+  const first = await grandma.knit(pattern, runtime);
+  assert.equal(first.status, 'waiting');
+  assert.equal(first.humanSlot, 'go');
+
+  const second = await grandma.knit(pattern, {
+    ...runtime,
+    _continuation: first.continuation,
+    humanInput: 'yes',
+  });
+  assert.equal(second.status, undefined);
+  assert.deepEqual(second.memory.seen, { went: true, reply: 'yes' }); // subtree export = tool result
+  assert.equal(handler.calls.length, 2, 'the calling round was replayed, not re-sent');
+});
+
 test('a model tool call to a tree tool returns the subtree export as the tool result', async () => {
   const child = Tree(name('finder'), Prompt(m => `looking for ${m.query}`));
   const handler = scripted([

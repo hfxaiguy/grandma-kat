@@ -885,12 +885,14 @@ async function execPrompt(exec, child, scope, promptResume = null) {
       }
       const resolved = resolveTool(exec, scope, ref.name);
       if (!resolved) throw new KnitError(`unknown tool '${ref.name}'`);
-      if (resolved.kind === 'tool' && resolved.tool.tree !== undefined) {
-        // A tree tool: run the tree in a child scope seeded with the call
-        // args; its exported value is the tool result. A Human() inside
-        // pauses the whole run, and on resume the paused call receives the
-        // resume state so the subtree continues exactly where it stopped.
-        result = await runTreeTool(exec, ref.name, resolved.tool, ref.args, scope, resumeState);
+      const treeSpec = resolved.kind === 'register' ? resolved.entry.tree : resolved.tool?.tree;
+      if (treeSpec !== undefined) {
+        // A tree tool — from the runtime registry or a tree-backed Register:
+        // run the tree in a child scope seeded with the call args; its
+        // exported value is the tool result. A Human() inside pauses the whole
+        // run, and on resume the paused call receives the resume state so the
+        // subtree continues exactly where it stopped.
+        result = await runTreeTool(exec, ref.name, { tree: treeSpec }, ref.args, scope, resumeState);
       } else {
         // A register gets the call-site view and its declared tools; its
         // `memory` patch is applied and stripped (the stored result is
@@ -1035,11 +1037,13 @@ async function execCall(exec, child, scope, callResume = null) {
     : child.argsFn;
   const resolved = resolveTool(exec, scope, child.tool);
   if (!resolved) throw new KnitError(`unknown tool '${child.tool}' (called from '${child.name}')`);
-  if (resolved.kind === 'tool' && resolved.tool.tree !== undefined) {
-    // A Call() to a tree tool runs the subtree in place — the argument is
-    // the tree's name (a registered/dynamically loaded tree) or a def. A
-    // pause inside resumes through the structural branch machinery.
-    const result = await runTreeTool(exec, child.tool, resolved.tool, args, scope, callResume);
+  const treeSpec = resolved.kind === 'register' ? resolved.entry.tree : resolved.tool?.tree;
+  if (treeSpec !== undefined) {
+    // A Call() to a tree tool (runtime registry or a tree-backed Register) runs
+    // the subtree in place — the argument is the tree's name (a registered/
+    // dynamically loaded tree) or a def. A pause inside resumes through the
+    // structural branch machinery.
+    const result = await runTreeTool(exec, child.tool, { tree: treeSpec }, args, scope, callResume);
     logEvent(exec, 'tool_call', { child: child.name, tool: child.tool, args, result }, scope);
     return { value: result, record: { content: result, tool: child.tool, args, toolResults: [result] } };
   }
@@ -1658,6 +1662,14 @@ function autoname(tree) {
       autoname(child.tree);
     }
   });
+  // A tree-backed register's body is a subtree too: name/register it so resume
+  // can rebuild the level from the branch_path, and recurse into its children.
+  for (const entry of tree.registers ?? []) {
+    if (!entry.tree) continue;
+    if (entry.tree.name == null) entry.tree.name = entry.name;
+    registerTree(entry.tree);
+    autoname(entry.tree);
+  }
 }
 
 function validateTree(tree, warnings) {
