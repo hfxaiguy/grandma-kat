@@ -59,10 +59,14 @@ test('resume auto-names subtrees loaded through loadTree', async () => {
     assert.notEqual(third.status, 'waiting', 'the second checkpoint resumes cleanly');
 
     const db = new DatabaseSync(dbPath, { readOnly: true });
-    const paths = db.prepare("SELECT branch_path FROM calls WHERE kind='human' ORDER BY seq").all().map((r) => r.branch_path);
+    const rows = db.prepare("SELECT branch_path, content FROM calls WHERE kind='human' ORDER BY seq").all();
     db.close();
-    assert.equal(paths.length, 2, 'two pauses were logged');
-    for (const p of paths) {
+    const pauses = rows.filter((r) => !JSON.parse(r.content).delivered);
+    const replies = rows.filter((r) => JSON.parse(r.content).delivered);
+    assert.equal(pauses.length, 2, 'two pauses were logged');
+    assert.equal(replies.length, 2, 'each reply is recorded on delivery');
+    for (const r of rows) {
+      const p = r.branch_path;
       assert.ok(!p.endsWith('/') && !p.includes('//') && !p.includes('undefined'), `no empty branch_path segment: ${JSON.stringify(p)}`);
     }
   } finally {

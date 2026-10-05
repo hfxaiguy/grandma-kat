@@ -308,6 +308,22 @@ export async function resume(checkpointId, runtime) {
     const isButton = typeof runtime.humanInput === 'string' && offeredButtons.includes(runtime.humanInput);
     const redirect = isButton ? null : await fireHumanHooks(exec, resumeState, runtime.humanInput);
     if (redirect) applyRedirect(resumeState, redirect);
+    // A normal reply is injected into the paused slot and the tree resumes PAST
+    // the Human element, so nothing else records what the user actually said.
+    // Log it here (reusing the pause row's path/scope) so read_runs
+    // { type: 'human' } can recall inputs, not only waits. An armed/redirected
+    // delivery is logged by execHuman itself — don't double up.
+    if (!redirect && runtime.humanInput != null) {
+      exec.logger.log({
+        run_id: exec.runId,
+        definition_id: exec.defId,
+        branch_path: humanEvent.branch_path ?? '',
+        iteration: humanEvent.iteration ?? 0,
+        scope_id: humanEvent.scope_id ?? null,
+        kind: 'human',
+        content: { child: resumeState.humanSlot, delivered: true, value: runtime.humanInput },
+      });
+    }
     try {
       const outcome = await execTree(exec, stack[0].tree, rootScope, rootScope, resumeState);
       logger.deleteCheckpoint(checkpointId);
@@ -615,7 +631,7 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
           delete scope.armed[child.name];
           scope.slots[child.name] = value;
           scope.raw[child.name] = { content: value };
-          logEvent(exec, 'human', { child: child.name, delivered: true }, scope);
+          logEvent(exec, 'human', { child: child.name, delivered: true, value }, scope);
           outcome = { value, record: { content: value } };
         } else {
         const context = child.contextFn
