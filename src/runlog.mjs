@@ -13,8 +13,13 @@
 //               until you have picked a row worth reading.
 //   deps      — the provenance graph around one `llm_call`/`record`: the memory
 //               slots it read (`content.reads`) and, for each, the row that
-//               wrote it — walked `depth` levels back. Answers "why did the
-//               prompt say that".
+//               wrote it — walked `depth` levels back. Anchor on a `seq`, or on
+//               a `slot` (its latest write). Returns `edges` plus `leaves` — the
+//               reached rows with no `reads`, i.e. the ground facts. Answers
+//               "why did the prompt say that".
+//   readers   — the rows that read a given memory slot (forward provenance):
+//               every record/llm_call whose `reads` names the slot — the
+//               staleness probe ("what depends on this?").
 //
 // The read is by `seq` (the table's primary key); condensed returns each row's
 // seq so it can be handed to expanded.
@@ -116,6 +121,9 @@ const shapeTraceEvent = (r) => ({
 // ── deps mode: the read-graph (provenance) ──────────────────────────────
 
 const MAX_DEPTH = 8;
+// Cap the walk's fan-out too: each edge costs a row lookup, and one record can
+// read dozens of slots.
+const MAX_BREADTH = 50;
 
 /** The `reads` array on a logged llm_call / record (provenance), or []. */
 const parseReads = (content) => {
@@ -144,12 +152,128 @@ const depEdge = (from, read, producer) => ({
 
 const clampDepth = (depth) => Math.min(Math.max(Number.isInteger(depth) && depth > 0 ? depth : 1, 1), MAX_DEPTH);
 
-const depsResult = (root, edges) => ({
+const depsResult = (root, edges, leaves) => ({
   run_id: root.run_id,
   when: when(root.run_id),
   root: shapeDepNode(root),
   edges,
+  leaves,
 });
+
+/** deps with a `slot` anchor: the slot's latest write becomes the root. */
+function slotAnchorQuery(args) {
+  const params = [String(args.slot)];
+  let sql =
+    "SELECT run_id, definition_id, seq, kind, content FROM calls " +
+    "WHERE kind = 'record' AND json_valid(content) AND json_extract(content, '$.child') = ?";
+  if (args.run_id) {
+    sql += ' AND run_id = ?';
+    params.push(args.run_id);
+  }
+  return { sql: `${sql} ORDER BY seq DESC LIMIT 1`, params };
+}
+
+/** readers: rows whose `reads` names the slot (forward provenance). */
+function readersQuery(args) {
+  const params = [String(args.slot)];
+  const where = [
+    'json_valid(content)',
+    "json_type(content, '$.reads') = 'array'",
+    "EXISTS (SELECT 1 FROM json_each(content, '$.reads') r WHERE json_extract(r.value, '$.name') = ?)",
+  ];
+  if (args.run_id) {
+    where.push('run_id = ?');
+    params.push(args.run_id);
+  }
+  const sql =
+    `SELECT run_id, definition_id, seq, kind, content FROM calls WHERE ${where.join(' AND ')} ` +
+    'ORDER BY seq DESC LIMIT ?';
+  params.push(takeLimit(args.limit));
+  return { sql, params };
+}
+
+/** deps root: a slot's latest write, or the row at `seq`. */
+function resolveDepsRoot(args, getEvent, getSlotWriter) {
+  if (args.slot != null) {
+    const root = getSlotWriter(args);
+    if (!root) throw new Error(`deps mode: no record write for slot '${args.slot}'`);
+    return root;
+  }
+  const anchor = requireAnchor(args, 'deps');
+  const root = getEvent(anchor);
+  if (!root) throw new Error(`no event at seq ${anchor}`);
+  return root;
+}
+
+/**
+ * Walk the read-graph back from `root`, depth- and breadth-bounded. Collects
+ * `leaves`: reached rows with no `reads` of their own — the ground facts a
+ * context generator should consume.
+ */
+function collectDeps(root, depth, getEvent) {
+  const edges = [];
+  const leaves = [];
+  const leafSeen = new Set();
+  const noteLeaf = (row) => {
+    if (row && parseReads(row.content).length === 0 && !leafSeen.has(row.seq)) {
+      leafSeen.add(row.seq);
+      leaves.push(shapeDepNode(row));
+    }
+  };
+  noteLeaf(root);
+  const visited = new Set([root.seq]);
+  let frontier = [root.seq];
+  for (let d = 0; d < depth && frontier.length && edges.length < MAX_BREADTH; d += 1) {
+    const next = [];
+    for (const from of frontier) {
+      for (const read of parseReads(getEvent(from)?.content)) {
+        if (edges.length >= MAX_BREADTH) break;
+        const producer = Number.isInteger(read.seq) ? getEvent(read.seq) : null;
+        edges.push(depEdge(from, read, producer));
+        noteLeaf(producer);
+        if (Number.isInteger(read.seq) && !visited.has(read.seq)) {
+          visited.add(read.seq);
+          if (next.length < MAX_BREADTH) next.push(read.seq);
+        }
+      }
+    }
+    frontier = next;
+  }
+  return depsResult(root, edges, leaves);
+}
+
+/** collectDeps over an async query (the browser path). */
+async function collectDepsAsync(root, depth, getEvent) {
+  const edges = [];
+  const leaves = [];
+  const leafSeen = new Set();
+  const noteLeaf = (row) => {
+    if (row && parseReads(row.content).length === 0 && !leafSeen.has(row.seq)) {
+      leafSeen.add(row.seq);
+      leaves.push(shapeDepNode(row));
+    }
+  };
+  noteLeaf(root);
+  const visited = new Set([root.seq]);
+  let frontier = [root.seq];
+  for (let d = 0; d < depth && frontier.length && edges.length < MAX_BREADTH; d += 1) {
+    const next = [];
+    for (const from of frontier) {
+      for (const read of parseReads((await getEvent(from))?.content)) {
+        if (edges.length >= MAX_BREADTH) break;
+        const producer = Number.isInteger(read.seq) ? await getEvent(read.seq) : null;
+        edges.push(depEdge(from, read, producer));
+        noteLeaf(producer);
+        if (Number.isInteger(read.seq) && !visited.has(read.seq)) {
+          visited.add(read.seq);
+          if (next.length < MAX_BREADTH) next.push(read.seq);
+        }
+      }
+    }
+    frontier = next;
+  }
+  return depsResult(root, edges, leaves);
+}
 
 function takeLimit(limit) {
   return Number.isInteger(limit) && limit > 0 ? limit : DEFAULT_LIMIT;
@@ -235,8 +359,11 @@ const READ_RUNS_DESCRIPTION =
   'mode "expanded": given a row seq from a condensed result, the trace around it ' +
   '(llm calls, tool calls, results, records) that produced it — including the exact change ' +
   'a tool made, e.g. an upsert_contact diff of added/replaced fields. ' +
-  'mode "deps": given the seq of an llm_call or record, the memory slots it read and, for each, ' +
-  'the row that produced it (`edges`), walking back `depth` levels — why a prompt said what it said. ' +
+  'mode "deps": the memory slots an llm_call/record read and, for each, the row that produced it ' +
+  '(`edges`), walking back `depth` levels, plus `leaves` — the reached rows with no reads, i.e. the ' +
+  'ground facts. Anchor on the row\'s `seq`, or on a `slot` (its latest write). ' +
+  'mode "readers": given a `slot`, the rows whose reads name it (forward provenance — what depends ' +
+  'on this value. ' +
   "The log records what the agent DID; for a contact's CURRENT state use the contacts tree " +
   'or get_contact instead.';
 
@@ -245,9 +372,9 @@ const readRunsParameters = (defaultLimit) => ({
   properties: {
     mode: {
       type: 'string',
-      enum: ['condensed', 'expanded', 'deps'],
+      enum: ['condensed', 'expanded', 'deps', 'readers'],
       description:
-        'condensed (default) = the most recent log rows, all kinds unless `type` is given; expanded = the trace around one row; deps = the memory slots one row read. Call condensed first.',
+        'condensed (default) = the most recent log rows, all kinds unless `type` is given; expanded = the trace around one row; deps = the memory slots one row read (backward provenance); readers = the rows that read a slot (forward provenance).',
     },
     type: {
       oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }],
@@ -263,6 +390,7 @@ const readRunsParameters = (defaultLimit) => ({
     after: { type: 'integer', description: 'condensed: only rows with seq > after (newer).' },
     run_id: { type: 'string', description: 'condensed: restrict to one run (e.g. a caller-list session).' },
     seq: { type: 'integer', description: 'expanded/deps: the seq of the row to read (copy it from a condensed result).' },
+    slot: { type: 'string', description: 'deps/readers: anchor on this memory-slot name — deps walks back from its latest write; readers lists the rows that read it.' },
     window: { type: 'integer', description: 'expanded: take ±N events around the row instead of the enclosing step.' },
     depth: { type: 'integer', description: `deps: how many levels of the read-graph to walk back (default 1, max ${MAX_DEPTH}).` },
   },
@@ -282,31 +410,24 @@ function expandSync(db, args) {
 }
 
 function depsSync(db, args) {
-  const anchor = requireAnchor(args, 'deps');
   const getEvent = (seq) => db.prepare(SQL.anchor).get(seq);
-  const root = getEvent(anchor);
-  if (!root) throw new Error(`no event at seq ${anchor}`);
-  const depth = clampDepth(args.depth);
-  const edges = [];
-  const visited = new Set([anchor]);
-  let frontier = [anchor];
-  for (let d = 0; d < depth && frontier.length; d += 1) {
-    const next = [];
-    for (const from of frontier) {
-      for (const read of parseReads(getEvent(from)?.content)) {
-        const producer = Number.isInteger(read.seq) ? getEvent(read.seq) : null;
-        edges.push(depEdge(from, read, producer));
-        if (Number.isInteger(read.seq) && !visited.has(read.seq)) { visited.add(read.seq); next.push(read.seq); }
-      }
-    }
-    frontier = next;
-  }
-  return depsResult(root, edges);
+  const root = resolveDepsRoot(args, getEvent, (a) => {
+    const { sql, params } = slotAnchorQuery(a);
+    return db.prepare(sql).get(...params);
+  });
+  return collectDeps(root, clampDepth(args.depth), getEvent);
+}
+
+function readersSync(db, args) {
+  if (args.slot == null) throw new Error('readers mode needs a slot');
+  const { sql, params } = readersQuery(args);
+  return { rows: db.prepare(sql).all(...params).map(shapeRow) };
 }
 
 function runSync(db, args = {}) {
   if (args.mode === 'expanded') return expandSync(db, args);
   if (args.mode === 'deps') return depsSync(db, args);
+  if (args.mode === 'readers') return readersSync(db, args);
   const { sql, params } = buildRecent(args);
   return { rows: db.prepare(sql).all(...params).map(shapeRow) };
 }
@@ -325,31 +446,31 @@ async function expandAsync(query, args) {
 }
 
 async function depsAsync(query, args) {
-  const anchor = requireAnchor(args, 'deps');
   const getEvent = async (seq) => (await query(SQL.anchor, [seq]))[0];
-  const root = await getEvent(anchor);
-  if (!root) throw new Error(`no event at seq ${anchor}`);
-  const depth = clampDepth(args.depth);
-  const edges = [];
-  const visited = new Set([anchor]);
-  let frontier = [anchor];
-  for (let d = 0; d < depth && frontier.length; d += 1) {
-    const next = [];
-    for (const from of frontier) {
-      for (const read of parseReads((await getEvent(from))?.content)) {
-        const producer = Number.isInteger(read.seq) ? await getEvent(read.seq) : null;
-        edges.push(depEdge(from, read, producer));
-        if (Number.isInteger(read.seq) && !visited.has(read.seq)) { visited.add(read.seq); next.push(read.seq); }
-      }
-    }
-    frontier = next;
+  let root;
+  if (args.slot != null) {
+    const { sql, params } = slotAnchorQuery(args);
+    root = (await query(sql, params))[0];
+    if (!root) throw new Error(`deps mode: no record write for slot '${args.slot}'`);
+  } else {
+    const anchor = requireAnchor(args, 'deps');
+    root = await getEvent(anchor);
+    if (!root) throw new Error(`no event at seq ${anchor}`);
   }
-  return depsResult(root, edges);
+  return collectDepsAsync(root, clampDepth(args.depth), getEvent);
+}
+
+async function readersAsync(query, args) {
+  if (args.slot == null) throw new Error('readers mode needs a slot');
+  const { sql, params } = readersQuery(args);
+  const rows = await query(sql, params);
+  return { rows: rows.map(shapeRow) };
 }
 
 async function runAsync(query, args = {}) {
   if (args.mode === 'expanded') return expandAsync(query, args);
   if (args.mode === 'deps') return depsAsync(query, args);
+  if (args.mode === 'readers') return readersAsync(query, args);
   const { sql, params } = buildRecent(args);
   const rows = await query(sql, params);
   return { rows: rows.map(shapeRow) };

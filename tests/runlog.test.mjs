@@ -192,10 +192,137 @@ test('the async (browser) path matches the Node path', async () => {
   }
 });
 
-test('the tool description advertises both modes and the type filter', () => {
-  const { description } = runLogTools('/whatever.db')[0];
+/**
+ * A provenance chain: a leaf fact (no reads), a context built from it, then the
+ * context rebuilt from both the prior context and the fact.
+ */
+function seedReads(dbPath) {
+  const logger = createLogger(dbPath, 'none');
+  const run = '2026-10-02_20-00-00-1';
+  const log = (kind, content) =>
+    logger.log({ run_id: run, definition_id: 'trunk:def', branch_path: 'x', iteration: 1, scope_id: 1, kind, content });
+  const fact = log('record', { child: 'source_msg', value: 'user said Kevin prefers email', op: 'memory' });
+  const once = log('record', {
+    child: 'auto_running_context',
+    value: 'Kevin: prefers email',
+    op: 'memoryUpdate',
+    reads: [{ name: 'source_msg', seq: fact, scope: 1 }],
+  });
+  const twice = log('record', {
+    child: 'auto_running_context',
+    value: 'Kevin: prefers email; enriched 360',
+    op: 'memoryUpdate',
+    reads: [
+      { name: 'auto_running_context', seq: once, scope: 1 },
+      { name: 'source_msg', seq: fact, scope: 1 },
+    ],
+  });
+  logger.close();
+  return { run, fact, once, twice };
+}
+
+test('deps anchors on a slot (its latest write) and returns the leaves', () => {
+  const dbPath = tmpDbPath();
+  const { fact, once, twice } = seedReads(dbPath);
+  try {
+    const bySlot = readRuns(dbPath).execute({ mode: 'deps', slot: 'auto_running_context', depth: 2 });
+    const bySeq = readRuns(dbPath).execute({ mode: 'deps', seq: twice, depth: 2 });
+
+    assert.equal(bySlot.root.seq, twice, 'the slot anchor resolves to its latest write');
+    assert.deepEqual(bySlot.edges, bySeq.edges, 'slot anchor == seq anchor');
+    assert.deepEqual(bySlot.leaves.map((l) => l.seq), [fact], 'the no-reads producer is the ground fact');
+    assert.equal(bySlot.leaves[0].child, 'source_msg');
+    assert.ok(bySlot.edges.some((e) => e.from === once && e.to === fact), 'the second level is walked');
+
+    // depth 1 stops before descending through `once`.
+    const shallow = readRuns(dbPath).execute({ mode: 'deps', slot: 'auto_running_context', depth: 1 });
+    assert.ok(shallow.edges.some((e) => e.to === once));
+    assert.ok(!shallow.edges.some((e) => e.from === once), 'depth 1 does not descend');
+    assert.deepEqual(shallow.leaves.map((l) => l.seq), [fact]);
+
+    // Unknown slot → error, not a crash.
+    assert.match(readRuns(dbPath).execute({ mode: 'deps', slot: 'nope' }).error, /no record write for slot/);
+  } finally {
+    cleanup(dbPath);
+  }
+});
+
+test('readers lists the rows that read a slot (forward provenance)', () => {
+  const dbPath = tmpDbPath();
+  const { once, twice } = seedReads(dbPath);
+  try {
+    assert.deepEqual(
+      readRuns(dbPath).execute({ mode: 'readers', slot: 'source_msg' }).rows.map((r) => r.seq),
+      [twice, once],
+      'both derived rows read the fact, newest first',
+    );
+    assert.deepEqual(
+      readRuns(dbPath).execute({ mode: 'readers', slot: 'auto_running_context' }).rows.map((r) => r.seq),
+      [twice],
+    );
+    assert.equal(readRuns(dbPath).execute({ mode: 'readers', slot: 'nobody' }).rows.length, 0);
+    assert.match(readRuns(dbPath).execute({ mode: 'readers' }).error, /needs a slot/);
+  } finally {
+    cleanup(dbPath);
+  }
+});
+
+test('deps caps the walk breadth', () => {
+  const dbPath = tmpDbPath();
+  const logger = createLogger(dbPath, 'none');
+  const run = '2026-10-02_21-00-00-1';
+  const log = (content) =>
+    logger.log({ run_id: run, definition_id: 'trunk:def', branch_path: 'x', iteration: 1, scope_id: 1, kind: 'record', content });
+  const producers = [];
+  for (let i = 0; i < 60; i += 1) producers.push(log({ child: `s${i}`, value: `v${i}`, op: 'memory' }));
+  const fan = log({
+    child: 'fan',
+    value: 'x',
+    op: 'memoryUpdate',
+    reads: producers.map((seq, i) => ({ name: `s${i}`, seq })),
+  });
+  logger.close();
+  try {
+    const out = readRuns(dbPath).execute({ mode: 'deps', seq: fan, depth: 1 });
+    assert.equal(out.edges.length, 50, 'breadth capped at MAX_BREADTH');
+  } finally {
+    cleanup(dbPath);
+  }
+});
+
+test('the async (browser) path mirrors slot deps and readers', async () => {
+  const dbPath = tmpDbPath();
+  seedReads(dbPath);
+  try {
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      const q = async (sql, params) => db.prepare(sql).all(...params);
+      const tool = runLogToolFromQuery(q);
+
+      const dSync = readRuns(dbPath).execute({ mode: 'deps', slot: 'auto_running_context', depth: 2 });
+      const dAsync = await tool.execute({ mode: 'deps', slot: 'auto_running_context', depth: 2 });
+      assert.deepEqual(dAsync.edges, dSync.edges);
+      assert.deepEqual(dAsync.leaves, dSync.leaves);
+
+      const rSync = readRuns(dbPath).execute({ mode: 'readers', slot: 'source_msg' });
+      const rAsync = await tool.execute({ mode: 'readers', slot: 'source_msg' });
+      assert.deepEqual(rAsync.rows.map((r) => r.seq), rSync.rows.map((r) => r.seq));
+    } finally {
+      db.close();
+    }
+  } finally {
+    cleanup(dbPath);
+  }
+});
+
+test('the tool description advertises every mode and the type filter', () => {
+  const { description, parameters } = runLogTools('/whatever.db')[0];
   assert.match(description, /condensed/);
   assert.match(description, /expanded/);
+  assert.match(description, /deps/);
+  assert.match(description, /readers/);
   assert.match(description, /type/);
   assert.match(description, /CURRENT state/i);
+  assert.equal(parameters.properties.mode.enum.includes('readers'), true);
+  assert.equal(parameters.properties.slot.type, 'string');
 });
