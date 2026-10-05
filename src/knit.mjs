@@ -1144,7 +1144,19 @@ async function loadNamedTree(runtime, name) {
 
 /** Resume-time resolution: the registry is authoritative (hosts reload it), loadTree is the restart fallback. */
 async function resolveTreeForResume(name, runtime) {
-  if (Tree.has(name)) return registered(name);
+  if (Tree.has(name)) {
+    // The registry is authoritative, but a host may have registered the def
+    // directly (BOB registers every app/pattern tree at startup) without the
+    // build pass that names and registers its subtrees. A resume stack
+    // references those subtrees by the auto-names they got on the run that
+    // paused, so normalize the cached def before returning it.
+    const cached = registered(name);
+    if (cached && Array.isArray(cached.children)) {
+      autoname(cached);
+      registerTree(cached);
+    }
+    return cached;
+  }
   const loadTree = runtime?.loadTree;
   if (typeof loadTree === 'function') {
     try {
