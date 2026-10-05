@@ -25,8 +25,8 @@ tracking method boundaries.
 | `#->` | `#-> lookup: "Find a person by name"` | register an inline tool, usable from its point onward (positional) and scoped like a memory slot (inherited by its subtree, overridable by a child) | `Register("lookup", "Find a person by name", (m, args, tools) => …, calls(...), parameters({ … }))` | name literal; the description `"..."` verbatim; the body is JavaScript at the call site; `calls(...)` and `parameters(...)` are markers |
 | `??` | `?? check: X holds; else goto draft_plan (max 3)` | guard the chunk above; on failure jump to a named child | `Check(m => EXPAND(COND), goto("NAME", max(k)))` | condition **expanded**; the `goto` target and max are literal |
 | `@@` | `@@ upsert_rows: batch_rows` | run the subtree once per array element | `Each("upsert_rows", m => m.batch_rows, SUBTREE)` | name literal; the array is a memory/branch reference |
-| `**` | `** branch: if X is true, run:` or `**` | conditional or unconditional subtree, **closed by `***`** | `Branch(when(cond), SUBTREE)` or `Branch(SUBTREE)` — the subtree may be unnamed | condition text **expanded** when present |
-| `***` | `***` | close the nearest open `**` branch — written at the **same `\|` depth as its opening `**`** | ends the `Branch(...)` subtree | — |
+| `**` | `** branch: if X is true, run:` or `**` | conditional or unconditional subtree, **ends by dedent** (an explicit `***` is optional) | `Branch(when(cond), SUBTREE)` or `Branch(SUBTREE)` — the subtree may be unnamed | condition text **expanded** when present |
+| `***` | `***` | *optional*: explicitly close the nearest open `**` branch — written at the **same `\|` depth as its opening `**`** | ends the `Branch(...)` subtree (redundant with dedent) | — |
 | `##` | `## contacts: app/contacts/tree.mjs` | import and attach another tree | import its default tree, then `Branch(importedTree)` — or, once registered, `From("name", memory(fn)?)` | tree name and module path are literal |
 | `\|\|` | `\|\| prompt: ...` | child of the `**`/`()` block above | whatever the indented kind says | — |
 | `()` | `()` … `() goto NAME until COND (max n)` | loop — repeat the enclosed body, jumping back to a named child | a `Branch` whose trailing `Until(goto("NAME"), cond, max(n))` rewinds to that child | the closing `()` carries the target and the exit condition |
@@ -51,8 +51,10 @@ the notation never relies on an implicit rewind. The target is a named child
 
 A chunk is either a single element, or a `**` branch node plus its children.
 Multiple elements that conceptually do one thing can live in one chunk, but
-the notation keeps it to one line for readability. The closing `***` is a
-**delimiter**, not a chunk — it just ends the branch it matches.
+the notation keeps it to one line for readability. A branch ends by **dedent**
+(the next line back at its opener's `|` depth), exactly as `@@` does — so a
+closing `***` is optional; written, it is a **delimiter** that makes the end
+explicit.
 
 A `//` line is **not a chunk** either: it is a comment and drops out before
 translation. It may sit on its own line (at any `|` depth) or trail a chunk on
@@ -80,19 +82,20 @@ forcing the answer format the rest of the tree depends on.
 
 Indentation is expressed as a `|`-prefix on the start of the line, not
 whitespace. One `|` = one level deep, two `||` = two, etc. A `**` branch
-`run:` line opens a level and its closing `***` ends it at that same depth;
-every following `||` line is a child of it.
+`run:` line opens a level; every following `||` line is a child of it, and the
+branch ends when a line returns to the opener's depth. A `***` at that depth
+is an optional explicit closer.
 
 ```
 -- prompt: is X a person?          (level 0)
 ** branch: if yes, run:            (level 0, opens level 1)
 || prompt: what info about X?      (level 1 — child of the branch)
-***                                (level 0, closes the branch)
+***                                (level 0, optional closer)
 ```
 
-A bare `**` opens an unconditional grouping level, closed by `***` the same
-way. A `()` loop opens a level too; the body is the `||` lines between the
-opening `()` and the closing `()`:
+A bare `**` opens an unconditional grouping level, ended by dedent the same
+way (or by a `***`). A `()` loop opens a level too; the body is the `||` lines
+between the opening `()` and the closing `()`:
 
 ```
 ()                                             (level 0, opens level 1)
@@ -215,8 +218,8 @@ Rules of the translation:
   host builds with its own API — hosts accept both. The imported tree must
   have a stable name and communicate through ordinary memory, branch results,
   and visible Grandma KAT events.
-- Bare `**` → an unconditional grouping branch: `Branch(SUBTREE)`, closed by
-  its `***`. Subtrees do
+- Bare `**` → an unconditional grouping branch: `Branch(SUBTREE)`, ending at
+  dedent (an explicit `***` is optional). Subtrees do
   **not** need `name()`: an unnamed subtree takes its child's auto name
   (`${parent}#${k}`, k = 1-based child position) and is registered so resume
   can find it. Name the subtree only when the sketch names it or the parent

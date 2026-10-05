@@ -27,7 +27,7 @@ form. This file shows line → chunk → the element it becomes and why.
 | `-- prompt: ...` | detect person | `Branch(Tree(name("scan_input"), Prompt(...)))` | Named branch so `**` can reference it; prompt expanded to force `yes/no`. |
 | `** branch: if above is true` | gated branch | `Branch(when(m => isYes(m.branch.scan_input)), Tree(name("summarize_people"), …))` | "above" binds to `scan_input`. |
 | `\|\| prompt: ...` | summarize | inner `Prompt(...)` | Child of `summarize_people`. |
-| `***` | close the branch | — | Delimiter, not a chunk: ends `summarize_people`, at the same depth as its `**`. |
+| `***` | close the branch *(optional)* | — | Delimiter, not a chunk: ends `summarize_people` at the same depth as its `**`. The branch also ends by dedent, so this closer may be omitted. |
 
 ## The translation decisions, spelled out
 

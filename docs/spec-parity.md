@@ -86,15 +86,17 @@ re-document them here — the short map:
 | `#-> NAME: "desc"` | `Register("NAME", "desc", fn, calls(…), parameters(…))` |
 | `?? check:` | `Check(fn, goto("NAME", max(k)))` |
 | `@@ NAME: array` | `Each("NAME", m => m.array, SUBTREE)` |
-| `**` … `***` | `Branch(when(cond)?, SUBTREE)` — **closed by `***` at the opener's depth** |
+| `**` … `***`? | `Branch(when(cond)?, SUBTREE)` — **ends by dedent; a `***` at the opener's depth is an optional explicit closer** |
 | `## NAME: path` | import + `Branch(importedTree)` / `From("NAME", …)` |
 | `\|\|` | a child of the enclosing block |
 | `()` … `() goto NAME until COND (max n)` | `Branch(… Until(goto("NAME"), cond, max(n)))` |
 | `<<` / `>>` | `Emit(fn)` / `Human("NAME")` |
 
-The **`***` closer** is new: a `**` branch ends at the `***` written at the
-same `|` depth as its opener. `()` loops keep their `() goto`/`() until`
-closer. Single-line branch forms (`--`, `##`) take no closer.
+A `**` branch ends by **dedent**: at the first line whose `|` depth returns to
+the opener's. A `***` written at that depth is an **optional** explicit
+closer (like `@@`, a `**` block may omit it). `()` loops keep their
+`() goto`/`() until` closer — it carries the loop's data, so it is required.
+Single-line branch forms (`--`, `##`) take no closer.
 
 ## Translating (the recipe)
 
@@ -133,7 +135,7 @@ concrete markers, not vibes:
 - For each `## <name>: <path>` header, does the file exist and export that tree?
 - For each `!!`, `++`, `--`, `->`, `#->`, `@@`, `**`, `()`, `<<`, `>>` line, is
   there a corresponding element in the `.mjs` (find its inline comment)?
-- For each `**` is there a matching `***` at the right depth in the sketch?
+- Does every `**` branch end at the right `|` depth (by dedent, or at an explicit `***`)?
 
 **Code → spec** (is every code step in the sketch?):
 - Walk the `.mjs` elements; each should name a notation line in its comment.
@@ -149,7 +151,7 @@ paper over becomes a lie.
 
 - [ ] `## <name>: <path>` header matches the file and the exported tree name.
 - [ ] Element order matches the notation order (including `Needs` at the top).
-- [ ] Every `**` has a `***`; every `()` has its `() goto … until …`.
+- [ ] Every `**` ends at its opener's depth (dedent, or an optional `***`); every `()` has its `() goto … until …`.
 - [ ] Declared slots (`++`) vs updated slots (`++` / `++!`) match `Memory(name, …)`
       vs `Memory(update(), name, …)` in the code.
 - [ ] Every `** if COND` maps to a `when(cond)` on the same element.
