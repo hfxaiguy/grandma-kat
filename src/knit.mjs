@@ -756,6 +756,24 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
   }
 }
 
+// Evaluate `fn(view)` with a view that records the memory slots it reads, so
+// the log can link the result — a prompt's messages, a derived Memory value —
+// to the writes that produced it. Each read carries the owning scope id and
+// the seq of that slot's last write (`Scope.wrote`), so the link names an
+// exact log row; a slot with no recorded write (a host seed) has seq null.
+async function withReads(scope, fn) {
+  const reads = [];
+  const seen = new Set();
+  const view = makeView(scope, (name, owner) => {
+    const key = `${owner.id}\u0000${name}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    reads.push({ name, scope: owner.id, seq: owner.wrote?.[name] ?? null });
+  });
+  const value = await fn(view);
+  return { value, reads };
+}
+
 async function execPrompt(exec, child, scope, promptResume = null) {
   const levelEntry = exec.stack[exec.stack.length - 1];
   const replay = promptResume ? (levelEntry?.replay ?? null) : null;
@@ -822,6 +840,7 @@ async function execPrompt(exec, child, scope, promptResume = null) {
     thread = (rc.messages ?? []).map((m) => ({ ...m }));
     rounds = 1;
     record.model = rc.model ?? null;
+    record.reads = Array.isArray(rc.reads) ? rc.reads : [];
     for (const tc of response.tool_calls ?? []) {
       record.toolCalls.push({ id: tc.id, name: tc.function?.name, arguments: tc.function?.arguments });
     }
@@ -834,11 +853,13 @@ async function execPrompt(exec, child, scope, promptResume = null) {
       record.toolResults.push({ name: tr.tool, result: tr.result, isError: tr.isError === true });
     }
   } else {
-    // Fresh path: the prompt value opens the local thread.
-    const value = typeof child.prompt === 'function'
-      ? await callFn(child.prompt, view, `prompt fn of '${child.name}'`)
-      : child.prompt;
-    thread = normalizeMessages(value);
+    // Fresh path: the prompt value opens the local thread. Capture which
+    // memory slots the prompt fn read and attach them as `reads` (provenance).
+    const captured = typeof child.prompt === 'function'
+      ? await withReads(scope, (v) => callFn(child.prompt, v, `prompt fn of '${child.name}'`))
+      : { value: child.prompt, reads: [] };
+    thread = normalizeMessages(captured.value);
+    record.reads = captured.reads;
   }
 
   // One tool call: positional tool hooks → resolve + execute (+ register
@@ -926,6 +947,7 @@ async function execPrompt(exec, child, scope, promptResume = null) {
         child: child.name, round: rounds, model: c.modelName,
         messages: thread,
         content: response.content, reasoning: response.reasoning, toolCalls: response.tool_calls ?? null,
+        ...(record.reads?.length ? { reads: record.reads } : {}),
       }, scope);
     }
 
@@ -1304,17 +1326,16 @@ function applyRedirect(resumeState, signal) {
 
 // Writes to a named memory slot AND produces m.prev output (like a prompt).
 async function execMemory(exec, child, scope) {
-  const view = makeView(scope);
   const current = scope.slots[child.name]; // read before write (may be undefined)
-  const value = await callFn(child.fn, view, `memory fn of '${child.name}'`, current);
-  // The write itself is logged once, by record(), with op 'memory'.
-  return { value, record: { content: value }, _op: 'memory' };
+  const captured = await withReads(scope, (v) => callFn(child.fn, v, `memory fn of '${child.name}'`, current));
+  // The write itself is logged once, by record(), with op 'memory'; the reads
+  // ride along so the log links this slot to the writes it derived from.
+  return { value: captured.value, record: { content: captured.value }, _op: 'memory', _reads: captured.reads };
 }
 
 // Like execMemory but the slot must already exist in the scope chain.
 // Updates the slot in the scope where it was found (ancestor or current).
 async function execMemoryUpdate(exec, child, scope) {
-  const view = makeView(scope);
   // Walk the scope chain to find where the slot lives.
   let target = scope;
   while (target) {
@@ -1325,10 +1346,10 @@ async function execMemoryUpdate(exec, child, scope) {
     throw new KnitError(`Memory(update(), '${child.name}'): slot '${child.name}' does not exist in the scope chain — declare it with Memory() first or inject it`);
   }
   const current = target.slots[child.name];
-  const value = await callFn(child.fn, view, `memoryUpdate fn of '${child.name}'`, current);
+  const captured = await withReads(scope, (v) => callFn(child.fn, v, `memoryUpdate fn of '${child.name}'`, current));
   // The write is logged once, by record(), with op 'memoryUpdate' and
   // execScopeId pointing at the scope that ran this child.
-  return { value, record: { content: value }, _slotScope: target, _op: 'memoryUpdate' };
+  return { value: captured.value, record: { content: captured.value }, _slotScope: target, _op: 'memoryUpdate', _reads: captured.reads };
 }
 
 // --- scoped registers ------------------------------------------------
@@ -1418,7 +1439,7 @@ function applyMemoryPatch(exec, scope, patch, toolName) {
       throw new KnitError(`register '${toolName}': memory patch slot '${name}' does not exist in the scope chain — declare it with Memory() first`);
     }
     target.slots[name] = value;
-    logEvent(exec, 'record', {
+    target.wrote[name] = logEvent(exec, 'record', {
       child: name,
       childIndex: null,
       patch: true,
@@ -1507,13 +1528,17 @@ function record(exec, scope, childIndex, name, outcome) {
   // execScopeId is only present when the value lands in a different scope than
   // the one that ran the child (memoryUpdate) — resume uses it to push `prev`
   // on the executing scope, not the slot's.
-  logEvent(exec, 'record', {
+  const seq = logEvent(exec, 'record', {
     child: name,
     childIndex,
     value: outcome.value,
     op: outcome._op ?? 'set',
+    ...(outcome._reads?.length ? { reads: outcome._reads } : {}),
     ...(slotScope !== scope ? { execScopeId: scope.id } : {}),
   }, slotScope);
+  // Provenance: remember which row last wrote the slot, so a read through the
+  // memory view names the exact producer (see withReads).
+  slotScope.wrote[name] = seq;
 }
 
 // goback rewinds m.prev to the jump point; named slots are NOT rewound

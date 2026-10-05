@@ -430,11 +430,36 @@ ORDER BY seq;
 | `branch_path` | path from root, e.g. `agent/draft#1` |
 | `iteration` | loop pass number |
 | `kind` | `record` (every scope write; `content.op` is `set` · `memory` · `memoryUpdate`) · `llm_call` · `tool_call` · `tool_result` · `check` · `gate` · `flow` · … |
-| `content` | JSON — messages, response, tool args/results, check feedback, goback target; for `record`, the written value plus `op` and (for `memoryUpdate`) `execScopeId` |
+| `content` | JSON — messages, response, tool args/results, check feedback, goback target; for `record`, the written value plus `op` and (for `memoryUpdate`) `execScopeId`; `reads` on `llm_call`/`record` names the slots the fn read (provenance) |
 
 Since rewound retries drop outputs from memory, **the log is where dead
 outputs live.** `logLevel: 'info'` gives you a live console trace;
 `'debug'` adds full prompts, reasoning, and gate evaluations.
+
+### Provenance: which writes fed a prompt
+
+A prompt — and a derived `Memory(...)` — logs the memory slots it read, so you
+can walk a value back to the exact row that produced it. Each read is
+`{ name, scope, seq }`: the slot, the owning scope id, and the `seq` of the
+last write to that slot (`null` for a host seed, which has no write row).
+
+- `llm_call.content.reads` — the slots the prompt fn read.
+- `record.content.reads` — the slots a `Memory(...)` / `Memory(update(), …)`
+  fn read; so `Memory('b', m => !!m.a)` links `b` to the row that wrote `a`.
+- `m.raw.prev[0].reads` — the same list, visible to the tree itself.
+
+```sql
+-- every write that fed a prompt, oldest first
+SELECT p.seq AS prompt_seq, j.value->>'$.name' AS slot, j.value->>'$.seq' AS wrote_seq
+FROM calls p, json_each(p.content, '$.reads') j
+WHERE p.kind = 'llm_call'
+ORDER BY CAST(j.value->>'$.seq' AS INTEGER);
+```
+
+`m.branch.x` and a plain `m.x` are the same read (branch results resolve as
+slots). Framework keys (`prev`, `branch`, `raw`, `error`) are not reads. A
+`Memory(update(), 'list', m => [...m.list, x])` reads its own slot — a
+self-edge you can ignore.
 
 ## Testing without a live model
 

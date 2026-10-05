@@ -14,6 +14,7 @@ export class Scope {
     this.parent = parent;
     this.slots = Object.create(null); // name → exported value
     this.raw = Object.create(null); // name → record view
+    this.wrote = Object.create(null); // name → seq of the log event that last wrote it (provenance)
     this.prev = []; // { childIndex, name, value } — most-recent-first
     this.prevRaw = []; // { childIndex, name, record }
     this.error = undefined; // check feedback channel
@@ -27,6 +28,16 @@ export function lookupChain(scope, name) {
     s = s.parent;
   }
   return undefined;
+}
+
+/** Like lookupChain but also reports the scope that owns the binding. */
+export function lookupResolved(scope, name) {
+  let s = scope;
+  while (s) {
+    if (Object.prototype.hasOwnProperty.call(s.slots, name)) return { scope: s, value: s.slots[name] };
+    s = s.parent;
+  }
+  return null;
 }
 
 function rawLookupChain(scope, name) {
@@ -51,9 +62,20 @@ function collectKeys(scope) {
 // The memory object handed to prompt/gate/check/args functions. Framework
 // keys (prev, branch, raw, error) are intercepted; everything else resolves
 // up the scope chain (root inputs, ancestor slots).
-export function makeView(scope) {
+//
+// `onRead(name, ownerScope)` (optional) is called for every slot read through
+// the view — the tap provenance uses to link a prompt (or a derived Memory) to
+// the writes that fed it. Framework keys and the `raw` record view are not
+// reported; `m.branch.x` is, because branch results resolve as slots.
+export function makeView(scope, onRead) {
+  const read = (name) => {
+    const hit = lookupResolved(scope, name);
+    if (hit) onRead?.(name, hit.scope);
+    return hit ? hit.value : undefined;
+  };
+
   const branchProxy = new Proxy(Object.create(null), {
-    get: (_, key) => lookupChain(scope, key),
+    get: (_, key) => read(key),
     has: (_, key) => lookupChain(scope, key) !== undefined,
     ownKeys: () => collectKeys(scope),
     getOwnPropertyDescriptor: () => ({ enumerable: true, configurable: true }),
@@ -75,7 +97,7 @@ export function makeView(scope) {
         };
       }
       if (key === 'error') return scope.error;
-      return lookupChain(scope, key);
+      return read(key);
     },
     has(_, key) {
       return key === 'prev' || key === 'branch' || key === 'raw' || key === 'error'
@@ -94,6 +116,7 @@ export function serializeScopeChain(scope) {
       parentId: s.parent?.id ?? null,
       slots: { ...s.slots },
       raw: { ...s.raw },
+      wrote: { ...s.wrote },
       prev: s.prev.map((e) => ({ ...e })),
       prevRaw: s.prevRaw.map((e) => ({ ...e, record: { ...e.record } })),
       error: s.error,
@@ -114,6 +137,7 @@ export function deserializeScopeChain(serialized) {
     scope.id = s.id;
     scope.slots = { ...s.slots };
     scope.raw = { ...s.raw };
+    scope.wrote = { ...s.wrote };
     scope.prev = s.prev.map((e) => ({ ...e }));
     scope.prevRaw = s.prevRaw.map((e) => ({ ...e, record: { ...e.record } }));
     scope.error = s.error;
