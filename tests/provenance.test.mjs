@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import grandma, { Tree, name, Memory, Prompt, Branch, update } from '../src/index.mjs';
+import grandma, { Tree, name, Memory, Prompt, Branch, update, runLogTools } from '../src/index.mjs';
 import { scripted, mockRuntime } from './helpers.mjs';
 
 function tmpLogger() {
@@ -108,6 +108,38 @@ test('Memory(update()) logs itself as a read and the prompt exposes its reads on
     // The prompt's record carries its reads for the tree (m.raw.prev[0].reads).
     const snap = recordFor(evs, 'snap');
     assert.deepEqual(snap.content.value, call.content.reads, 'record.reads is exposed to the tree');
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
+test('read_runs deps mode walks reads back to their producers', async () => {
+  const dbPath = tmpLogger();
+  try {
+    const pattern = Tree(name('prov_deps'),
+      Memory('a', () => 1),
+      Memory('b', (m) => !!m.a),
+      Prompt('response', (m) => `b=${m.b}`),
+    );
+    await grandma.knit(pattern, mockRuntime(scripted(['ok']), { logger: dbPath }));
+    const evs = events(dbPath);
+    const call = llmCall(evs, 'response');
+    const readRuns = runLogTools(dbPath)[0];
+
+    const one = readRuns.execute({ mode: 'deps', seq: call.seq, depth: 1 });
+    assert.equal(one.root.kind, 'llm_call');
+    assert.deepEqual(one.edges.map((e) => e.name), ['b'], 'depth 1 = the prompt direct reads');
+    assert.equal(one.edges[0].kind, 'record', 'the producer row is the record that wrote b');
+    assert.equal(one.edges[0].to, recordFor(evs, 'b').seq);
+
+    const two = readRuns.execute({ mode: 'deps', seq: call.seq, depth: 2 });
+    const bEdge = two.edges.find((e) => e.name === 'b');
+    const aEdge = two.edges.find((e) => e.from === bEdge.to && e.name === 'a');
+    assert.ok(aEdge, 'depth 2 follows b back to a');
+    assert.equal(aEdge.to, recordFor(evs, 'a').seq, 'and lands on the row that wrote a');
+
+    assert.deepEqual(readRuns.execute({ mode: 'deps' }), { error: "deps mode needs the row's numeric seq" });
+    assert.ok(Array.isArray(readRuns.execute({ mode: 'condensed' }).rows), 'condensed still works (rows)');
   } finally {
     fs.rmSync(dbPath, { force: true });
   }

@@ -448,6 +448,12 @@ last write to that slot (`null` for a host seed, which has no write row).
   fn read; so `Memory('b', m => !!m.a)` links `b` to the row that wrote `a`.
 - `m.raw.prev[0].reads` — the same list, visible to the tree itself.
 
+Query it from the trunk with `read_runs` in `deps` mode (no hand-written SQL):
+`read_runs({ mode: 'deps', seq, depth })` returns the read-graph for one
+`llm_call`/`record` row — `root` plus `edges` of
+`{ from, to, name, scope, kind, child, text }`, walking `depth` levels back
+(default 1, max 8). Or in SQL:
+
 ```sql
 -- every write that fed a prompt, oldest first
 SELECT p.seq AS prompt_seq, j.value->>'$.name' AS slot, j.value->>'$.seq' AS wrote_seq

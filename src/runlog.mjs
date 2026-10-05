@@ -11,6 +11,10 @@
 //   expanded  — the trace around one row: the llm calls, tool calls, results
 //               and records that produced it. You don't pay for those payloads
 //               until you have picked a row worth reading.
+//   deps      — the provenance graph around one `llm_call`/`record`: the memory
+//               slots it read (`content.reads`) and, for each, the row that
+//               wrote it — walked `depth` levels back. Answers "why did the
+//               prompt say that".
 //
 // The read is by `seq` (the table's primary key); condensed returns each row's
 // seq so it can be handed to expanded.
@@ -109,6 +113,44 @@ const shapeTraceEvent = (r) => ({
   snippet: truncate(eventText(r.content)),
 });
 
+// ── deps mode: the read-graph (provenance) ──────────────────────────────
+
+const MAX_DEPTH = 8;
+
+/** The `reads` array on a logged llm_call / record (provenance), or []. */
+const parseReads = (content) => {
+  const c = parse(content);
+  return c && typeof c === 'object' && Array.isArray(c.reads) ? c.reads : [];
+};
+
+/** deps mode: one node of the read-graph. */
+const shapeDepNode = (r) => ({
+  seq: r.seq,
+  kind: r.kind,
+  child: eventChild(r.content),
+  text: truncate(eventText(r.content)),
+});
+
+/** deps mode: one read edge — `from` read slot `name` from `to`'s write. */
+const depEdge = (from, read, producer) => ({
+  from,
+  to: Number.isInteger(read.seq) ? read.seq : null,
+  name: read.name ?? null,
+  scope: read.scope ?? null,
+  kind: producer?.kind ?? null,
+  child: producer ? eventChild(producer.content) : null,
+  text: producer ? truncate(eventText(producer.content)) : null,
+});
+
+const clampDepth = (depth) => Math.min(Math.max(Number.isInteger(depth) && depth > 0 ? depth : 1, 1), MAX_DEPTH);
+
+const depsResult = (root, edges) => ({
+  run_id: root.run_id,
+  when: when(root.run_id),
+  root: shapeDepNode(root),
+  edges,
+});
+
 function takeLimit(limit) {
   return Number.isInteger(limit) && limit > 0 ? limit : DEFAULT_LIMIT;
 }
@@ -168,9 +210,9 @@ function spanFor(seq, prev, next, window) {
   return [prev ? prev.seq + 1 : 0, next ? next.seq - 1 : Number.MAX_SAFE_INTEGER];
 }
 
-/** expanded needs a numeric anchor seq. */
-function requireAnchor(args) {
-  if (!Number.isInteger(args.seq)) throw new Error("expanded mode needs the row's numeric seq");
+/** expanded/deps need a numeric anchor seq. */
+function requireAnchor(args, mode = 'expanded') {
+  if (!Number.isInteger(args.seq)) throw new Error(`${mode} mode needs the row's numeric seq`);
   return args.seq;
 }
 
@@ -193,6 +235,8 @@ const READ_RUNS_DESCRIPTION =
   'mode "expanded": given a row seq from a condensed result, the trace around it ' +
   '(llm calls, tool calls, results, records) that produced it — including the exact change ' +
   'a tool made, e.g. an upsert_contact diff of added/replaced fields. ' +
+  'mode "deps": given the seq of an llm_call or record, the memory slots it read and, for each, ' +
+  'the row that produced it (`edges`), walking back `depth` levels — why a prompt said what it said. ' +
   "The log records what the agent DID; for a contact's CURRENT state use the contacts tree " +
   'or get_contact instead.';
 
@@ -201,9 +245,9 @@ const readRunsParameters = (defaultLimit) => ({
   properties: {
     mode: {
       type: 'string',
-      enum: ['condensed', 'expanded'],
+      enum: ['condensed', 'expanded', 'deps'],
       description:
-        'condensed (default) = the most recent log rows, all kinds unless `type` is given; expanded = the trace around one row. Call condensed first.',
+        'condensed (default) = the most recent log rows, all kinds unless `type` is given; expanded = the trace around one row; deps = the memory slots one row read. Call condensed first.',
     },
     type: {
       oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }],
@@ -218,8 +262,9 @@ const readRunsParameters = (defaultLimit) => ({
     before: { type: 'integer', description: 'condensed: only rows with seq < before (older).' },
     after: { type: 'integer', description: 'condensed: only rows with seq > after (newer).' },
     run_id: { type: 'string', description: 'condensed: restrict to one run (e.g. a caller-list session).' },
-    seq: { type: 'integer', description: 'expanded: the seq of the row to expand (copy it from a condensed result).' },
+    seq: { type: 'integer', description: 'expanded/deps: the seq of the row to read (copy it from a condensed result).' },
     window: { type: 'integer', description: 'expanded: take ±N events around the row instead of the enclosing step.' },
+    depth: { type: 'integer', description: `deps: how many levels of the read-graph to walk back (default 1, max ${MAX_DEPTH}).` },
   },
 });
 
@@ -236,8 +281,32 @@ function expandSync(db, args) {
   return expandedResult(anchorRow, rows);
 }
 
+function depsSync(db, args) {
+  const anchor = requireAnchor(args, 'deps');
+  const getEvent = (seq) => db.prepare(SQL.anchor).get(seq);
+  const root = getEvent(anchor);
+  if (!root) throw new Error(`no event at seq ${anchor}`);
+  const depth = clampDepth(args.depth);
+  const edges = [];
+  const visited = new Set([anchor]);
+  let frontier = [anchor];
+  for (let d = 0; d < depth && frontier.length; d += 1) {
+    const next = [];
+    for (const from of frontier) {
+      for (const read of parseReads(getEvent(from)?.content)) {
+        const producer = Number.isInteger(read.seq) ? getEvent(read.seq) : null;
+        edges.push(depEdge(from, read, producer));
+        if (Number.isInteger(read.seq) && !visited.has(read.seq)) { visited.add(read.seq); next.push(read.seq); }
+      }
+    }
+    frontier = next;
+  }
+  return depsResult(root, edges);
+}
+
 function runSync(db, args = {}) {
   if (args.mode === 'expanded') return expandSync(db, args);
+  if (args.mode === 'deps') return depsSync(db, args);
   const { sql, params } = buildRecent(args);
   return { rows: db.prepare(sql).all(...params).map(shapeRow) };
 }
@@ -255,8 +324,32 @@ async function expandAsync(query, args) {
   return expandedResult(anchorRow, rows);
 }
 
+async function depsAsync(query, args) {
+  const anchor = requireAnchor(args, 'deps');
+  const getEvent = async (seq) => (await query(SQL.anchor, [seq]))[0];
+  const root = await getEvent(anchor);
+  if (!root) throw new Error(`no event at seq ${anchor}`);
+  const depth = clampDepth(args.depth);
+  const edges = [];
+  const visited = new Set([anchor]);
+  let frontier = [anchor];
+  for (let d = 0; d < depth && frontier.length; d += 1) {
+    const next = [];
+    for (const from of frontier) {
+      for (const read of parseReads((await getEvent(from))?.content)) {
+        const producer = Number.isInteger(read.seq) ? await getEvent(read.seq) : null;
+        edges.push(depEdge(from, read, producer));
+        if (Number.isInteger(read.seq) && !visited.has(read.seq)) { visited.add(read.seq); next.push(read.seq); }
+      }
+    }
+    frontier = next;
+  }
+  return depsResult(root, edges);
+}
+
 async function runAsync(query, args = {}) {
   if (args.mode === 'expanded') return expandAsync(query, args);
+  if (args.mode === 'deps') return depsAsync(query, args);
   const { sql, params } = buildRecent(args);
   const rows = await query(sql, params);
   return { rows: rows.map(shapeRow) };
