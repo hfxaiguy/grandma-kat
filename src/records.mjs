@@ -14,7 +14,7 @@
 // was written ('Prompt(): …').
 
 import {
-  isWhen, isUpdate, isMemory, isVersion, isGoback, isGoto, isMax, isCalls, isParameters,
+  isWhen, isUpdate, isKeep, isMemory, isVersion, isGoback, isGoto, isMax, isCalls, isParameters,
   isDisableAuto, isDescription, isOptional, isHookTrigger, goback, resolveMax,
 } from './markers.mjs';
 
@@ -265,6 +265,9 @@ export function memoryFields(rawArgs, label) {
   const updateIndex = args.findIndex(isUpdate);
   const updating = updateIndex !== -1;
   if (updating) args.splice(updateIndex, 1);
+  const keepIndex = args.findIndex(isKeep);
+  const keepFn = keepIndex !== -1 ? args[keepIndex].fn : null;
+  if (keepIndex !== -1) args.splice(keepIndex, 1);
   const name = args.shift();
   if (typeof name !== 'string' || name.length === 0) {
     throw new TypeError(
@@ -283,7 +286,7 @@ export function memoryFields(rawArgs, label) {
     );
   }
   if (args.length !== 0) throw new TypeError(`${label}: too many arguments`);
-  return { updating, name, fn, gate };
+  return { updating, name, fn, gate, keep: keepFn };
 }
 
 export function memoryUpdateFields(rawArgs, label) {
@@ -510,7 +513,9 @@ export const callRecord = ({ name = null, tool, argsFn, gate = null, options = {
 
 export const checkRecord = ({ check, flow, gate = null, options = {} }) => ({ kind: 'check', name: null, check, flow, gate, options });
 
-export const memoryRecord = ({ updating, name, fn, gate = null }) => ({ kind: updating ? 'memoryUpdate' : 'memory', name, fn, gate });
+export const memoryRecord = ({ updating, name, fn, gate = null, keep = null }) => ({
+  kind: updating ? 'memoryUpdate' : 'memory', name, fn, gate, ...(keep ? { keep } : {}),
+});
 
 export const memoryUpdateRecord = ({ name, fn, gate = null }) => ({ kind: 'memoryUpdate', name, fn, gate });
 

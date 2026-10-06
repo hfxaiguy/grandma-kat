@@ -31,6 +31,23 @@ export function update() {
 
 export const isUpdate = (v) => v != null && v[UPDATE] === true;
 
+const KEEP = Symbol('grandma-kat/keep');
+
+/**
+ * Marker for Memory(keep(fn), name, …) — the slot's session-persistence
+ * lifecycle. By default a slot is KEPT across invocations within a session;
+ * `keep(fn)` returning false erases an existing stored value at entry, so the
+ * slot re-initializes. `fn(m)` sees the entry-time memory view. Positioned like
+ * when()/update().
+ */
+export function keep(fn) {
+  if (typeof fn !== 'function') {
+    throw new TypeError('keep(fn) expects a function of memory returning true/false');
+  }
+  return Object.freeze({ [KEEP]: true, fn });
+}
+export const isKeep = (v) => v != null && v[KEEP] === true;
+
 const MEMORY = Symbol('grandma-kat/memory');
 
 /**

@@ -1111,6 +1111,65 @@ async function execCall(exec, child, scope, callResume = null) {
   return { value: result, record: { content: result, tool: child.tool, args, toolResults: [result] } };
 }
 
+// --- session-persistent memory -------------------------------------------
+//
+// Within one session a tree invoked as a TOOL keeps its slots, keyed
+// (sessionId × tree name). `runtime.sessionId` supplies the session (no id ⇒
+// no persistence). `fresh: true` in the call args clears the tree's store for
+// the session (with a machine note); `Memory(keep(fn), …)` governs one slot's
+// lifecycle (default: keep; false ⇒ erase at entry so it re-initializes).
+
+const sessionStores = new Map();
+const sessionStoreKey = (sessionId, treeName) => `${sessionId}\u0000${treeName}`;
+function sessionStoreFor(exec, treeName) {
+  const sid = exec.runtime?.sessionId;
+  if (sid == null || treeName == null) return null;
+  const key = sessionStoreKey(sid, treeName);
+  let store = sessionStores.get(key);
+  if (!store) { store = Object.create(null); sessionStores.set(key, store); }
+  return store;
+}
+
+/** Hydrate a tool tree's scope from its store (call args already win), honor
+ *  `fresh` and `Memory(keep(fn), …)`, and mark hydrated slots so Memory inits
+ *  do not overwrite them. */
+async function hydrateSessionMemory(exec, def, scope, fresh) {
+  const store = sessionStoreFor(exec, def.name);
+  if (!store) return;
+  if (fresh) {
+    const names = Object.keys(store);
+    if (names.length) {
+      for (const k of names) delete store[k];
+      if (typeof exec.runtime?.onEmit === 'function') {
+        await exec.runtime.onEmit({ machine: { tree: def.name, doing: 'fresh',
+          detail: `discarded saved ${def.name} state` } });
+      }
+    }
+    return;
+  }
+  for (const [k, v] of Object.entries(store)) {
+    if (!(k in scope.slots)) scope.slots[k] = v;
+  }
+  scope.hydrated = new Set(Object.keys(store).filter((k) => k in scope.slots));
+  for (const child of def.children ?? []) {
+    if (child.kind !== 'memory' || typeof child.keep !== 'function') continue;
+    if (!(child.name in scope.slots)) continue;
+    const keepIt = await callFn(child.keep, makeView(scope), `keep fn of '${child.name}'`);
+    if (keepIt === false) {
+      delete scope.slots[child.name];
+      scope.hydrated.delete(child.name);
+      delete store[child.name];
+    }
+  }
+}
+
+/** Write a tool tree's own slots back to its store (also on pause). */
+function flushSessionMemory(exec, def, scope) {
+  const store = sessionStoreFor(exec, def.name);
+  if (!store) return;
+  for (const [k, v] of Object.entries(scope.slots)) store[k] = v;
+}
+
 /**
  * Run a tree tool: the subtree executes like a static branch — child scope,
  * seeded call args, exported value as the result. On resume the
@@ -1135,11 +1194,18 @@ async function runTreeTool(exec, toolName, tool, args, scope, resumeState = null
   }
   if (args && typeof args === 'object' && !Array.isArray(args)) {
     for (const [k, v] of Object.entries(args)) {
+      if (k === 'fresh') continue; // a directive, not tree data
       if (!(k in childScope.slots)) childScope.slots[k] = v;
     }
   }
-  const out = await execTree(exec, def, childScope, scope, resumeState);
-  return out.value ?? null;
+  // Session memory: hydrate on a fresh invocation (call args win over stored).
+  if (!resumeState) await hydrateSessionMemory(exec, def, childScope, args?.fresh === true);
+  try {
+    const out = await execTree(exec, def, childScope, scope, resumeState);
+    return out.value ?? null;
+  } finally {
+    flushSessionMemory(exec, def, childScope);
+  }
 }
 
 /** Resolve a tree tool's spec (a name or a def/builder) to a definition. */
@@ -1389,6 +1455,12 @@ function applyRedirect(resumeState, signal) {
 
 // Writes to a named memory slot AND produces m.prev output (like a prompt).
 async function execMemory(exec, child, scope) {
+  // Session memory: a hydrated slot already holds the persisted value — a
+  // non-update Memory is an initializer and must not overwrite it.
+  if (scope.hydrated?.has(child.name)) {
+    const v = scope.slots[child.name];
+    return { value: v, record: { content: v }, _op: 'memory' };
+  }
   const current = scope.slots[child.name]; // read before write (may be undefined)
   const captured = await withReads(scope, (v) => callFn(child.fn, v, `memory fn of '${child.name}'`, current));
   // The write itself is logged once, by record(), with op 'memory'; the reads
