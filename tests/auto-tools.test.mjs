@@ -91,7 +91,7 @@ test('auto loop: executes tool calls, feeds results back, ends on the answer rou
   assert.equal(memory.rec.thread.at(-1).role, 'assistant');
 });
 
-test('disableAuto(): stays single-round — results recorded, never fed back', async () => {
+test('disableAuto(): offers no tools — a call is never executed', async () => {
   const handler = scripted([{ content: 'noted it', tool_calls: [tc('search', { q: 'x' })] }]);
   const pattern = Tree(name('agent')
     , Tools('search')
@@ -105,7 +105,8 @@ test('disableAuto(): stays single-round — results recorded, never fed back', a
   assert.equal(handler.calls.length, 1);
   assert.equal(memory.rec.rounds, 1);
   assert.equal(memory.rec.content, 'noted it');
-  assert.deepEqual(memory.rec.toolResults, [{ name: 'search', result: 'found:x', isError: false }]);
+  assert.deepEqual(memory.rec.toolResults, [], 'no tool executed — none was offered');
+  assert.deepEqual(handler.calls[0].tools, [], 'the model was offered no tools');
 });
 
 test('tool errors are fed back so the model can recover', async () => {
@@ -273,7 +274,7 @@ test('a tool hook when() gate skips the hook tree for that call', async () => {
   assert.equal(called, 1);
 });
 
-test('tool hooks run with disableAuto() too — they observe calls, not the loop', async () => {
+test('disableAuto() offers no tools, so a tool hook does not fire', async () => {
   let called = 0;
   const handler = scripted([{ content: '', tool_calls: [tc('search', {})] }]);
   const pattern = Tree(name('agent')
@@ -282,7 +283,7 @@ test('tool hooks run with disableAuto() too — they observe calls, not the loop
     , Prompt(disableAuto(), m => 'go'));
 
   await grandma.knit(pattern, mockRuntime(handler, { tools: { search: tool(async () => 'x') } }));
-  assert.equal(called, 1);
+  assert.equal(called, 0, 'no call was made, so no hook fired');
 });
 
 test('a fired tool hook logs a `hook` event (the WebUI line)', async () => {

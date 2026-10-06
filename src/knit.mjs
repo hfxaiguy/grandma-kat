@@ -843,7 +843,10 @@ async function execPrompt(exec, child, scope, promptResume = null) {
     if (!modelEntry) {
       throw new KnitError(`model '${modelName}' (used by '${child.name}') not found in runtime models`);
     }
-    const toolNames = child.options.tools ?? (await resolveInherited(exec, 'tools', view)) ?? [];
+    // disableAuto() offers NO tools to the model: it decides; the tree runs.
+    const toolNames = autoOn
+      ? (child.options.tools ?? (await resolveInherited(exec, 'tools', view)) ?? [])
+      : [];
     const tools = toolNames.map((n) => {
       // Schemas come from whatever the name resolves to at THIS prompt's
       // scope: a register declared here (or on an ancestor) wins over a
@@ -993,9 +996,10 @@ async function execPrompt(exec, child, scope, promptResume = null) {
     }
 
     const toolCalls = response.tool_calls ?? [];
-    if (!toolCalls.length) {
-      // Text-only response — the loop is done; the final assistant message
-      // closes the saved thread.
+    if (!toolCalls.length || !autoOn) {
+      // Text-only response — or disableAuto(), which offers no tools and never
+      // executes a call. The loop is done; the final assistant message closes
+      // the saved thread.
       record.content = response.content;
       record.reasoning = response.reasoning || null;
       thread.push({ role: 'assistant', content: response.content ?? '' });
@@ -1042,14 +1046,6 @@ async function execPrompt(exec, child, scope, promptResume = null) {
         tool_call_id: toolCalls[ci].id,
         content: typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result ?? ''),
       });
-    }
-
-    if (!autoOn) {
-      // disableAuto(): exactly one round — results are recorded, never fed
-      // back. The value is the text returned alongside the calls.
-      record.content = response.content || '';
-      record.reasoning = response.reasoning || null;
-      break;
     }
 
     if (rounds >= bound.count) {

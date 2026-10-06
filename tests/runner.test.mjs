@@ -197,36 +197,38 @@ test('a gated Model(when(cond), name) rule switches models at resolution time', 
   assert.deepEqual(calls, ['cheap', 'cheap'], 'gate stayed false: both prompts used the default');
 });
 
-test('prompt with tools: tool call executed, result in record', async () => {
+test('prompt with tools: tool call executed, result fed back', async () => {
   const executed = [];
   const tools = {
     search: tool(async ({ q }) => { executed.push(q); return `result:${q}`; }),
   };
   const handler = scripted([
     { content: '', tool_calls: [{ id: '1', function: { name: 'search', arguments: '{"q":"x"}' } }] },
+    'done',
   ]);
   const pattern = Tree(name('agent')
     , Tools('search')
-    , Prompt(disableAuto(), m => 'find something'));
+    , Prompt(m => 'find something'));
 
   const { result } = await grandma.knit(pattern, mockRuntime(handler, { tools }));
-  // One LLM call — tool was executed, result is in the record, not fed back.
-  assert.equal(result, '');
+  // The call executes, its result feeds back, and the model answers.
+  assert.equal(result, 'done');
   assert.deepEqual(executed, ['x']);
-  assert.equal(handler.calls.length, 1);
+  assert.equal(handler.calls.length, 2);
 });
 
 test('tool errors are recorded, not fatal', async () => {
   const tools = { boom: tool(async () => { throw new Error('kaput'); }) };
   const handler = scripted([
     { content: '', tool_calls: [{ id: '1', function: { name: 'boom', arguments: '{}' } }] },
+    'recovered',
   ]);
-  const pattern = Tree(name('agent'), Tools('boom'), Prompt(disableAuto(), m => 'go'));
+  const pattern = Tree(name('agent'), Tools('boom'), Prompt(m => 'go'));
 
   const { result } = await grandma.knit(pattern, mockRuntime(handler, { tools }));
-  // One LLM call — tool error is recorded, not fed back to the model.
-  assert.equal(result, '');
-  assert.equal(handler.calls.length, 1);
+  // The tool error is recorded and fed back; the model answers.
+  assert.equal(result, 'recovered');
+  assert.equal(handler.calls.length, 2);
 });
 
 test('Call() leaf executes a tool directly with args from memory', async () => {
@@ -1301,7 +1303,7 @@ test('a model tool call to a tree tool returns the subtree export as the tool re
   ]);
   const pattern = Tree(name('host')
     , Tools('finder_tool')
-    , Prompt(disableAuto(), 'act', () => 'go')
+    , Prompt('act', () => 'go')
     , Memory('seen', m => m.raw.branch.act.toolResults[0].result));
 
   const { memory } = await grandma.knit(pattern, mockRuntime(handler, {
@@ -1309,7 +1311,7 @@ test('a model tool call to a tree tool returns the subtree export as the tool re
   }));
 
   assert.equal(memory.seen, 'searching');
-  assert.equal(handler.calls.length, 2);
+  assert.equal(handler.calls.length, 3);
   assert.equal(handler.calls[1].messages[0].content, 'looking for keys');
 });
 
@@ -1330,7 +1332,7 @@ test('a pause inside a model-called tree resumes without re-calling the model', 
   });
   const pattern = Tree(name('host')
     , Tools('ask')
-    , Prompt(disableAuto(), 'act', () => 'go')
+    , Prompt('act', () => 'go')
     , Prompt('after', m => `tool said: ${m.raw.branch.act.toolResults[0].result}`)
     , Memory('seen', m => m.raw.branch.act.toolResults[0].result));
 
@@ -1345,7 +1347,7 @@ test('a pause inside a model-called tree resumes without re-calling the model', 
     humanInput: 'purr',
   });
   assert.equal(second.status, undefined);
-  assert.equal(handler.calls.length, 3, 'the round was replayed — the child prompt did not re-run');
+  assert.equal(handler.calls.length, 4, 'the round was replayed — the child prompt did not re-run');
   assert.equal(second.memory.seen, 'got: purr', 'the subtree export came back as the tool result');
 });
 
@@ -1381,6 +1383,7 @@ test('completed sibling tool calls are replayed, not re-executed, after a pause'
   const child = Tree(name('nested'), Human('go'), Memory('out', () => 'nested done'));
   const handler = scripted([
     { content: '', tool_calls: [tc('effect', { n: 1 }, 'c1'), tc('ask', {}, 'c2')] },
+    'done',
   ]);
   const runtime = mockRuntime(handler, {
     logger: tmpLogger(),
@@ -1391,7 +1394,7 @@ test('completed sibling tool calls are replayed, not re-executed, after a pause'
   });
   const pattern = Tree(name('host')
     , Tools('effect', 'ask')
-    , Prompt(disableAuto(), 'act', () => 'go')
+    , Prompt('act', () => 'go')
     , Memory('first', m => m.raw.branch.act.toolResults[0].result)
     , Memory('second', m => m.raw.branch.act.toolResults[1].result));
 
@@ -1435,10 +1438,10 @@ test('a subtree failure surfaces as an isError tool result', async () => {
 });
 
 test('an unresolvable tree tool name is an isError result', async () => {
-  const handler = scripted([{ content: '', tool_calls: [tc('ghost', {})] }]);
+  const handler = scripted([{ content: '', tool_calls: [tc('ghost', {})] }, 'done']);
   const pattern = Tree(name('host')
     , Tools('ghost')
-    , Prompt(disableAuto(), 'act', () => 'go')
+    , Prompt('act', () => 'go')
     , Memory('err', m => m.raw.branch.act.toolResults[0].isError)
     , Memory('msg', m => String(m.raw.branch.act.toolResults[0].result)));
 
@@ -1489,11 +1492,13 @@ test('nested tree tools replay every prompt level on resume', async () => {
   const inner = Tree(name('inner'), Human('go'), Memory('out', () => 'inner done'));
   const outer = Tree(name('outer')
     , Tools('inner_tool')
-    , Prompt(disableAuto(), 'outer_act', () => 'call inner')
+    , Prompt('outer_act', () => 'call inner')
     , Memory('outer_out', m => m.raw.branch.outer_act.toolResults[0].result));
   const handler = scripted([
     { content: '', tool_calls: [tc('outer_tool', {})] },
     { content: '', tool_calls: [tc('inner_tool', {})] },
+    'outer done',
+    'host done',
   ]);
   const runtime = mockRuntime(handler, {
     logger: tmpLogger(),
@@ -1504,7 +1509,7 @@ test('nested tree tools replay every prompt level on resume', async () => {
   });
   const pattern = Tree(name('host')
     , Tools('outer_tool')
-    , Prompt(disableAuto(), 'act', () => 'go')
+    , Prompt('act', () => 'go')
     , Memory('seen', m => m.raw.branch.act.toolResults[0].result));
 
   const first = await grandma.knit(pattern, runtime);
@@ -1518,7 +1523,7 @@ test('nested tree tools replay every prompt level on resume', async () => {
     humanInput: 'x',
   });
   assert.equal(second.status, undefined);
-  assert.equal(handler.calls.length, 2, 'both prompt levels were replayed');
+  assert.equal(handler.calls.length, 4, 'both prompt levels were replayed');
   assert.equal(second.memory.seen, 'inner done', 'results flowed back through both levels');
 });
 

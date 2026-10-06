@@ -183,6 +183,7 @@ test('a patch for an undeclared slot fails the call', async () => {
 test('a model-called register applies its patch and the tool result is { value }', async () => {
   const handler = scripted([
     { content: '', tool_calls: [tc('bump', {})] },
+    'done',
   ]);
   const pattern = Tree(name('patch4')
     , Memory('count', () => 0)
@@ -191,7 +192,7 @@ test('a model-called register applies its patch and the tool result is { value }
       return { value: next, memory: { count: next } };
     })
     , Tools('bump')
-    , Prompt(disableAuto(), 'main', () => 'go')
+    , Prompt('main', () => 'go')
     , Memory('rec', (m) => ({ count: m.count, results: m.raw.branch.main.toolResults })));
 
   const { memory } = await grandma.knit(pattern, mockRuntime(handler));
