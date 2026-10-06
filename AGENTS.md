@@ -438,6 +438,24 @@ fix (deferred): when the duplicate pair is a `Memory(...)` directly followed
 by a `Memory(update(), ...)` of the same name, suppress the warning. Tracked
 in `src/knit.mjs` next to `validateTree`.
 
+### Session-persistent memory (within a session)
+
+A tree invoked as a **tool** keeps its memory slots for the session, keyed
+(sessionId × tree name). The host supplies `runtime.sessionId`; without it,
+nothing persists. This lets an app be re-entered (e.g. after yielding a
+message) and resume instead of restarting.
+
+- **`Memory(keep(fn), 'slot', …)`** — the slot's lifecycle. Default is to keep;
+  `keep(m => …)` returning false erases an existing stored value at entry, so
+  the slot re-initializes. `fn` sees the entry-time memory view.
+- **`fresh: true`** in a tree-tool call's args clears that tree's store for the
+  session before it runs (a machine note announces the discard). It works for
+  both a model tool call and a `Call(...)`. Call args otherwise win over stored
+  values.
+
+This applies to tool invocations (`runTreeTool`); a `From()`-attached subtree is
+a plain branch and does not use the session store.
+
 ### `Return(...)`: early exit (chosen)
 
 `Return(fn)` is a leaf child that can stop tree execution early. If `fn`
