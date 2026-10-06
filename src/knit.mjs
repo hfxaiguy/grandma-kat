@@ -413,13 +413,42 @@ async function execTree(exec, tree, scope, parentScope, resumeState = null) {
   }
 
   // Initial run path.
-  const state = { name: tree.name, tree, childIndex: 0, pass: 0, edgeCounters: new Map() };
+  const state = {
+    name: tree.name, tree, scope, childIndex: 0, pass: 0, edgeCounters: new Map(),
+    ...(scope.toolBoundary ? { toolBoundary: true } : {}),
+  };
   exec.stack.push(state);
   try {
     return await execTreeInner(exec, tree, scope, parentScope, null);
   } finally {
     exec.stack.pop();
   }
+}
+
+/**
+ * Parse a Goto target:
+ *   "slot"                    — legacy: the nearest frame owning that Human()
+ *   "tree/slot"               — that tree, that Human()
+ *   "pattern|app/tree"        — that tree's ENTRY Human() (its first Human child)
+ *   "pattern|app/tree/slot"   — that tree, that Human()
+ * A target containing "/" is a qualified reference; a bare token stays the
+ * legacy slot match, so existing Goto("start_input") keeps working.
+ */
+function parseGotoTarget(target) {
+  const parts = String(target ?? "").split("/").filter((p) => p.length > 0);
+  if (parts.length === 1) return { tree: null, slot: parts[0] };
+  let rest = parts;
+  if (parts[0] === "pattern" || parts[0] === "app") rest = parts.slice(1);
+  if (rest.length === 1) return { tree: rest[0], slot: null };
+  return { tree: rest[0], slot: rest[1] };
+}
+
+/** True when a frame's tree name is the wanted logical tree. Names may carry a
+ *  version suffix (`trunk.v1`, `caller-list.v9`); auto-named subtrees
+ *  (`trunk.v1#12`) are excluded. */
+function treeNameMatches(name, want) {
+  if (name == null) return false;
+  return name === want || String(name).replace(/\.v[0-9]+$/, "") === want;
 }
 
 async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
@@ -735,13 +764,23 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         // A Goto() unwinds to the frame that owns the target Human() slot.
         // Intermediate frames rethrow; this one arms the slot and jumps.
         if (err instanceof GotoSignal) {
-          const targetIdx = tree.children.findIndex((c) => c.kind === 'human' && c.name === err.target);
+          const t = parseGotoTarget(err.target);
+          let targetIdx = -1;
+          if (t.tree == null) {
+            // Legacy: a bare slot name, matched in any frame.
+            targetIdx = tree.children.findIndex((c) => c.kind === "human" && c.name === t.slot);
+          } else if (treeNameMatches(tree.name, t.tree)) {
+            targetIdx = t.slot != null
+              ? tree.children.findIndex((c) => c.kind === "human" && c.name === t.slot)
+              : tree.children.findIndex((c) => c.kind === "human"); // entry = first Human
+          }
           if (targetIdx !== -1) {
-            logEvent(exec, 'flow', { type: 'goto', target: err.target, childIndex: targetIdx }, scope);
+            const slotName = tree.children[targetIdx].name;
+            logEvent(exec, 'flow', { type: 'goto', target: err.target, slot: slotName, childIndex: targetIdx }, scope);
             rewind(scope, targetIdx);
             if (err.applied) {
               if (!scope.armed) scope.armed = Object.create(null);
-              scope.armed[err.target] = err.value;
+              scope.armed[slotName] = err.value;
             }
             i = targetIdx;
             continue;
@@ -1083,6 +1122,14 @@ async function runTreeTool(exec, toolName, tool, args, scope, resumeState = null
   const childScope = resumeState
     ? (resumeState.levelScopes[resumeState.stackIdx] ?? new Scope(scope))
     : new Scope(scope);
+  // A tree entered as a TOOL is a capability boundary: it sees only its own
+  // Tools(), never the invoker's (see resolveInherited). From()-attached
+  // subtrees are plain branches and keep inheriting.
+  childScope.toolBoundary = true;
+  if (resumeState) {
+    const level = resumeState.stack[resumeState.stackIdx];
+    if (level) level.toolBoundary = true;
+  }
   if (!resumeState || childScope.parent !== scope) {
     logEvent(exec, 'scope_init', { scopeId: childScope.id, parentScopeId: scope.id }, childScope);
   }
@@ -1598,10 +1645,17 @@ async function selectRule(rules, view, label) {
 // Inheritance up the tree stack: innermost tree with a matching rule wins.
 async function resolveInherited(exec, kind, view) {
   for (let i = exec.stack.length - 1; i >= 0; i--) {
-    const rules = exec.stack[i].tree[kind];
-    if (!rules?.length) continue;
-    const rule = await selectRule(rules, view, `${kind} rule condition`);
-    if (rule) return rule.value;
+    const frame = exec.stack[i];
+    const rules = frame.tree[kind];
+    if (rules?.length) {
+      const rule = await selectRule(rules, view, `${kind} rule condition`);
+      if (rule) return rule.value;
+    }
+    // TOOLS do not cross a tool-invocation boundary: a tree entered as a tool
+    // (runTreeTool) sees only its own Tools() — never the invoker's. A
+    // From()-attached subtree is a plain branch (no boundary) and inherits as
+    // before, because From() is an explicit composition by the author.
+    if (kind === 'tools' && frame.toolBoundary) return null;
   }
   return null;
 }

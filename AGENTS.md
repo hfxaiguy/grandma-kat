@@ -61,6 +61,14 @@ Tree(
   snapshot the chain). The seed is an entry-time pulse, re-applied on resume;
   the static `Needs(...)` check skips seeded attaches (keys are dynamic).
   `Tree.from(id)` still works but is deprecated in its favor.
+- **Reference trees by name — never import the tree module.** Attach another
+  tree with `From('name')`; declare a hook with `Hook(trigger, 'name')`; call a
+  tree tool by name. Import directly only your own non-tree code (`./src/*`)
+  and the engine (`grandma-kat`). Why: the loader resolves a name to that
+  tree's **pinned prod**, so a snapshot stays isolated — a relative import of
+  `foo/tree.mjs` binds the *draft* and silently leaks edits through a pinned
+  tree. (Test harnesses must register the named trees themselves, mirroring
+  the host's discovery.)
 - `Prompt(fn)` — defines the LLM prompt; `fn` receives memory and returns
   the prompt string
 - Memory is keyed by branch name (`m.branch.navigate`) — a parent tree
@@ -902,9 +910,18 @@ registry, sent as function-calling schemas. Default: no tools.
 
 **Container inheritance (chosen).** Prompt-leaves are anonymous — no handle
 for per-leaf config — so `Tools(...)` on a container applies to all its
-prompt children (resolution up the scope chain, like `Model(...)`). Opt out
+prompt children (resolution up the tree stack, like `Model(...)`). Opt out
 per prompt via options bag: `Prompt(fn, { tools: [] })`. Per-prompt tool
 sets → use named branches.
+
+**Capability boundary (chosen).** Tools do **not** cross a tree-tool
+invocation. A tree entered as a tool (a model-called tree, or `Call(...)` to a
+tree-backed tool) sees only its own `Tools()` — never the invoker's. A
+`From(...)`-attached subtree is a plain branch and *does* inherit, because
+`From` is an explicit composition by the author. Consequence: an app must
+declare the tools it needs; it cannot rely on inheriting the caller's. This is
+least privilege — the trunk's web/SQL/file tools are not silently available
+inside an app it calls.
 
 **Tool calls: auto loop by default (chosen; supersedes "single round").**
 A prompt executes every tool call the model emits, appends the results to

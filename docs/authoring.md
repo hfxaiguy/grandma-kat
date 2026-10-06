@@ -90,6 +90,21 @@ const pattern = Tree(
 The model is declared — a tree with several runtime models and no `Model(...)`
 in scope fails to knit — but never called.
 
+## Attach trees by name; capabilities don't cross a call
+
+Two rules that keep a pinned tree isolated and least-privileged:
+
+- **Reference trees by name, never by importing their module.** Attach with
+  `From('tree')`, declare hooks with `Hook(trigger, 'tree')`, call tree tools by
+  name. Import directly only your own non-tree code (`./src/*`) and
+  `grandma-kat`. A relative `import … from '../other/tree.mjs'` binds that
+  tree's *draft*, so a pinned snapshot silently follows draft edits.
+- **Tools do not cross a tree-tool call.** A tree the model calls (or a
+  `Call(...)` to a tree-backed tool) sees only its own `Tools()` — declare what
+  it needs on the tree or prompt. Only a `From(...)`-attached subtree inherits
+  the parent's tools. Unknown `Tools(...)` names are still listed up front by
+  validation.
+
 ## Common build errors, and what they mean
 
 `knit()` validates the whole tree **before the first model call**, so most

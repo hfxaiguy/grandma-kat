@@ -60,12 +60,13 @@ shape, so `definitionId` / host session hashes do not churn on upgrade.
   option or inherited) is the whole offer, and a call outside it is refused
   before anything executes — the refusal feeds back as a tool error. Scope
   `Tools()` to the subtree that needs it; wrap-up prompts should carry none.
-- **Rules inherit down the execution stack, including into tree-tool
-  subtrees**: a callee tree's prompts also see the caller level's
-  `Tools()`/`Model()` rules (pre-existing). Combined with text-recovery a
-  sufficiently unlucky reply could re-enter a caller-offered tree tool; the
-  loop bounds it with `max()`, but a call-boundary cut in `resolveInherited`
-  (and its resume story) is future work.
+- **Tools do not cross a tree-tool boundary** (chosen). A tree entered as a
+  tool — a model-called tree or a `Call(...)` to a tree-backed tool — sees only
+  its own `Tools()`; the invoker's tool list is not inherited. `Model()` rules
+  still inherit (a callee may pick a model from its caller). A
+  `From(...)`-attached subtree is a plain branch and *does* inherit tools, as
+  explicit composition. Consequence: an app must declare the tools it needs.
+  (`resolveInherited` stops at the frame `runTreeTool` marks as a boundary.)
 - **A before-hook's arg rewrite is not preserved across a pause inside that
   same call**: the resumed call executes with the model's original args
   (the rewrite is not logged). After-hooks are unaffected.

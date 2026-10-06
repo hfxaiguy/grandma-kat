@@ -14,6 +14,13 @@
   Markers ride inside elements: `when(cond)`, `max(n)`, `calls(...)`,
   `parameters(...)`, `update()`. Hooks are positional `Hook()` elements:
   `Hook(toolBefore()/toolAfter()/onEmit()/onHuman(), [when(cond)], tree)`.
+  Trees are attached BY NAME — `From('tree', [memory(fn)])`,
+  `Hook(trigger, 'tree')`, tree tools by name — never by importing another
+  tree's module (pin isolation; only your own `./src/*` code and the engine are
+  imported directly). `Goto(target, [valueFn])` redirects to a Human slot: a
+  bare `'slot'` (nearest frame owning it), `'tree/slot'`, or
+  `'pattern|app/tree[/slot]'` (with no slot = that tree's first Human). Tools
+  do not cross a tree-tool call unless the subtree is attached with `From(...)`.
   Condition is
   always explicit (`when(cond)`); argless `when()` is rejected — no implicit
   default gate.

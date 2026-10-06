@@ -404,7 +404,7 @@ export function gotoFields(rawArgs, label) {
   const { gate, args } = takeGate(rawArgs, label);
   const target = args.shift();
   if (typeof target !== 'string' || target.length === 0) {
-    throw new TypeError(`${label}: first argument must be the name of a Human() slot`);
+    throw new TypeError(`${label}: first argument must be a Human() slot or a qualified target — 'slot', 'tree/slot', or 'pattern|app/tree[/slot]'`);
   }
   const valueFn = args.shift() ?? null;
   if (valueFn !== null && typeof valueFn !== 'function') {
