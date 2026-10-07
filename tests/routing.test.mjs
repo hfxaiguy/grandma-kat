@@ -7,7 +7,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import kat, { Tree, name, Tools, Prompt, Human, Call, Goto, Return, Branch, From, registerTree } from '../src/index.mjs';
+import kat, { Tree, name, Tools, Prompt, Human, Call, Goto, Return, Branch, From, registerTree, readFromMemoryOnce, Emit, Memory, update, Until, goto, max } from '../src/index.mjs';
 import { scripted, mockRuntime, tool } from './helpers.mjs';
 
 const fn = (n) => ({ type: 'function', function: { name: n, arguments: '{}' } });
@@ -67,31 +67,45 @@ test('a From()-attached subtree inherits the parent tools (explicit composition)
   assert.ok(childCall.tools.some((t) => t.function.name === 'host_tool'), 'child inherits host_tool via From()');
 });
 
-test('Goto("pattern/host") reaches the host tree entry Human', async () => {
-  const sub = Tree(name('sub'), Goto('pattern/host', () => 'from-sub'), Return(() => 'sub-done'));
+test('Goto("host/entry", seed) seeds memory; Human(readFromMemoryOnce()) reads it', async () => {
+  const sub = Tree(name('sub'), Goto('host/entry', () => ({ entry: 'from-sub' })), Return(() => 'sub-done'));
   registerTree(sub);
   const host = Tree(
     name('host'),
     Call('run', 'sub', () => ({})),
-    Human('entry'),
+    Human('entry', readFromMemoryOnce()),
     Return((m) => m.entry),
   );
   const rt = mockRuntime(scripted([{ content: 'x' }]), { tools: { sub: treeTool('sub') } });
 
   const out = await kat.knit(host, rt);
-  assert.equal(out.result, 'from-sub', 'the entry slot was armed by the qualified Goto');
+  assert.equal(out.result, 'from-sub', 'the seeded entry slot was read from memory');
 });
 
-test('Goto("host/entry") targets a specific slot; a bare slot stays legacy', async () => {
-  const bySlot = Tree(name('sub_a'), Goto('host/entry', () => 'slot-hit'), Return(() => 'x'));
-  registerTree(bySlot);
-  const hostA = Tree(name('host'), Call('run', 'sub_a', () => ({})), Human('entry'), Return((m) => m.entry));
-  const outA = await kat.knit(hostA, mockRuntime(scripted([{ content: 'x' }]), { tools: { sub_a: treeTool('sub_a') } }));
-  assert.equal(outA.result, 'slot-hit');
-
+test('a bare slot stays the legacy one-shot arm', async () => {
   const legacy = Tree(name('sub_b'), Goto('entry', () => 'legacy-hit'), Return(() => 'x'));
   registerTree(legacy);
   const hostB = Tree(name('host'), Call('run', 'sub_b', () => ({})), Human('entry'), Return((m) => m.entry));
   const outB = await kat.knit(hostB, mockRuntime(scripted([{ content: 'x' }]), { tools: { sub_b: treeTool('sub_b') } }));
   assert.equal(outB.result, 'legacy-hit');
+});
+
+test('readFromMemoryOnce() re-pauses on a loop rewind (the notice is one-shot)', async () => {
+  const host3 = Tree(
+    name('host3'),
+    Memory('n', () => 0),
+    Call('seed', 'sub_loop', () => ({})),
+    Human('entry', readFromMemoryOnce()),
+    Memory(update(), 'n', (m) => (m.n ?? 0) + 1),
+    Until(goto('entry'), () => false, max(3)),
+  );
+  const sub = Tree(name('sub_loop'), Goto('host3/entry', () => ({ entry: 'seeded' })), Return(() => 'x'));
+  registerTree(sub);
+  const rt = mockRuntime(scripted([{ content: 'x' }]), {
+    tools: { sub_loop: treeTool('sub_loop') },
+    logger: `/tmp/opencode/loop-${Date.now()}.db`,
+  });
+  const first = await kat.knit(host3, rt);
+  assert.equal(first.status, 'waiting', 'the loop paused after the seeded pass');
+  assert.equal(first.humanSlot, 'entry');
 });

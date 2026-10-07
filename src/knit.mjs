@@ -662,6 +662,19 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
           scope.raw[child.name] = { content: value };
           logEvent(exec, 'human', { child: child.name, delivered: true, value }, scope);
           outcome = { value, record: { content: value } };
+        } else if (
+          child.readFromMemoryOnce &&
+          scope.delivered && scope.delivered.has(child.name) &&
+          scope.slots[child.name] !== undefined
+        ) {
+          // readFromMemoryOnce(): a Goto seeded this slot and raised a one-shot
+          // notice — read the value FROM MEMORY and proceed. The notice is
+          // consumed, so a loop's rewind (no notice) pauses again.
+          scope.delivered.delete(child.name);
+          const value = scope.slots[child.name];
+          scope.raw[child.name] = { content: value };
+          logEvent(exec, 'human', { child: child.name, delivered: true, value }, scope);
+          outcome = { value, record: { content: value } };
         } else {
         const context = child.contextFn
           ? await callFn(child.contextFn, view, `human context of '${child.name}'`)
@@ -767,20 +780,39 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
           const t = parseGotoTarget(err.target);
           let targetIdx = -1;
           if (t.tree == null) {
-            // Legacy: a bare slot name, matched in any frame.
+            // Legacy: a bare slot name, matched in any frame (a Human).
             targetIdx = tree.children.findIndex((c) => c.kind === "human" && c.name === t.slot);
           } else if (treeNameMatches(tree.name, t.tree)) {
+            // Qualified tree target: resume at the named child (any kind), or
+            // the first child when no slot is given. Unknown name → -1 → rethrow.
             targetIdx = t.slot != null
-              ? tree.children.findIndex((c) => c.kind === "human" && c.name === t.slot)
-              : tree.children.findIndex((c) => c.kind === "human"); // entry = first Human
+              ? tree.children.findIndex((c) => c.name === t.slot)
+              : 0;
           }
           if (targetIdx !== -1) {
-            const slotName = tree.children[targetIdx].name;
-            logEvent(exec, 'flow', { type: 'goto', target: err.target, slot: slotName, childIndex: targetIdx }, scope);
+            const target = tree.children[targetIdx];
+            logEvent(exec, 'flow', { type: 'goto', target: err.target, slot: target.name, childIndex: targetIdx }, scope);
             rewind(scope, targetIdx);
-            if (err.applied) {
-              if (!scope.armed) scope.armed = Object.create(null);
-              scope.armed[slotName] = err.value;
+            if (t.tree == null) {
+              // Legacy: arm the Human with the single value (one-shot).
+              if (err.applied) {
+                if (!scope.armed) scope.armed = Object.create(null);
+                scope.armed[target.name] = err.value;
+              }
+            } else if (t.tree != null && err.applied && err.value && typeof err.value === "object" && !Array.isArray(err.value)) {
+              // Qualified: the value is a MEMORY SEED — write each slot into the
+              // target scope (overwrite), and raise a one-shot delivery notice
+              // for every DIRECT Human() child it provides. A
+              // Human(readFromMemoryOnce()) then reads the seeded slot instead
+              // of pausing; a loop's rewind has no notice → it pauses.
+              for (const [k, v] of Object.entries(err.value)) scope.slots[k] = v;
+              logEvent(exec, 'flow', { type: 'goto-seed', target: err.target, seed: err.value }, scope);
+              if (!scope.delivered) scope.delivered = new Set();
+              for (const c of tree.children) {
+                if (c.kind === "human" && Object.prototype.hasOwnProperty.call(err.value, c.name)) {
+                  scope.delivered.add(c.name);
+                }
+              }
             }
             i = targetIdx;
             continue;
@@ -843,10 +875,7 @@ async function execPrompt(exec, child, scope, promptResume = null) {
     if (!modelEntry) {
       throw new KnitError(`model '${modelName}' (used by '${child.name}') not found in runtime models`);
     }
-    // disableAuto() offers NO tools to the model: it decides; the tree runs.
-    const toolNames = autoOn
-      ? (child.options.tools ?? (await resolveInherited(exec, 'tools', view)) ?? [])
-      : [];
+    const toolNames = child.options.tools ?? (await resolveInherited(exec, 'tools', view)) ?? [];
     const tools = toolNames.map((n) => {
       // Schemas come from whatever the name resolves to at THIS prompt's
       // scope: a register declared here (or on an ancestor) wins over a
@@ -996,13 +1025,23 @@ async function execPrompt(exec, child, scope, promptResume = null) {
     }
 
     const toolCalls = response.tool_calls ?? [];
-    if (!toolCalls.length || !autoOn) {
-      // Text-only response — or disableAuto(), which offers no tools and never
-      // executes a call. The loop is done; the final assistant message closes
-      // the saved thread.
+    if (!toolCalls.length) {
+      // Text-only response — the loop is done.
       record.content = response.content;
       record.reasoning = response.reasoning || null;
       thread.push({ role: 'assistant', content: response.content ?? '' });
+      break;
+    }
+    if (!autoOn) {
+      // disableAuto(): the tools ARE offered, but the engine does NOT execute
+      // the model's call — it only RECORDS it (the llm_call already carries
+      // `toolCalls`), and the tree runs the chosen tool via a gated Call().
+      // The prompt's value is the text alongside the calls.
+      record.content = response.content || '';
+      record.reasoning = response.reasoning || null;
+      for (const tc of toolCalls) {
+        record.toolCalls.push({ id: tc.id, name: tc.function?.name, arguments: tc.function?.arguments });
+      }
       break;
     }
 

@@ -14,7 +14,7 @@
 // was written ('Prompt(): …').
 
 import {
-  isWhen, isUpdate, isKeep, isMemory, isVersion, isGoback, isGoto, isMax, isCalls, isParameters,
+  isWhen, isUpdate, isKeep, isReadFromMemoryOnce, isMemory, isVersion, isGoback, isGoto, isMax, isCalls, isParameters,
   isDisableAuto, isDescription, isOptional, isHookTrigger, goback, resolveMax,
 } from './markers.mjs';
 
@@ -339,12 +339,15 @@ export function humanFields(rawArgs, label) {
     throw new TypeError(`${label}: first argument must be the slot name (string), e.g. Human('approve')`);
   }
   assertValidName(name, label);
+  const onceIndex = args.findIndex(isReadFromMemoryOnce);
+  const readFromMemoryOnce = onceIndex !== -1;
+  if (readFromMemoryOnce) args.splice(onceIndex, 1);
   const contextFn = args.shift() ?? null;
   if (contextFn !== null && typeof contextFn !== 'function') {
-    throw new TypeError(`${label}: second argument (contextFn) must be a function if provided`);
+    throw new TypeError(`${label}: the contextFn must be a function if provided`);
   }
   if (args.length !== 0) throw new TypeError(`${label}: too many arguments`);
-  return { name, contextFn, gate };
+  return { name, contextFn, gate, readFromMemoryOnce };
 }
 
 export function emitFields(rawArgs, label) {
@@ -523,7 +526,9 @@ export const returnRecord = ({ fn, gate = null }) => ({ kind: 'return', name: nu
 
 export const mapRecord = ({ name, arrayFn, tree, gate = null }) => ({ kind: 'map', name, arrayFn, tree, gate });
 
-export const humanRecord = ({ name, contextFn = null, gate = null }) => ({ kind: 'human', name, contextFn, gate });
+export const humanRecord = ({ name, contextFn = null, gate = null, readFromMemoryOnce = false }) => ({
+  kind: 'human', name, contextFn, gate, ...(readFromMemoryOnce ? { readFromMemoryOnce: true } : {}),
+});
 
 export const emitRecord = ({ fn, gate = null }) => ({ kind: 'emit', name: null, fn, gate });
 

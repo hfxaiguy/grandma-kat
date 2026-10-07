@@ -48,6 +48,19 @@ export function keep(fn) {
 }
 export const isKeep = (v) => v != null && v[KEEP] === true;
 
+const READ_FROM_MEMORY_ONCE = Symbol('grandma-kat/readFromMemoryOnce');
+
+/**
+ * Marker for Human(name, readFromMemoryOnce()) — the pause reads its value FROM
+ * MEMORY and proceeds (once) instead of requesting input, when a Goto raised a
+ * one-shot delivery notice for that slot. Slots are durable; the notice is the
+ * one-shot event, so a loop's rewind pauses again.
+ */
+export function readFromMemoryOnce() {
+  return Object.freeze({ [READ_FROM_MEMORY_ONCE]: true });
+}
+export const isReadFromMemoryOnce = (v) => v != null && v[READ_FROM_MEMORY_ONCE] === true;
+
 const MEMORY = Symbol('grandma-kat/memory');
 
 /**

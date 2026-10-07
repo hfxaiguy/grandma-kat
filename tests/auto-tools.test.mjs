@@ -91,7 +91,7 @@ test('auto loop: executes tool calls, feeds results back, ends on the answer rou
   assert.equal(memory.rec.thread.at(-1).role, 'assistant');
 });
 
-test('disableAuto(): offers no tools — a call is never executed', async () => {
+test('disableAuto(): offers tools, records the call, never executes it', async () => {
   const handler = scripted([{ content: 'noted it', tool_calls: [tc('search', { q: 'x' })] }]);
   const pattern = Tree(name('agent')
     , Tools('search')
@@ -105,8 +105,9 @@ test('disableAuto(): offers no tools — a call is never executed', async () => 
   assert.equal(handler.calls.length, 1);
   assert.equal(memory.rec.rounds, 1);
   assert.equal(memory.rec.content, 'noted it');
-  assert.deepEqual(memory.rec.toolResults, [], 'no tool executed — none was offered');
-  assert.deepEqual(handler.calls[0].tools, [], 'the model was offered no tools');
+  assert.deepEqual(memory.rec.toolResults, [], 'no tool executed');
+  assert.deepEqual(handler.calls[0].tools.map((t) => t.function.name), ['search'], 'the tool was offered');
+  assert.equal(memory.rec.toolCalls[0].name, 'search', 'the emitted call was recorded');
 });
 
 test('tool errors are fed back so the model can recover', async () => {

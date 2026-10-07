@@ -17,8 +17,9 @@ A `Prompt()` with tools runs a **local conversation** by default:
    `tool` message per call, and the model is called again.
 4. The loop ends when a round comes back without tool calls; the leaf's
    value is that round's text.
-5. `disableAuto()` on the prompt stops after one round (results recorded,
-   never fed back). `max(n[, errFn])` bounds the rounds — default
+5. `disableAuto()` offers the tools but does **not** auto-execute the model's
+   call — it records it, and the tree runs the chosen tool via a gated
+   `Call(...)`. `max(n[, errFn])` bounds the rounds — default
    `DEFAULT_MAX` (3) — and exhaustion throws `KnitError`. Positional
    `Hook(toolBefore()/toolAfter(), [when(cond)], tree)` trees run per call,
    seeded with `call`; mutation-by-return; throws abort (see the README's
