@@ -712,6 +712,15 @@ resumes with `grandma.resume(continuation, { ...runtime, humanInput })`. The
 continuation is a checkpoint ID; state is rebuilt from the event log, and
 checkpoints are single-use. See README for the full contract.
 
+A Human may instead read an already-provided value from memory:
+`Human(name, readFromMemoryOnce())` proceeds without pausing when its slot holds
+a value **written since the last delivery** — from *any* source (a
+`Goto('tree/slot', seed)` memory seed, `From('tree', memory(fn))`, a
+`Memory`/`update` write, a host seed). The write token makes it one-shot per
+write, so a loop's rewind (same write) pauses again. The flag is required to
+distinguish a pre-seeded Human input from ordinary memory that merely shares the
+name (`Memory('reply', () => '')` + `Human('reply')` must still pause).
+
 Crash recovery (restarting a dead process mid-run from the log alone) is
 **not** in v1 — that is the deferred kind of "resume". Runs are atomic in
 that sense; the log tells you how far a dead run got.

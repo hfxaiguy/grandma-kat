@@ -652,29 +652,33 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
             : null;
         outcome = await execMap(exec, child, scope, mapResume);
       } else if (child.kind === 'human') {
-        // An armed slot is a pending delivery (a filled Goto) — consume it
-        // once and proceed instead of pausing. Slots are durable state; the
-        // arm is the one-shot event, so a loop's rewind still waits.
+        // A delivery is: an armed legacy Goto value (one-shot), or — for a
+        // Human(readFromMemoryOnce()) — a NEW value written to its slot since the
+        // last delivery, from ANY source (a Goto memory seed, From(..., memory),
+        // a Memory/update write, a host seed). The write-seq makes it one-shot
+        // per write, so a loop's rewind (same write) pauses again.
+        let hasDelivery = false;
+        let delivered;
         if (scope.armed && Object.prototype.hasOwnProperty.call(scope.armed, child.name)) {
-          const value = scope.armed[child.name];
+          delivered = scope.armed[child.name];
           delete scope.armed[child.name];
-          scope.slots[child.name] = value;
-          scope.raw[child.name] = { content: value };
-          logEvent(exec, 'human', { child: child.name, delivered: true, value }, scope);
-          outcome = { value, record: { content: value } };
-        } else if (
-          child.readFromMemoryOnce &&
-          scope.delivered && scope.delivered.has(child.name) &&
-          scope.slots[child.name] !== undefined
-        ) {
-          // readFromMemoryOnce(): a Goto seeded this slot and raised a one-shot
-          // notice — read the value FROM MEMORY and proceed. The notice is
-          // consumed, so a loop's rewind (no notice) pauses again.
-          scope.delivered.delete(child.name);
-          const value = scope.slots[child.name];
-          scope.raw[child.name] = { content: value };
-          logEvent(exec, 'human', { child: child.name, delivered: true, value }, scope);
-          outcome = { value, record: { content: value } };
+          hasDelivery = true;
+        } else if (child.readFromMemoryOnce) {
+          const owner = slotOwner(scope, child.name);
+          const value = owner ? owner.slots[child.name] : undefined;
+          const seq = owner?.wrote?.[child.name] ?? null;
+          if (value !== undefined && seq != null && seq !== scope.consumedWrites?.[child.name]) {
+            if (!scope.consumedWrites) scope.consumedWrites = Object.create(null);
+            scope.consumedWrites[child.name] = seq;
+            delivered = value;
+            hasDelivery = true;
+          }
+        }
+        if (hasDelivery) {
+          scope.slots[child.name] = delivered;
+          scope.raw[child.name] = { content: delivered };
+          logEvent(exec, 'human', { child: child.name, delivered: true, value: delivered }, scope);
+          outcome = { value: delivered, record: { content: delivered }, _delivered: true };
         } else {
         const context = child.contextFn
           ? await callFn(child.contextFn, view, `human context of '${child.name}'`)
@@ -801,17 +805,13 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
               }
             } else if (t.tree != null && err.applied && err.value && typeof err.value === "object" && !Array.isArray(err.value)) {
               // Qualified: the value is a MEMORY SEED — write each slot into the
-              // target scope (overwrite), and raise a one-shot delivery notice
-              // for every DIRECT Human() child it provides. A
-              // Human(readFromMemoryOnce()) then reads the seeded slot instead
-              // of pausing; a loop's rewind has no notice → it pauses.
-              for (const [k, v] of Object.entries(err.value)) scope.slots[k] = v;
-              logEvent(exec, 'flow', { type: 'goto-seed', target: err.target, seed: err.value }, scope);
-              if (!scope.delivered) scope.delivered = new Set();
-              for (const c of tree.children) {
-                if (c.kind === "human" && Object.prototype.hasOwnProperty.call(err.value, c.name)) {
-                  scope.delivered.add(c.name);
-                }
+              // target scope (overwrite), recording the write-seq so a
+              // Human(readFromMemoryOnce()) sees a fresh value.
+              const seedSeq = logEvent(exec, 'flow', { type: 'goto-seed', target: err.target, seed: err.value }, scope);
+              if (!scope.wrote) scope.wrote = Object.create(null);
+              for (const [k, v] of Object.entries(err.value)) {
+                scope.slots[k] = v;
+                scope.wrote[k] = seedSeq;
               }
             }
             i = targetIdx;
@@ -1717,8 +1717,10 @@ function record(exec, scope, childIndex, name, outcome) {
     ...(slotScope !== scope ? { execScopeId: scope.id } : {}),
   }, slotScope);
   // Provenance: remember which row last wrote the slot, so a read through the
-  // memory view names the exact producer (see withReads).
-  slotScope.wrote[name] = seq;
+  // memory view names the exact producer (see withReads). A Human() delivery
+  // materializes a value that already lives in memory — it is not a producer,
+  // so it must not bump the write token (else the next visit would re-deliver).
+  if (!outcome._delivered) slotScope.wrote[name] = seq;
 }
 
 // goback rewinds m.prev to the jump point; named slots are NOT rewound
@@ -1785,6 +1787,14 @@ function runtimeDefaultModel(exec) {
   throw new KnitError('no model resolved (no Model() anywhere and no runtime default)');
 }
 
+/** The scope that owns `name` (nearest scope with an own slot of that name). */
+function slotOwner(scope, name) {
+  for (let s = scope; s; s = s.parent) {
+    if (Object.prototype.hasOwnProperty.call(s.slots, name)) return s;
+  }
+  return null;
+}
+
 async function callFn(fn, view, label, ...extra) {
   try {
     return await fn(view, ...extra);
@@ -1800,7 +1810,7 @@ async function exhaustionMessage(maxRule, view, fallback) {
 
 function logEvent(exec, kind, content, scope) {
   exec.seq++;
-  return exec.logger.log({
+  const row = exec.logger.log({
     run_id: exec.runId,
     definition_id: exec.defId,
     branch_path: exec.stack.map((s) => s.name).join('/'),
@@ -1809,6 +1819,10 @@ function logEvent(exec, kind, content, scope) {
     kind,
     content,
   });
+  // With no logger attached `log` yields nothing; fall back to the monotonic
+  // seq so callers that need a write token (slot provenance, Human freshness)
+  // still get a number.
+  return row ?? exec.seq;
 }
 
 // --- build-time finalization & validation ---

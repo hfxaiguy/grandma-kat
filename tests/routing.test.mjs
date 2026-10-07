@@ -90,6 +90,20 @@ test('a bare slot stays the legacy one-shot arm', async () => {
   assert.equal(outB.result, 'legacy-hit');
 });
 
+test('readFromMemoryOnce() reads a fresh value from ANY source, not just a Goto seed', async () => {
+  // The freshness token is the slot write itself, so a Memory/update write (or
+  // a From(..., memory) seed) delivers too — Goto is not special.
+  const tree = Tree(
+    name('seeded_by_memory'),
+    Memory('entry', () => 'init'),
+    Memory(update(), 'entry', () => 'from-memory'),
+    Human('entry', readFromMemoryOnce()),
+    Return((m) => m.entry),
+  );
+  const out = await kat.knit(tree, mockRuntime(scripted([{ content: 'x' }])));
+  assert.equal(out.result, 'from-memory', 'the newest Memory write is read');
+});
+
 test('readFromMemoryOnce() re-pauses on a loop rewind (the notice is one-shot)', async () => {
   const host3 = Tree(
     name('host3'),
