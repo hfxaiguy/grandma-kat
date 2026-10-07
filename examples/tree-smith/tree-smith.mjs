@@ -56,13 +56,14 @@ export const DRAFT_SLOT = 'draft';
 export const aliasFor = (slot) => `generated:${slot}`;
 export const RUN_TOOL = `run_${DEFAULT_SLOT}`;
 
-// The invoke decision: { tool: RUN_TOOL, args: { task } }.
-const parseInvoke = (m) => {
-  try {
-    return JSON.parse(String(m.branch?.invoke ?? '').replace(/^```(?:json)?\s*|```$/g, '').trim());
-  } catch {
-    return null;
-  }
+// The invoke decision, read from the EMITTED tool call: `disableAuto()` records
+// the call without executing it, and the gated Call below runs it.
+const invokeDecision = (m) => {
+  const call = (m.raw?.branch?.invoke?.toolCalls ?? []).find((c) => c.name === RUN_TOOL);
+  if (!call) return null;
+  let args = {};
+  try { args = JSON.parse(String(call.arguments ?? '{}')); } catch { args = {}; }
+  return { tool: call.name, args };
 };
 
 // What the smith is allowed to use — and what the authoring model is told
@@ -187,12 +188,13 @@ export const smith = Tree(
   // Needs('task') resolves from its own invocation).
   Tools(RUN_TOOL),
   Prompt('invoke',
-    m => `Return {"tool":"${RUN_TOOL}","args":{"task": ${JSON.stringify(m.task)}}}.`, { tools: [] }),
+    m => `Call ${RUN_TOOL} with ${JSON.stringify({ task: m.task })}.`,
+    disableAuto()),
   Check(m => {
-    const d = parseInvoke(m);
-    return d && d.tool === RUN_TOOL ? true : `Choose the tool ${RUN_TOOL}.`;
+    const d = invokeDecision(m);
+    return d && d.tool === RUN_TOOL ? true : `Call the tool ${RUN_TOOL}.`;
   }, goback(1, max(2))),
-  Call(when((m) => parseInvoke(m)?.tool === RUN_TOOL), 'invoked', RUN_TOOL, (m) => parseInvoke(m).args),
+  Call(when((m) => invokeDecision(m)?.tool === RUN_TOOL), 'invoked', RUN_TOOL, (m) => invokeDecision(m).args),
   Check(m => {
     const r = m.branch.invoked;
     if (r === undefined) return `You did not call ${RUN_TOOL}.`;

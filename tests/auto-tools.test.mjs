@@ -275,7 +275,7 @@ test('a tool hook when() gate skips the hook tree for that call', async () => {
   assert.equal(called, 1);
 });
 
-test('disableAuto() offers no tools, so a tool hook does not fire', async () => {
+test('disableAuto() offers the tool but never executes it, so no hook fires', async () => {
   let called = 0;
   const handler = scripted([{ content: '', tool_calls: [tc('search', {})] }]);
   const pattern = Tree(name('agent')
@@ -284,7 +284,7 @@ test('disableAuto() offers no tools, so a tool hook does not fire', async () => 
     , Prompt(disableAuto(), m => 'go'));
 
   await grandma.knit(pattern, mockRuntime(handler, { tools: { search: tool(async () => 'x') } }));
-  assert.equal(called, 0, 'no call was made, so no hook fired');
+  assert.equal(called, 0, 'the call was recorded, not executed, so no hook fired');
 });
 
 test('a fired tool hook logs a `hook` event (the WebUI line)', async () => {

@@ -55,20 +55,9 @@ function scriptedScenes(callCount, sceneForCall) {
   };
 }
 
-// Mock handlers were written for the one-round contract (the model calling a
-// browser tool). The pick_action step now DECIDES: convert a tool_calls reply
-// into the decision JSON. Other prompts pass through untouched.
-const isPick = (messages) =>
-  messages.some((m) => typeof m?.content === 'string' && m.content.includes('The best element to find the address is:'));
-const toPick = (handler) => async (messages, opts) => {
-  const r = await handler(messages, opts);
-  if (!r || !isPick(messages)) return r;
-  if (Array.isArray(r.tool_calls) && r.tool_calls.length) {
-    const c = r.tool_calls[0];
-    return { content: JSON.stringify({ tool: c.function.name, args: JSON.parse(c.function.arguments || '{}') }) };
-  }
-  return { content: JSON.stringify({ say: typeof r.content === 'string' ? r.content : 'no candidates' }) };
-};
+// The pick_action step offers navigate/click and records the model's emitted
+// call (disableAuto), which the tree runs via its gated Calls — the mocks below
+// already emit the call directly.
 
 test('find-address: exits on first iteration when page has an address', async () => {
   const page = freshPage();
@@ -80,7 +69,7 @@ test('find-address: exits on first iteration when page has an address', async ()
 
   const { result, memory } = await grandma.knit(
     pattern,
-    { models: { default: { model: 'mock', handler: toPick(handler) } }, tools: makeBrowserTools(page) }
+    { models: { default: { model: 'mock', handler: handler } }, tools: makeBrowserTools(page) }
   );
 
   assert.equal(result, '123 Main St, Springfield, USA');
@@ -98,7 +87,7 @@ test('find-address: navigates when m.url is set', async () => {
   const tools = makeBrowserTools(page);
 
   await grandma.knit(pattern, {
-    models: { default: { model: 'mock', handler: toPick(handler) } },
+    models: { default: { model: 'mock', handler: handler } },
     tools,
     memory: { url: 'https://acme.example/contact' },
   });
@@ -115,7 +104,7 @@ test('find-address: does not navigate when m.url is absent', async () => {
   });
 
   await grandma.knit(pattern, {
-    models: { default: { model: 'mock', handler: toPick(handler) } },
+    models: { default: { model: 'mock', handler: handler } },
     tools: makeBrowserTools(page),
   });
 
@@ -155,7 +144,7 @@ test('find-address: loops, picks a clickable, then finds the address', async () 
   };
 
   const { result } = await grandma.knit(pattern, {
-    models: { default: { model: 'mock', handler: toPick(handler) } },
+    models: { default: { model: 'mock', handler: handler } },
     tools,
   });
 
@@ -195,7 +184,7 @@ test('find-address: tries multiple elements before finding one', async () => {
   };
 
   const { result } = await grandma.knit(pattern, {
-    models: { default: { model: 'mock', handler: toPick(handler) } },
+    models: { default: { model: 'mock', handler: handler } },
     tools,
   });
 
@@ -231,7 +220,7 @@ test('find-address: retries pick_action when the LLM emits no tool call', async 
   };
 
   const { result } = await grandma.knit(pattern, {
-    models: { default: { model: 'mock', handler: toPick(handler) } },
+    models: { default: { model: 'mock', handler: handler } },
     tools,
   });
 
@@ -263,7 +252,7 @@ test('find-address: until loop exhausts after max iterations', async () => {
 
   await assert.rejects(
     grandma.knit(pattern, {
-      models: { default: { model: 'mock', handler: toPick(handler) } },
+      models: { default: { model: 'mock', handler: handler } },
       tools,
     }),
     (err) => {
@@ -295,7 +284,7 @@ test('find-address: pick_action passes through with "no candidates" text', async
 
   await assert.rejects(
     grandma.knit(pattern, {
-      models: { default: { model: 'mock', handler: toPick(handler) } },
+      models: { default: { model: 'mock', handler: handler } },
       tools: makeBrowserTools(page),
     }),
     /gave up after 3 iterations/

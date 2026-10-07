@@ -75,13 +75,18 @@ If there is no address, respond with exactly one word: no`;
 // A simple helper that checks if the AI's answer means "no address found."
 const isNo = (v) => typeof v === 'string' && v.trim().toLowerCase() === 'no';
 
-// The pick_action decision: { tool:'navigate'|'click', args } or { say }.
-const parsePick = (m) => {
-  try {
-    return JSON.parse(String(m.branch?.pick ?? '').replace(/^```(?:json)?\s*|```$/g, '').trim());
-  } catch {
-    return null;
+// The pick_action decision, read from the EMITTED tool call (navigate/click),
+// or `{ say }` from the prompt's text when no tool was called. disableAuto()
+// records the emitted call without executing it; the gated Calls run it.
+const pickDecision = (m) => {
+  const call = (m.raw?.branch?.pick?.toolCalls ?? []).find((c) => c.name === 'navigate' || c.name === 'click');
+  if (call) {
+    let args = {};
+    try { args = JSON.parse(String(call.arguments ?? '{}')); } catch { args = {}; }
+    return { tool: call.name, args };
   }
+  const say = String(m.branch?.pick ?? '').trim();
+  return say ? { say } : null;
 };
 
 // Tags to skip when filtering clickable elements (non-interactive).
@@ -237,7 +242,7 @@ export const pattern = Tree(name("find-address")
               return [
                 {
                   role: "user",
-                  content: 'No suitable element found. Say "no candidates".',
+                  content: `No suitable element was found. Answer with exactly: no candidates.${m.error ? `\n\nYour previous answer was rejected: ${m.error}` : ""}`,
                 },
               ];
             const tag = String(el.tag || "?").toLowerCase();
@@ -251,17 +256,17 @@ export const pattern = Tree(name("find-address")
               { role: "system", content: SYSTEM_PROMPT },
               {
                 role: "user",
-                content: `The best element to find the address is:\n<${tag}> "${text}" (${href})\nSelector: ${selector}\n\nReturn ONE JSON decision, no prose:\n{"tool":"navigate","args":{"url":"<the URL>"}} to navigate, or {"tool":"click","args":{"selector":"<the selector>"}} to click, or {"say":"no candidates"} if neither makes sense.`,
+                content: `The best element to find the address is:\n<${tag}> "${text}" (${href})\nSelector: ${selector}\n\nCall navigate with {"url":"<the URL>"} to navigate, or click with {"selector":"<the selector>"} to click. If neither makes sense, answer with exactly: no candidates.${m.error ? `\n\nYour previous answer was rejected: ${m.error}` : ""}`,
               },
             ];
-          }, { tools: [] })
+          }, disableAuto())
           , Check(
             (m) => {
-              const d = parsePick(m);
-              if (!d) return 'Return one JSON object: {"tool":"navigate"|"click","args":{…}} or {"say":"no candidates"}.';
-              if (d.tool && d.tool !== "navigate" && d.tool !== "click") return `Unknown tool '${d.tool}'. Use navigate or click, or say "no candidates".`;
+              const d = pickDecision(m);
+              if (!d) return 'Call navigate or click, or answer with exactly "no candidates".';
+              if (d.tool && d.tool !== "navigate" && d.tool !== "click") return `Unknown tool '${d.tool}'. Use navigate or click, or answer "no candidates".`;
               if (d.tool && (d.args == null || typeof d.args !== "object")) return `"${d.tool}" needs an args object.`;
-              if (!d.tool && !(typeof d.say === "string" && /\bno\b/.test(d.say.toLowerCase()))) return 'Did not choose a tool. Return navigate/click, or {"say":"no candidates"}.';
+              if (!d.tool && !(typeof d.say === "string" && /\bno\b/.test(d.say.toLowerCase()))) return 'Did not choose a tool. Call navigate/click, or answer "no candidates".';
               return true;
             },
             goback(
@@ -269,9 +274,9 @@ export const pattern = Tree(name("find-address")
               max(3, (m) => `pick_action gave up: ${m.error}`),
             ),
           )
-          , Call(when((m) => parsePick(m)?.tool === "navigate"), "navigate", "navigate", (m) => parsePick(m).args)
-          , Call(when((m) => parsePick(m)?.tool === "click"), "click", "click", (m) => parsePick(m).args)
-          , Return((m) => parsePick(m))),
+          , Call(when((m) => pickDecision(m)?.tool === "navigate"), "navigate", "navigate", (m) => pickDecision(m).args)
+          , Call(when((m) => pickDecision(m)?.tool === "click"), "click", "click", (m) => pickDecision(m).args)
+          , Return((m) => pickDecision(m))),
       )
 
       // 4f: Wait for the page to load after clicking/navigating.

@@ -209,8 +209,9 @@ const DISABLE_AUTO = Symbol('grandma-kat/disableAuto');
 
 /**
  * Marker for `.prompt(disableAuto(), …)` — keep that prompt single-round:
- * tool calls execute and are recorded, but their results are never fed back
- * to the model. The default is the auto tool-execution loop.
+ * the tools are still OFFERED, but the model's call is only RECORDED (never
+ * executed, no results fed back); the tree runs the chosen tool itself via a
+ * gated Call(). The default is the auto tool-execution loop.
  */
 export function disableAuto() {
   return Object.freeze({ [DISABLE_AUTO]: true });

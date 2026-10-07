@@ -37,14 +37,8 @@ const tc = (name, args, id = name) => ({
   function: { name, arguments: JSON.stringify(args ?? {}) },
 });
 
-// The invoke step now DECIDES (JSON): convert a RUN_TOOL tool_call reply into
-// the decision the tree runs. Other prompts pass through untouched.
-const toInvoke = (handler) => async (messages, opts) => {
-  const r = await handler(messages, opts);
-  const c = r?.tool_calls?.find((x) => x.function?.name === RUN_TOOL);
-  if (!c) return r;
-  return { content: JSON.stringify({ tool: RUN_TOOL, args: JSON.parse(c.function.arguments || '{}') }) };
-};
+// The invoke step offers RUN_TOOL and records the model's emitted call
+// (disableAuto), which the tree runs via its gated Call — no decision JSON.
 
 // The same runtime wiring entry.mjs uses for a real run, but with a scripted
 // mock model and inline demo tools. One `run_<slot>` entry per SURFACE.slots.
@@ -55,7 +49,7 @@ function makeRuntime(handler, { task = 'say hello', extraTools = {} } = {}) {
     tree: aliasFor(slot),
   }]));
   return mockRuntime(handler, {
-    models: { strong: { model: 'mock', handler: toInvoke(handler) } },
+    models: { strong: { model: 'mock', handler } },
     memory: { task },
     tools: {
       echo: tool(async (a) => `echo: ${a.text}`),
