@@ -884,7 +884,7 @@ Consequence: declare needs only for inputs present at **first execution**.
 Loop-carried reads (draft reading `m.branch.verify` on pass 1) must stay
 undeclared and defensive: `${m.branch.verify ?? ''}`.
 
-### `Register(name, description, fn, [calls(...), parameters(...)])` — declaration
+### `Register(name, description, fn, [description(...), calls(...), parameters(...)])` — declaration
 
 Declares an **inline tool** that lives in the tree itself — no runtime
 registry entry needed — and is **scoped like a memory slot**: visible to
@@ -917,14 +917,17 @@ Register("lookup", "Find a person by name and return their phone",
   result skips the patch. The usual error conventions apply (an object with
   an `error` key, or a string starting with "error", is a tool error).
 - `parameters(schema)` supplies the JSON schema the model sees (default: an
-  empty object schema); `calls(...)` and `parameters(...)` may each appear
-  once.
-- A register carries only the positional `description` — the model-facing text
-  of its tool schema. There is **no** per-register `guide`: `calls(...)` and
-  `parameters(...)` are the only extra arguments, and anything else is a build
-  error. Usage guidance is a **host** concept — a host that offers a tree as a
-  tool reads guidance from the tree's spec (BOB reads its `## Guide`), not from
-  an individual register — so write "how to use me" text there, not here.
+  empty object schema); `calls(...)`, `parameters(...)` and `description(...)`
+  may each appear once.
+- The model-facing `description` is a bare string or a `description('...')`
+  marker (the same marker `Needs` uses) — attached to the name
+  (`Register('lookup', description('Find a person'), fn)`) or among the options
+  (`Register('lookup', fn, description('Find a person'))`). There is **no**
+  per-register `guide`: `description(...)`, `calls(...)` and `parameters(...)`
+  are the only extra arguments, and anything else is a build error. Usage
+  guidance is a **host** concept — a host that offers a tree as a tool reads
+  guidance from the tree's spec (BOB reads its `## Guide`), not from an
+  individual register — so write "how to use me" text there, not here.
 - A register is a **declaration, not a step**: it does not take `when()`,
   and it is **positional** — usable from its point in the sequence onward; a
   reference before the declaration is a build error at `knit()` start

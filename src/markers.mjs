@@ -93,10 +93,12 @@ export function resolveMax(marker) {
 const DESCRIPTION = Symbol('grandma-kat/description');
 
 /**
- * Marker for Needs('input', description('...')) — a caller-facing note on one
- * required input slot. It attaches to the name immediately before it. A host
- * that turns the tree into a tool (e.g. a function-calling schema) can surface
- * the text as that parameter's description; hosts that ignore it lose nothing.
+ * Marker for Needs('input', description('...')) and for Register(...) — a note
+ * attached to the name before it: a caller-facing note on one input slot, or the
+ * model-facing description of an inline tool. For a tool it may also appear among
+ * the trailing options: Register('lookup', fn, description('...')). A host that
+ * turns the tree into a tool (a function-calling schema) surfaces the text as that
+ * parameter's / tool's description; hosts that ignore it lose nothing.
  */
 export function description(text) {
   if (typeof text !== 'string' || text.trim() === '') {

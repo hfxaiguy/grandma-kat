@@ -193,9 +193,17 @@ export function registerFields(rawArgs, label) {
     throw new TypeError(`${label}: first argument must be the tool name (string), e.g. Register("lookup", "Find a person", (m, args) => …)`);
   }
   assertValidName(name, label);
-  const description = args.shift();
-  if (typeof description !== 'string' || description.length === 0) {
-    throw new TypeError(`${label}: second argument must be a non-empty description (string) — the model reads it`);
+  // The description — the model-facing text — is the name's note: a bare
+  // string, or a description('...') marker (the same marker Needs uses),
+  // attached to the name or among the trailing options.
+  let description = null;
+  const second = args[0];
+  if (isDescription(second)) {
+    description = second.text;
+    args.shift();
+  } else if (typeof second === 'string') {
+    description = second;
+    args.shift();
   }
   const fn = args.shift();
   const isTree = fn != null && typeof fn === 'object' && fn.kind === 'tree';
@@ -211,9 +219,15 @@ export function registerFields(rawArgs, label) {
     } else if (isParameters(arg)) {
       if (schema) throw new TypeError(`${label}: parameters(...) may only appear once`);
       schema = arg.schema;
+    } else if (isDescription(arg)) {
+      if (description != null) throw new TypeError(`${label}: description may only appear once`);
+      description = arg.text;
     } else {
-      throw new TypeError(`${label}: unexpected argument — the options are calls(...) and parameters(...)`);
+      throw new TypeError(`${label}: unexpected argument — the options are description(...), calls(...) and parameters(...)`);
     }
+  }
+  if (typeof description !== 'string' || description.length === 0) {
+    throw new TypeError(`${label}: a non-empty description is required — a string or description('...') (the model reads it)`);
   }
   if (isTree && callsList) {
     throw new TypeError(`${label}: a tree-backed register declares its own tools — drop calls(...)`);

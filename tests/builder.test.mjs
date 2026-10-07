@@ -151,6 +151,17 @@ test('Register() validates its arguments', () => {
     'n', 'd', () => 'x', calls('sql_query'), parameters({ type: 'object', properties: { q: { type: 'string' } } })));
   assert.deepEqual(marked.registers[0].calls, ['sql_query']);
   assert.deepEqual(marked.registers[0].parameters, { type: 'object', properties: { q: { type: 'string' } } });
+
+  // The description may be declared with description('...') — attached to the
+  // name before it, or among the options (the same marker Needs uses).
+  const byMarker = Tree(name('r2'), Register('n', description('d'), () => 'x'));
+  assert.equal(byMarker.registers[0].description, 'd');
+  const byOption = Tree(name('r2'), Register('n', () => 'x', description('d'), parameters({})));
+  assert.equal(byOption.registers[0].description, 'd');
+  assert.throws(
+    () => Tree(name('r2'), Register('n', description('d'), () => 'x', description('e'))),
+    /only appear once/);
+  assert.throws(() => Tree(name('r2'), Register('n', () => 'x')), /description/);
 });
 
 test('registers are absent until used and never shared', () => {
