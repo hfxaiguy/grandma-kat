@@ -945,9 +945,10 @@ inside an app it calls.
 A prompt executes every tool call the model emits, appends the results to
 its local thread, and calls the model again — until a round returns no
 tool calls. See `docs/auto-tool-loop.md` for the full contract (record
-shape, resume, hooks). `disableAuto()` restores the single-round behaviour
-for steps that act on exactly one call per pass (`find-address`'s
-`pick_action` is the canonical example); `max(n)` bounds the loop and
+shape, resume, hooks). `disableAuto()` offers the model **no tools** — use it
+for a step that must not call one; the tree runs the chosen tool via a gated
+`Call(...)` (`find-address`'s `pick_action`, caller-list's `advance`);
+`max(n)` bounds the loop and
 exhaustion throws; positional `Hook(toolBefore()/toolAfter(), …)` trees
 observe and rewrite each call (see `README.md` *Tool hooks*).
 

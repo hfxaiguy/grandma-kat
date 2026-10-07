@@ -1077,8 +1077,18 @@ async function execCall(exec, child, scope, callResume = null) {
     // A Call() to a tree tool (runtime registry or a tree-backed Register) runs
     // the subtree in place — the argument is the tree's name (a registered/
     // dynamically loaded tree) or a def. A pause inside resumes through the
-    // structural branch machinery.
-    const result = await runTreeTool(exec, child.tool, { tree: treeSpec }, args, scope, callResume);
+    // structural branch machinery. A subtree FAILURE is captured as an error
+    // result (like a register), so the caller's Check can recover; control-flow
+    // signals (pause/goto) still propagate.
+    let result;
+    try {
+      result = await runTreeTool(exec, child.tool, { tree: treeSpec }, args, scope, callResume);
+    } catch (err) {
+      if (err instanceof PauseSignal || err instanceof GotoSignal) throw err;
+      const errorValue = { error: err instanceof Error ? err.message : String(err) };
+      logEvent(exec, 'tool_call', { child: child.name, tool: child.tool, args, result: errorValue, isError: true }, scope);
+      return { value: errorValue, record: { content: errorValue, tool: child.tool, args, toolResults: [errorValue], isError: true } };
+    }
     logEvent(exec, 'tool_call', { child: child.name, tool: child.tool, args, result }, scope);
     return { value: result, record: { content: result, tool: child.tool, args, toolResults: [result] } };
   }

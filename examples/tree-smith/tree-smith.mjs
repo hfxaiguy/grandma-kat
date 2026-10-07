@@ -43,7 +43,7 @@
 // See README.md.
 
 import { Tree, name, Branch, Prompt, Call, Check, Register, Return, Tools,
-         Needs, Model, Emit, goback, max, disableAuto, parameters } from '../../src/index.mjs';
+         Needs, Model, Emit, goback, max, when, disableAuto, parameters } from '../../src/index.mjs';
 import { renderAuthorPrompt } from './guide.mjs';
 import { evaluatePattern, validateDef } from './compile.mjs';
 
@@ -55,6 +55,15 @@ export const DEFAULT_SLOT = 'live';
 export const DRAFT_SLOT = 'draft';
 export const aliasFor = (slot) => `generated:${slot}`;
 export const RUN_TOOL = `run_${DEFAULT_SLOT}`;
+
+// The invoke decision: { tool: RUN_TOOL, args: { task } }.
+const parseInvoke = (m) => {
+  try {
+    return JSON.parse(String(m.branch?.invoke ?? '').replace(/^```(?:json)?\s*|```$/g, '').trim());
+  } catch {
+    return null;
+  }
+};
 
 // What the smith is allowed to use — and what the authoring model is told
 // about. One source of truth: the guide's inventory, the static validation,
@@ -177,19 +186,24 @@ export const smith = Tree(
   // subtree, seeded with the call args (so the generated tree's
   // Needs('task') resolves from its own invocation).
   Tools(RUN_TOOL),
-  Prompt('invoke', disableAuto(),
-    m => `Call the tool ${RUN_TOOL} exactly once with {"task": ${JSON.stringify(m.task)}}.`),
+  Prompt('invoke',
+    m => `Return {"tool":"${RUN_TOOL}","args":{"task": ${JSON.stringify(m.task)}}}.`, { tools: [] }),
   Check(m => {
-    const tr = m.raw.branch.invoke?.toolResults?.[0];
-    if (!tr) return `You did not call ${RUN_TOOL} — call it exactly once.`;
-    if (tr.isError) return `The generated tree failed: ${String(tr.result)}`;
-    return true;
+    const d = parseInvoke(m);
+    return d && d.tool === RUN_TOOL ? true : `Choose the tool ${RUN_TOOL}.`;
   }, goback(1, max(2))),
+  Call(when((m) => parseInvoke(m)?.tool === RUN_TOOL), 'invoked', RUN_TOOL, (m) => parseInvoke(m).args),
+  Check(m => {
+    const r = m.branch.invoked;
+    if (r === undefined) return `You did not call ${RUN_TOOL}.`;
+    if (r && typeof r === 'object' && 'error' in r) return `The generated tree failed: ${String(r.error)}`;
+    return true;
+  }, goback(3, max(2))),
 
   // The smith's output: the source, the definition's name, and what the
   // generated tree produced.
   Return(m => ({ source: m.branch.authoring.source,
                  name: m.branch.authoring.name,
                  alias: m.branch.authoring.alias,
-                 result: m.raw.branch.invoke.toolResults[0].result })),
+                 result: (m.branch.invoked && typeof m.branch.invoked === 'object' && 'value' in m.branch.invoked) ? m.branch.invoked.value : m.branch.invoked })),
 );

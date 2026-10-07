@@ -75,6 +75,15 @@ If there is no address, respond with exactly one word: no`;
 // A simple helper that checks if the AI's answer means "no address found."
 const isNo = (v) => typeof v === 'string' && v.trim().toLowerCase() === 'no';
 
+// The pick_action decision: { tool:'navigate'|'click', args } or { say }.
+const parsePick = (m) => {
+  try {
+    return JSON.parse(String(m.branch?.pick ?? '').replace(/^```(?:json)?\s*|```$/g, '').trim());
+  } catch {
+    return null;
+  }
+};
+
 // Tags to skip when filtering clickable elements (non-interactive).
 const SKIP_TAGS = new Set(['body', 'html', 'head', 'script', 'style', 'meta', 'link', 'noscript']);
 
@@ -222,7 +231,7 @@ export const pattern = Tree(name("find-address")
           // iteration — the tree drives the loop (check + goback below and
           // the outer .until), it must not feed tool results back and let
           // the model keep calling tools inside the prompt.
-          , Prompt(disableAuto(), (m) => {
+          , Prompt("pick", (m) => {
             const el = m.branch.try_element;
             if (!el)
               return [
@@ -242,45 +251,32 @@ export const pattern = Tree(name("find-address")
               { role: "system", content: SYSTEM_PROMPT },
               {
                 role: "user",
-                content: `The best element to find the address is:\n<${tag}> "${text}" (${href})\nSelector: ${selector}\n\nCall "navigate" with the URL, or "click" with the selector. If neither makes sense, say "no candidates".`,
+                content: `The best element to find the address is:\n<${tag}> "${text}" (${href})\nSelector: ${selector}\n\nReturn ONE JSON decision, no prose:\n{"tool":"navigate","args":{"url":"<the URL>"}} to navigate, or {"tool":"click","args":{"selector":"<the selector>"}} to click, or {"say":"no candidates"} if neither makes sense.`,
               },
             ];
-          })
+          }, { tools: [] })
           , Check(
             (m) => {
-              const tc = m.raw.prev[0]?.toolCalls?.[0];
-              const tr = m.raw.prev[0]?.toolResults?.[0];
-              if (!tc) {
-                const text = String(m.prev[0] ?? "")
-                  .trim()
-                  .toLowerCase();
-                if (!text)
-                  return 'Empty response. Call navigate/click or say "no candidates".';
-                if (text.length < 80 && /\bno\b/.test(text)) return true;
-                return 'Did not call a tool. Call navigate/click, or respond with "no candidates".';
-              }
-              if (tr?.isError)
-                return `Tool '${tc.name}' failed: ${tr.result}. Try a different element or use navigate instead of click.`;
-              try {
-                JSON.parse(tc.arguments);
-                return true;
-              } catch {
-                return "Invalid JSON in tool call arguments.";
-              }
+              const d = parsePick(m);
+              if (!d) return 'Return one JSON object: {"tool":"navigate"|"click","args":{…}} or {"say":"no candidates"}.';
+              if (d.tool && d.tool !== "navigate" && d.tool !== "click") return `Unknown tool '${d.tool}'. Use navigate or click, or say "no candidates".`;
+              if (d.tool && (d.args == null || typeof d.args !== "object")) return `"${d.tool}" needs an args object.`;
+              if (!d.tool && !(typeof d.say === "string" && /\bno\b/.test(d.say.toLowerCase()))) return 'Did not choose a tool. Return navigate/click, or {"say":"no candidates"}.';
+              return true;
             },
             goback(
               1,
               max(3, (m) => `pick_action gave up: ${m.error}`),
             ),
-          )),
+          )
+          , Call(when((m) => parsePick(m)?.tool === "navigate"), "navigate", "navigate", (m) => parsePick(m).args)
+          , Call(when((m) => parsePick(m)?.tool === "click"), "click", "click", (m) => parsePick(m).args)
+          , Return((m) => parsePick(m))),
       )
 
       // 4f: Wait for the page to load after clicking/navigating.
       , Call(
-        when((m) => {
-          const tc = m.raw.branch.pick_action?.children?.['pick_action#1']?.toolCalls?.[0];
-          return Boolean(tc && tc.name);
-        }),
+        when((m) => Boolean(m.branch.pick_action?.tool)),
         "wait_for_load",
         "wait_for_load",
         () => ({ timeoutMs: 10000 }),
