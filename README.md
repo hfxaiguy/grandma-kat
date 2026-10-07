@@ -919,6 +919,12 @@ Register("lookup", "Find a person by name and return their phone",
 - `parameters(schema)` supplies the JSON schema the model sees (default: an
   empty object schema); `calls(...)` and `parameters(...)` may each appear
   once.
+- A register carries only the positional `description` — the model-facing text
+  of its tool schema. There is **no** per-register `guide`: `calls(...)` and
+  `parameters(...)` are the only extra arguments, and anything else is a build
+  error. Usage guidance is a **host** concept — a host that offers a tree as a
+  tool reads guidance from the tree's spec (BOB reads its `## Guide`), not from
+  an individual register — so write "how to use me" text there, not here.
 - A register is a **declaration, not a step**: it does not take `when()`,
   and it is **positional** — usable from its point in the sequence onward; a
   reference before the declaration is a build error at `knit()` start
