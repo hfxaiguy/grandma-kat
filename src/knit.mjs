@@ -976,9 +976,11 @@ async function execPrompt(exec, child, scope, promptResume = null) {
       // Tools may return error-shaped results instead of throwing.
       if (isErrorResult(result)) isError = true;
     } catch (err) {
-      // A pause inside a tree tool is not a tool error — it suspends the
-      // whole run and must reach knit() unchanged.
-      if (err instanceof PauseSignal) throw err;
+      // A pause OR a goto inside a tree tool is control flow, not a tool
+      // error — it suspends/unwinds the whole run and must reach knit()
+      // unchanged (a goto unwinds to its target's frame, exactly as from a
+      // Call()). Only genuine failures are fed back as tool errors.
+      if (err instanceof PauseSignal || err instanceof GotoSignal) throw err;
       isError = true;
       result = `error: ${err.message}`;
     }

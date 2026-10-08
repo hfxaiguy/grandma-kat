@@ -7,7 +7,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import kat, { Tree, name, Tools, Prompt, Human, Call, Goto, Return, Branch, From, registerTree, readFromMemoryOnce, Emit, Memory, update, Until, goto, max } from '../src/index.mjs';
+import kat, { Tree, name, Tools, Register, Prompt, Human, Call, Goto, Return, Branch, From, registerTree, readFromMemoryOnce, Emit, Memory, update, Until, goto, max } from '../src/index.mjs';
 import { scripted, mockRuntime, tool } from './helpers.mjs';
 
 const fn = (n) => ({ type: 'function', function: { name: n, arguments: '{}' } });
@@ -122,4 +122,29 @@ test('readFromMemoryOnce() re-pauses on a loop rewind (the notice is one-shot)',
   const first = await kat.knit(host3, rt);
   assert.equal(first.status, 'waiting', 'the loop paused after the seeded pass');
   assert.equal(first.humanSlot, 'entry');
+});
+
+test('a Goto inside a model-called tree-backed register unwinds (control flow, not a tool error)', async () => {
+  // The register's tree ends in a Goto; called from a prompt's tool loop it
+  // must unwind like a Call()'s Goto, not be swallowed as a tool error.
+  const jumper = Tree(
+    name('jumper'),
+    Goto('host/start_input', () => ({ start_input: 'yielded' })),
+  );
+  const host = Tree(
+    name('host'),
+    Register('jump', 'jump to the host entry', jumper),
+    Prompt('ask', () => [{ role: 'user', content: 'go' }], {
+      tools: ['jump'],
+    }),
+    Human('start_input', readFromMemoryOnce()),
+    Return((m) => 'host got: ' + String(m.start_input ?? '')),
+  );
+  const rt = mockRuntime(scripted([
+    { content: '', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'jump', arguments: '{}' } }] },
+  ]));
+
+  const out = await kat.knit(host, rt);
+  assert.equal(out.status, undefined, 'the run completed at the host entry');
+  assert.match(String(out.result), /host got: yielded/, 'the goto unwound to the host frame');
 });
