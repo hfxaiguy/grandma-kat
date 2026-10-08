@@ -18,8 +18,8 @@ tracking method boundaries.
 | `++!` | `++! conversation: keep the log` | required memory update — runs every pass, never gated | `Memory(update(), name, fn)` with no `when(...)` gate | name literal; value is data |
 | `<<` | `<< output_msg: "Hi"` | non-blocking output | `Emit(m => ({ text: ... }))` | `"..."` verbatim |
 | `>>` | `>> human: input_1` | pause, ask the human for input | `Human("input_1")` | slot name literal |
-| `!!` | `!! input` | require a memory slot (declared input) | `Needs("input")` — optionally `Needs("input", description("..."))` | name literal; slot must be seeded by the caller; the optional `description("...")` annotates that input |
-| `!!?` | `!!? tone` | declare an optional input slot (documented, may be absent) | `Needs("tone", optional())` — optionally with `description("...")` | name literal; absence does not throw |
+| `!!` | `!! input` | **required need**: a memory slot the caller must seed (declared input) | `Needs("input")` — optionally `Needs("input", description("..."))` | name literal; slot must be seeded by the caller; the optional `description("...")` annotates that input |
+| `!!?` | `!!? tone` | **optional need**: a declared input that may be absent | `Needs("tone", optional())` — optionally with `description("...")` | name literal; absence does not throw |
 | `--` | `-- prompt: does X ...?` | ask the model | a `Branch` wrapping a `Prompt(...)` | text **expanded** into a full prompt |
 | `->` | `-> query_batch: duckdb_query ...` | fixed/direct tool call, no model | `Call("query_batch", "duckdb_query", argsFn)` | call name and tool name literal; arguments **expanded** from context |
 | `#->` | `#-> lookup: "Find a person by name"` | register an inline tool, usable from its point onward (positional) and scoped like a memory slot (inherited by its subtree, overridable by a child) | `Register("lookup", "Find a person by name", (m, args, tools) => …, calls(...), parameters({ … }))` | name literal; the description `"..."` verbatim; the body is JavaScript at the call site; `calls(...)` and `parameters(...)` are markers |
@@ -204,7 +204,9 @@ Rules of the translation:
   that must act on exactly one call per pass takes `disableAuto()`; `max(n)`
   bounds the loop (exhaustion throws); positional
   `Hook(toolBefore()/toolAfter(), [when(cond)], tree)` elements observe and
-  rewrite each call.
+  rewrite each call. Its description may end with the **in/out convention** —
+  `— in: … ; out: …`: the slots that feed the prompt's messages, and what its
+  value is / where it lands.
 - `** branch: if COND run:` → `Branch(when(m => EXPAND(COND)), SUBTREE)`.
   The COND is expanded into a predicate over the referenced slot. If COND
   says "above is true", bind it to the preceding `--` prompt's named result
