@@ -1247,9 +1247,23 @@ async function runTreeTool(exec, toolName, tool, args, scope, resumeState = null
   }
   // Session memory: hydrate on a fresh invocation (call args win over stored).
   if (!resumeState) await hydrateSessionMemory(exec, def, childScope, args?.fresh === true);
+  // The app boundary: an app entered as a tree tool is a distinct scope a host
+  // can render (the trunk calling contacts/caller-list/email/…). `tree_enter`
+  // marks entry; `tree_exit` completion, `tree_suspend` a pause — so a host can
+  // draw a matching pair around the app's inner steps.
+  const appName = toolName;
+  logEvent(exec, 'tree_enter', { tool: appName, tree: def.name ?? appName }, childScope);
   try {
     const out = await execTree(exec, def, childScope, scope, resumeState);
+    logEvent(exec, 'tree_exit', { tool: appName, tree: def.name ?? appName }, childScope);
     return out.value ?? null;
+  } catch (err) {
+    if (err instanceof PauseSignal) {
+      logEvent(exec, 'tree_suspend', { tool: appName, tree: def.name ?? appName }, childScope);
+    } else {
+      logEvent(exec, 'tree_exit', { tool: appName, tree: def.name ?? appName, error: true }, childScope);
+    }
+    throw err;
   } finally {
     flushSessionMemory(exec, def, childScope);
   }
@@ -1879,19 +1893,24 @@ function validateTree(tree, warnings) {
     throw new KnitError(`tree '${tree.name}' has zero children — a named tree with no children is a build error`);
   }
 
-  // KNOWN FALSE POSITIVE (potential fix, not yet done): a `Memory("messages", ...)`
-  // followed by `Memory(update(), "messages", ...)` in the same tree triggers this
-  // warning, but that pairing is idiomatic (`Memory()` seeds the slot,
-  // `Memory(update(), )` appends to it). See tests/runner.test.mjs (memoryUpdate
-  // idiom) and AGENTS.md. Potential fix: when the duplicate pair is a
-  // `Memory()` immediately followed by a `Memory(update(), )` of the same name,
-  // skip the warning instead of pushing it.
+  // What actually collides is two DECLARATIONS of the same slot in one tree —
+  // the second `Memory(name, …)` shadows the first. `Memory(update(), name, …)`
+  // never declares a slot (it writes the owner's, up the chain), so any number
+  // of updates under a name is fine: seed-then-append, append-then-append, or
+  // update-then-update. So suppress when the duplicate child is an update, and
+  // warn only when it is a declaration (or any non-update named child). Unnamed
+  // children are not slots and cannot collide.
   const seen = new Set();
   for (const child of tree.children) {
-    if (seen.has(child.name)) {
-      warnings.push(`tree '${tree.name}' has duplicate child name '${child.name}' — the second overwrites the first's memory slot`);
+    if (child.name != null) {
+      if (seen.has(child.name)) {
+        if (child.kind !== 'memoryUpdate') {
+          warnings.push(`tree '${tree.name}' has duplicate child name '${child.name}' — the second overwrites the first's memory slot`);
+        }
+      } else {
+        seen.add(child.name);
+      }
     }
-    seen.add(child.name);
     if (child.kind === 'branch' && child.tree) validateTree(child.tree, warnings);
     if (child.kind === 'map') validateTree(child.tree, warnings);
   }

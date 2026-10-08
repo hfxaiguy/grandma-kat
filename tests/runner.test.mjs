@@ -482,6 +482,48 @@ test('resume restores prev for memoryUpdate on the executing scope', async () =>
   }
 });
 
+test('seed-then-append does not warn; a real duplicate still does', async () => {
+  const duplicates = async (tree) => {
+    const warnings = [];
+    const original = console.warn;
+    console.warn = (msg) => warnings.push(String(msg));
+    try {
+      await grandma.knit(tree, mockRuntime(scripted([])));
+    } finally {
+      console.warn = original;
+    }
+    return warnings.filter((w) => /duplicate child name/.test(w));
+  };
+
+  // The idiomatic pairing: Memory() seeds the slot, Memory(update()) appends.
+  const idiomatic = Tree(name('seed_append')
+    , Memory('slot', () => [])
+    , Memory(update(), 'slot', (m, cur) => [...cur, 'x']));
+  assert.deepEqual(await duplicates(idiomatic), [], 'seed-then-append does not warn');
+
+  // Two updates are also fine — updates never declare a slot.
+  const twoUpdates = Tree(name('two_updates')
+    , Memory('slot', () => [])
+    , Memory(update(), 'slot', (m, cur) => [...cur, 'user'])
+    , Memory(update(), 'slot', (m, cur) => [...cur, 'assistant']));
+  assert.deepEqual(await duplicates(twoUpdates), [], 'update-then-update does not warn');
+
+  // A real collision — two declarations — still warns.
+  const collision = Tree(name('collision')
+    , Memory('slot', () => [])
+    , Memory('slot', () => []));
+  assert.equal((await duplicates(collision)).length, 1, 'two seeds still warn');
+
+  // A declaration after an update shadows the slot the update wrote: warn.
+  // The slot is seeded in a parent so the update resolves and the tree knits.
+  const declareAfterUpdate = Tree(name('outer')
+    , Memory('slot', () => [])
+    , Branch(Tree(name('inner')
+        , Memory(update(), 'slot', (m, cur) => cur)
+        , Memory('slot', () => []))));
+  assert.equal((await duplicates(declareAfterUpdate)).length, 1, 'declare-after-update still warns');
+});
+
 test('a failed resume keeps its checkpoint for a retry', async () => {
   const dbPath = tmpLogger();
   try {
@@ -1261,6 +1303,24 @@ test('a Call() to a tree tool runs the subtree with seeded args', async () => {
   assert.equal(memory.seen, 'hi');
   assert.equal(handler.calls.length, 1);
   assert.equal(handler.calls[0].messages[0].content, 'hello Ada'); // seeded slot
+});
+
+test('a tree tool logs an enter/exit boundary around its inner steps', async () => {
+  const events = [];
+  const child = Tree(name('greeter'), Needs('who'), Prompt(m => `hello ${m.who}`));
+  const host = Tree(name('host'), Call('greet', 'greeter_tool', () => ({ who: 'Ada' })));
+  await grandma.knit(host, {
+    models: { default: { model: 'mock', handler: scripted(['hi']) } },
+    tools: { greeter_tool: { description: 'greet', parameters: {}, tree: child } },
+    logger: { log: (row) => events.push(row), close() {} },
+  });
+
+  const kinds = events.map((e) => e.kind);
+  assert.ok(kinds.includes('tree_enter'), 'entering an app logs tree_enter');
+  assert.ok(kinds.includes('tree_exit'), 'leaving an app logs tree_exit');
+  const enter = events.find((e) => e.kind === 'tree_enter');
+  assert.equal(enter.content.tool, 'greeter_tool');
+  assert.ok(kinds.indexOf('tree_enter') < kinds.indexOf('tree_exit'), 'enter precedes exit');
 });
 
 test('a Register(...) whose body is a Tree runs in place and resumes through its pause', async () => {

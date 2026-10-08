@@ -429,14 +429,12 @@ of initializing one; the slot must already exist in the scope chain (declare
 it with `Memory(...)` first or inject it via runtime memory), and the update
 is written back into the scope that owns it — which may be an ancestor.
 
-**Known false positive (note):** `Memory('x', fn)` immediately followed by
-`Memory(update(), 'x', fn)` (same slot name, seed-then-append) trips the
-"duplicate child name 'x' — the second overwrites the first's memory slot"
-validation warning. That pairing is an intentional, supported idiom — the
-duplicate-name check can't tell it apart from a real collision. Potential
-fix (deferred): when the duplicate pair is a `Memory(...)` directly followed
-by a `Memory(update(), ...)` of the same name, suppress the warning. Tracked
-in `src/knit.mjs` next to `validateTree`.
+**Only declarations collide.** The validation duplicate-name warning fires on
+two *declarations* of the same slot in one tree — a second `Memory('x', fn)`
+shadows the first. `Memory(update(), 'x', fn)` never declares a slot (it writes
+the owner's, up the chain), so any number of updates under a name is fine:
+`Memory('x')` + `Memory(update(), 'x')`, append-then-append, or
+update-then-update never warn. A declaration *after* an update still warns.
 
 ### Session-persistent memory (within a session)
 

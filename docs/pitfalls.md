@@ -173,6 +173,37 @@ Slots are initialized by `Memory(...)` or the runtime injection; their shape is
 predictable within a tree. Trust it. Guard the *inputs you don't control*, not
 your own slots.
 
+## A name-referenced tree that was never imported
+
+**Symptom:** `tree 'X' is not registered and loadTree did not provide it`,
+thrown *mid-run* — at the first hook fire or `From(...)`, never at build time.
+
+`Hook(onEmit(), 'goal_on_emit')` and `From('trunk_turn')` reference their tree
+by **string**. A named `Tree(name('goal_on_emit'), …)` self-registers in KAT's
+build-time registry only when its defining module is **evaluated** — importing
+it for any reason is enough. If nothing imports the module and the host's
+`loadTree` cannot resolve the name, the reference fails the first time it is
+used, because references resolve lazily.
+
+Check it directly: `Tree.has('goal_on_emit')` is `false` before the module is
+imported and `true` after.
+
+Fixes, in order of preference:
+
+1. Make the **host import the defining module** (its pinned prod, when one
+   exists) so the names self-register — the same way `trunk_step.mjs` is
+   imported to make `trunk_turn` resolvable.
+2. Provide `runtime.loadTree(name)` that maps the name to its module.
+3. Last resort: import the module **for its side effect** from the tree that
+   references it. This couples a pinned tree to whatever version gets imported,
+   so prefer 1 or 2 when pinning matters.
+
+**Discovery gotcha.** A host that derives a pattern's name from its first
+comment line must see `// <name>.mjs — description`. A directory prefix
+(`// patterns/<name>.mjs — …`) yields a name containing `/`, which name-safety
+filters reject — so the file is **silently skipped and never imported**. That is
+one common way a needed module goes unloaded and the error above appears.
+
 ## See also
 
 - [`values-flow.md`](values-flow.md) — the model these pitfalls violate.

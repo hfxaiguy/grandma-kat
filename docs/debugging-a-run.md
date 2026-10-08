@@ -47,6 +47,7 @@ CREATE TABLE calls (
 | `kind` | `content` | Notes |
 |---|---|---|
 | `scope_init` | `{ scopeId, parentScopeId }` | the scope tree, in creation order |
+| `tree_enter` / `tree_exit` / `tree_suspend` | `{ tool, tree }` | a tree tool (an **app**) boundary: entered, exited, or paused inside. `tree_exit` carries `error: true` when the app aborted. A host can pair enter/exit to bracket the app's inner steps. |
 | `gate` | `{ child, result: "skipped" }` | **only logged when a branch is SKIPPED** — a passing branch is silent |
 | `check` | `{ child, pass, feedback? }` | `feedback` is what the retried prompt reads as `m.error` |
 | `until` | `{ child, pass, feedback? }` | the loop's exit test each pass |
