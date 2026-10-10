@@ -764,8 +764,9 @@ top-to-bottom. Lives entirely under `examples/notation/`:
 - `examples/notation/person-scan.test.mjs` — mock-model tests (no network)
   for the translated tree.
 
-Symbols: `++` memory, `<<` emit, `>>` human, `--` prompt, `**` gated branch
-(closes by dedent; `***` is an optional closer), `||` nesting prefix (plus `->` direct calls, `#->`
+Symbols: `++` memory, `<<` emit, `>>` human, `--` prompt, `**` branch — gated
+(`** if COND`) or bare (an unconditional grouping subtree) (closes by dedent;
+`***` is an optional closer), `||` nesting prefix (plus `->` direct calls, `#->`
 registers, `??` checks, `@@` per-element subtrees, `()` loops, `!!` needs,
 `##` imported trees). `//` is the comment marker — it runs to the end of the
 line and drops out before translation; `#` alone is **not** a comment, since

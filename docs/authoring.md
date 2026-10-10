@@ -34,9 +34,12 @@ Every callback is an ordinary function — that is where the logic lives.
   ```js
   Memory('missingPhone', (m) => m.branch.rows.rows.filter((r) => !r.phone))
   ```
-- **`Branch(when(cond), tree)`** — branch on a value you computed.
+- **`Branch([when(cond)], tree)`** — attach a subtree. The gate is optional:
+  `Branch(when(cond), tree)` branches on a value you computed; a bare
+  `Branch(tree)` runs unconditionally (a grouping / sequence step).
   ```js
-  Branch(when((m) => m.missingPhone.length > 0), huntTree)
+  Branch(when((m) => m.missingPhone.length > 0), huntTree) // gated
+  Branch(huntTree)                                         // unconditional
   ```
 - **`Return(fn)`** — shape the exported value.
   ```js

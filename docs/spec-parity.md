@@ -86,7 +86,7 @@ re-document them here — the short map:
 | `#-> NAME: "desc"` | `Register("NAME", "desc", fn, calls(…), parameters(…))` |
 | `?? check:` | `Check(fn, goto("NAME", max(k)))` |
 | `@@ NAME: array` | `Each("NAME", m => m.array, SUBTREE)` |
-| `**` … `***`? | `Branch(when(cond)?, SUBTREE)` — **ends by dedent; a `***` at the opener's depth is an optional explicit closer** |
+| `**` … `***`? | `Branch(when(cond)?, SUBTREE)` — a bare `**` is **unconditional** (`Branch(SUBTREE)`, no `when`); **ends by dedent; a `***` at the opener's depth is an optional explicit closer** |
 | `## NAME: path` | import + `Branch(importedTree)` / `From("NAME", …)` |
 | `\|\|` | a child of the enclosing block |
 | `()` … `() goto NAME until COND (max n)` | `Branch(… Until(goto("NAME"), cond, max(n)))` |
@@ -118,9 +118,10 @@ Single-line branch forms (`--`, `##`) take no closer.
        ),
      )
    ```
-3. **Expand the bare text.** A `--` prompt's body and a `**` condition are
-   *seeds*: expand them into real prompts/conditions, forcing the answer format
-   the rest of the tree depends on (see the notation README).
+3. **Expand the bare text.** A `--` prompt's body and a `**` condition (when
+   present — a bare `**` has none) are *seeds*: expand them into real
+   prompts/conditions, forcing the answer format the rest of the tree depends on
+   (see the notation README).
 4. **Name only what you reference.** Unnamed subtrees are fine; the runtime
    auto-names and registers them. Name a subtree when the sketch names it or
    the parent reads its result.
@@ -154,7 +155,7 @@ paper over becomes a lie.
 - [ ] Every `**` ends at its opener's depth (dedent, or an optional `***`); every `()` has its `() goto … until …`.
 - [ ] Declared slots (`++`) vs updated slots (`++` / `++!`) match `Memory(name, …)`
       vs `Memory(update(), name, …)` in the code.
-- [ ] Every `** if COND` maps to a `when(cond)` on the same element.
+- [ ] Every `** if COND` maps to a `when(cond)` on the same element; a bare `**` maps to `Branch(SUBTREE)` with no `when`.
 - [ ] Every `m.branch.X` / `Needs("X")` in code has a named `X` in the sketch.
 - [ ] Every `.mjs` element cites a notation line (no orphan code).
 - [ ] The header comment still says "generated from `<file>.md`".
