@@ -74,10 +74,16 @@ export function takeOptions(args, label, extraAllowed = []) {
 // when() may appear anywhere among the arguments. A bare function in the
 // condition slot is rejected with a "did you mean when()?" error — the
 // mistake LLM authors will make.
-export function takeGate(rawArgs, label) {
+export function takeGate(rawArgs, label, opts = {}) {
   const args = [...rawArgs];
   const whenIndex = args.findIndex(isWhen);
-  if (whenIndex === -1 && args.length > 1 && typeof args[0] === 'function' && valueLike(args[1])) {
+  if (
+    whenIndex === -1 &&
+    !opts.allowLeadingFn &&
+    args.length > 1 &&
+    typeof args[0] === 'function' &&
+    valueLike(args[1])
+  ) {
     throw new TypeError(`${label}: bare function in condition slot — did you mean when()?`);
   }
   if (whenIndex === -1) return { gate: null, args };
@@ -179,7 +185,9 @@ export function fromFields(rawArgs, label) {
 }
 
 export function callFields(rawArgs, label) {
-  const { gate, args } = takeGate(rawArgs, label);
+  // A leading function is the (dynamic) tool name here, not a condition — so
+  // opt out of the "bare function in condition slot" guard.
+  const { gate, args } = takeGate(rawArgs, label, { allowLeadingFn: true });
   // If the first two positional args are both strings, the first is the
   // call's name (the 3-arg form); otherwise the tool name comes first.
   let name = null;
@@ -188,8 +196,14 @@ export function callFields(rawArgs, label) {
     assertValidName(name, label);
   }
   const tool = args.shift();
-  if (typeof tool !== 'string' || tool.length === 0) {
-    throw new TypeError(`${label}: tool name must be a non-empty string, e.g. Call('navigate', m => ({ url }))`);
+  if (typeof tool !== 'string' && typeof tool !== 'function') {
+    throw new TypeError(
+      `${label}: tool name must be a non-empty string, or a function of memory returning it, ` +
+        `e.g. Call('navigate', m => ({ url })) or Call(m => m.chosen.name, m => m.chosen.arguments)`,
+    );
+  }
+  if (typeof tool === 'string' && tool.length === 0) {
+    throw new TypeError(`${label}: tool name must be non-empty`);
   }
   const argsFn = args.shift();
   if (argsFn === undefined) {
@@ -574,6 +588,12 @@ export const fromElement = ({ tree, gate = null, memoryFn = null, ref = null, na
   element('branch', {
     record: branchRecord({ name: name ?? tree?.name ?? null, tree, gate, memory: memoryFn, ref }),
   });
+/**
+ * Call(tool, args) — invoke a tool from a tree step. `tool` is a name (a
+ * runtime tool, or a register declared earlier in scope) OR a function of
+ * memory returning the name, so a tree can dispatch a tool the MODEL chose
+ * (e.g. after Prompt(disableAuto(), …)): Call(m => m.chosen.name, …).
+ */
 export const Call = (...rawArgs) => element('call', { record: callRecord(callFields(rawArgs, 'Call()')) });
 export const Register = (...rawArgs) => element('register', { entry: registerFields(rawArgs, 'Register()') });
 export const Check = (...rawArgs) => element('check', { record: checkRecord(checkFields(rawArgs, 'Check()')) });

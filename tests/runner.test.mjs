@@ -243,6 +243,66 @@ test('Call() leaf executes a tool directly with args from memory', async () => {
   assert.equal(result, 'navigated');
 });
 
+test('Call() resolves a dynamic tool name from memory', async () => {
+  const executed = [];
+  const tools = {
+    navigate: tool(async (args) => { executed.push(['navigate', args]); return 'navigated'; }),
+    search: tool(async (args) => { executed.push(['search', args]); return 'found'; }),
+  };
+  const pattern = Tree(name('agent')
+    , Memory('chosen', () => ({ name: 'search', args: { q: 'cats' } }))
+    , Call(m => m.chosen.name, m => m.chosen.args));
+
+  const { result } = await grandma.knit(pattern, mockRuntime(scripted([]), { tools }));
+  assert.deepEqual(executed, [['search', { q: 'cats' }]]);
+  assert.equal(result, 'found');
+});
+
+test('disableAuto() + a dynamic Call: the tree dispatches the model-chosen tool', async () => {
+  const executed = [];
+  const tools = {
+    search: tool(async (args) => { executed.push(args); return 'found'; }),
+    navigate: tool(async () => 'navigated'),
+  };
+  const handler = scripted([
+    { content: '', tool_calls: [{ id: 'c1', function: { name: 'search', arguments: '{"q":"cats"}' } }] },
+  ]);
+  const pattern = Tree(name('agent')
+    , Tools('search', 'navigate')
+    , Prompt(disableAuto(), 'pick', () => 'go')
+    , Memory('chosen', (m) => m.raw.branch.pick.toolCalls[0])
+    , Call((m) => m.chosen.name, (m) => JSON.parse(m.chosen.arguments)));
+
+  const { result } = await grandma.knit(pattern, mockRuntime(handler, { tools }));
+  assert.deepEqual(executed, [{ q: 'cats' }], 'the model-chosen tool ran');
+  assert.equal(result, 'found');
+});
+
+test('Call() with a dynamic name to a tree tool runs the subtree', async () => {
+  const inner = Tree(name('inner_tool'), Return((m) => `ran:${m.q ?? ''}`));
+  const tools = { picker: { description: 'pick', parameters: {}, tree: inner } };
+  const pattern = Tree(name('agent'), Call(() => 'picker', () => ({ q: 'x' })));
+
+  const { result } = await grandma.knit(pattern, mockRuntime(scripted([]), { tools }));
+  assert.equal(result, 'ran:x');
+});
+
+test('Call(): a dynamic name that resolves to nothing throws; a bad tool arg is a build error', async () => {
+  const pattern = Tree(name('agent'), Call(() => 'ghost', () => ({})));
+  await assert.rejects(
+    grandma.knit(pattern, mockRuntime(scripted([]), { tools: {} })),
+    /unknown tool 'ghost'/,
+  );
+
+  const nonName = Tree(name('b'), Call(() => 42, () => ({})));
+  await assert.rejects(
+    grandma.knit(nonName, mockRuntime(scripted([]), { tools: {} })),
+    /did not return a tool name/,
+  );
+
+  assert.throws(() => Tree(name('a'), Call(42, () => ({}))), /tool name/);
+});
+
 test('unknown tool in Tools() fails at knit() start with branch path', async () => {
   const pattern = Tree(name('agent')
     , Tools('navigte') // typo

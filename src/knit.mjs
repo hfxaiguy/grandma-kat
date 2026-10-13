@@ -1137,8 +1137,17 @@ async function execCall(exec, child, scope, callResume = null) {
   const args = typeof child.argsFn === 'function'
     ? await callFn(child.argsFn, view, `args fn of '${child.name}'`)
     : child.argsFn;
-  const resolved = resolveTool(exec, scope, child.tool);
-  if (!resolved) throw new KnitError(`unknown tool '${child.tool}' (called from '${child.name}')`);
+  // A dynamic Call: the tool name may be a function of memory (the tool the
+  // model chose under disableAuto(), a dispatch table, …). Resolved once,
+  // before dispatch, so everything below uses the concrete name.
+  const toolName = typeof child.tool === 'function'
+    ? await callFn(child.tool, view, `tool name fn of '${child.name}'`)
+    : child.tool;
+  if (typeof toolName !== 'string' || toolName.length === 0) {
+    throw new KnitError(`'${child.name}': the tool-name function did not return a tool name`);
+  }
+  const resolved = resolveTool(exec, scope, toolName);
+  if (!resolved) throw new KnitError(`unknown tool '${toolName}' (called from '${child.name}')`);
   const treeSpec = resolved.kind === 'register' ? resolved.entry.tree : resolved.tool?.tree;
   if (treeSpec !== undefined) {
     // A Call() to a tree tool (runtime registry or a tree-backed Register) runs
@@ -1149,15 +1158,15 @@ async function execCall(exec, child, scope, callResume = null) {
     // signals (pause/goto) still propagate.
     let result;
     try {
-      result = await runTreeTool(exec, child.tool, { tree: treeSpec }, args, scope, callResume);
+      result = await runTreeTool(exec, toolName, { tree: treeSpec }, args, scope, callResume);
     } catch (err) {
       if (err instanceof PauseSignal || err instanceof GotoSignal) throw err;
       const errorValue = { error: err instanceof Error ? err.message : String(err) };
-      logEvent(exec, 'tool_call', { child: child.name, tool: child.tool, args, result: errorValue, isError: true }, scope);
-      return { value: errorValue, record: { content: errorValue, tool: child.tool, args, toolResults: [errorValue], isError: true } };
+      logEvent(exec, 'tool_call', { child: child.name, tool: toolName, args, result: errorValue, isError: true }, scope);
+      return { value: errorValue, record: { content: errorValue, tool: toolName, args, toolResults: [errorValue], isError: true } };
     }
-    logEvent(exec, 'tool_call', { child: child.name, tool: child.tool, args, result }, scope);
-    return { value: result, record: { content: result, tool: child.tool, args, toolResults: [result] } };
+    logEvent(exec, 'tool_call', { child: child.name, tool: toolName, args, result }, scope);
+    return { value: result, record: { content: result, tool: toolName, args, toolResults: [result] } };
   }
   // Result may be a string or a plain JSON object; either is stored in the
   // branch slot verbatim so patterns can consume structured output directly.
@@ -1174,14 +1183,14 @@ async function execCall(exec, child, scope, callResume = null) {
     // A thrown tool error leaves no value to route — log it for diagnosis.
     logEvent(exec, 'tool_error', {
       child: child.name,
-      tool: child.tool,
+      tool: toolName,
       args,
       error: err instanceof Error ? err.message : String(err),
     }, scope);
     throw err;
   }
-  logEvent(exec, 'tool_call', { child: child.name, tool: child.tool, args, result }, scope);
-  return { value: result, record: { content: result, tool: child.tool, args, toolResults: [result] } };
+  logEvent(exec, 'tool_call', { child: child.name, tool: toolName, args, result }, scope);
+  return { value: result, record: { content: result, tool: toolName, args, toolResults: [result] } };
 }
 
 // --- session-persistent memory -------------------------------------------
@@ -2211,7 +2220,9 @@ function validateRuntime(def, runtime) {
     for (let i = 0; i < t.children.length; i++) {
       activate(i);
       const c = t.children[i];
-      if (c.kind === 'call') checkName(c.tool, c.name);
+      // A dynamic Call (a tool-name function) resolves at run time; only a
+      // literal name can be checked against the tools declared so far.
+      if (c.kind === 'call' && typeof c.tool === 'string') checkName(c.tool, c.name);
       // A deferred From() (versioned) has no tree to walk at build time —
       // its model/tool references are validated when the host loads it.
       if ((c.kind === 'branch' || c.kind === 'map') && c.tree) {
