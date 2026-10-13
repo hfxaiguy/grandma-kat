@@ -1034,6 +1034,11 @@ async function execPrompt(exec, child, scope, promptResume = null) {
           messages: thread,
           error: err instanceof Error ? err.message : String(err),
         }, scope);
+        // Tag which model slot failed (the runtime `models` key the prompt
+        // resolved to, e.g. "strong"). A host that offers a fallback needs to
+        // know which role to retarget — the raw error names the model id, not
+        // the role the tree asked for.
+        if (err && typeof err === 'object' && !('slot' in err)) err.slot = c.modelName;
         throw err;
       }
       rounds += 1;
