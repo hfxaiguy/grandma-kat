@@ -15,7 +15,7 @@
 
 import {
   isWhen, isUpdate, isKeep, isReadFromMemoryOnce, isMemory, isVersion, isGoback, isGoto, isMax, isCalls, isParameters,
-  isDisableAuto, isDescription, isOptional, isHookTrigger, goback, resolveMax,
+  isDisableAuto, isRunAfterTool, isDescription, isOptional, isHookTrigger, goback, resolveMax,
 } from './markers.mjs';
 
 // --- tree defs ------------------------------------------------------------
@@ -113,6 +113,22 @@ export function takeAuto(args, label) {
   return auto;
 }
 
+// Splice the runAfterTool(shaper) marker out of an argument list, wherever it
+// sits. Returns the shaper (a function or a registered tree name) or null.
+export function takeRunAfterTool(args, label) {
+  let shaper = null;
+  for (let i = 0; i < args.length; ) {
+    if (isRunAfterTool(args[i])) {
+      if (shaper != null) throw new TypeError(`${label}: duplicate runAfterTool()`);
+      shaper = args[i].shaper;
+      args.splice(i, 1);
+      continue;
+    }
+    i++;
+  }
+  return shaper;
+}
+
 // --- field parsers --------------------------------------------------------
 //
 // One parser per chunk kind: marker splicing, argument-shape validation, and
@@ -121,6 +137,7 @@ export function takeAuto(args, label) {
 export function promptFields(rawArgs, label) {
   const { gate, args } = takeGate(rawArgs, label);
   const auto = takeAuto(args, label);
+  const runAfterTool = takeRunAfterTool(args, label);
   const name = takeName(args, label);
   const value = args.shift();
   if (typeof value !== 'string' && !Array.isArray(value) && typeof value !== 'function') {
@@ -128,7 +145,7 @@ export function promptFields(rawArgs, label) {
   }
   const options = takeOptions(args, label);
   if (args.length !== 0) throw new TypeError(`${label}: too many arguments`);
-  return { name, value, gate, auto, options };
+  return { name, value, gate, auto, options, runAfterTool };
 }
 
 export function branchFields(rawArgs, label) {
@@ -502,9 +519,10 @@ export function needsList(rawArgs, label) {
 // key (definition ids and host session hashes are computed over the def and
 // must not churn), and a plain prompt must not carry `auto`.
 
-export function promptRecord({ name = null, value, gate = null, auto = null, options = {} }) {
+export function promptRecord({ name = null, value, gate = null, auto = null, options = {}, runAfterTool = null }) {
   const child = { kind: 'prompt', name, prompt: value, gate, options };
   if (auto && Object.keys(auto).length) child.auto = auto;
+  if (runAfterTool != null) child.runAfterTool = runAfterTool;
   return child;
 }
 

@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import grandma, { Tree, when, max, disableAuto, toolBefore, toolAfter, Hook, name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until } from '../src/index.mjs';
+import grandma, { Tree, when, max, disableAuto, runAfterTool, toolBefore, toolAfter, Hook, name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until, registerTree } from '../src/index.mjs';
 import { scripted, mockRuntime, tool } from './helpers.mjs';
 
 const tc = (name, args, id = name) => ({
@@ -389,4 +389,161 @@ test('resume: the rebuilt thread carries replayed and fresh tool results', async
   } finally {
     fs.rmSync(dbPath, { force: true });
   }
+});
+
+// ── runner: tool-result shaping for the model ─────────────────────────────
+//
+// A tool result is what the model reads on the next round. Two bounds:
+//   - the engine default: stringify + cap at runtime.maxToolResultChars
+//     (default 4000; { rows: [...] } keeps whole rows, plain text gets a head
+//     slice + marker); 0 disables.
+//   - the prompt's own runAfterTool(shaper): a function or a registered tree
+//     name whose output is used VERBATIM (the default cap does not also apply).
+// Either way the FULL result stays in record.toolResults (the tree reads it via
+// m.raw.branch.<prompt>.toolResults) and in the tool_result log event.
+
+const bigString = (n) => 'x'.repeat(n);
+const toolMessage = (handler, round = 1) =>
+  handler.calls[round].messages.find((msg) => msg.role === 'tool');
+
+test('runAfterTool() validates its shaper and is parsed into the prompt', () => {
+  assert.throws(() => runAfterTool(123), /function or a non-empty registered tree name/);
+  assert.throws(() => runAfterTool(''), /function or a non-empty registered tree name/);
+
+  const fn = (call) => call.result;
+  const t = Tree(name('p'), Prompt('main', () => 'x', runAfterTool(fn)));
+  assert.equal(t.children[0].runAfterTool, fn);
+
+  const t2 = Tree(name('p2'), Prompt('main', () => 'x', runAfterTool('some_tree')));
+  assert.equal(t2.children[0].runAfterTool, 'some_tree');
+
+  const plain = Tree(name('p3'), Prompt('main', () => 'x'));
+  assert.ok(!('runAfterTool' in plain.children[0]), 'no key when unset — def hashes stay stable');
+
+  assert.throws(
+    () => Tree(name('p4'), Prompt('main', () => 'x', runAfterTool(fn), runAfterTool(fn))),
+    /duplicate runAfterTool/,
+  );
+});
+
+test('default cap: a large text result is truncated for the model, kept whole for the tree', async () => {
+  const big = bigString(10000);
+  const handler = scripted([{ content: '', tool_calls: [tc('dump', {})] }, 'done']);
+  const pattern = Tree(name('agent')
+    , Tools('dump')
+    , Prompt('main', () => 'go')
+    , Memory('rec', (m) => m.raw.branch.main));
+
+  const { memory } = await grandma.knit(pattern, mockRuntime(handler, {
+    tools: { dump: tool(async () => big) },
+  }));
+
+  const content = toolMessage(handler).content;
+  assert.ok(content.length <= 4000 + 200, 'the model view is capped near 4000 chars');
+  assert.match(content, /truncated — 10000 chars total/);
+  assert.match(content, /narrow the query/);
+  assert.equal(memory.rec.toolResults[0].result, big, 'the tree still reads the FULL result');
+});
+
+test('default cap: { rows: [...] } keeps whole rows and stays valid JSON', async () => {
+  const rows = Array.from({ length: 80 }, (_, i) => ({ id: i, name: 'n'.repeat(80) }));
+  const handler = scripted([{ content: '', tool_calls: [tc('q', {})] }, 'done']);
+  const pattern = Tree(name('agent')
+    , Tools('q')
+    , Prompt('main', () => 'go')
+    , Memory('rec', (m) => m.raw.branch.main));
+
+  const { memory } = await grandma.knit(pattern, mockRuntime(handler, {
+    tools: { q: tool(async () => ({ rows })) },
+  }));
+
+  const parsed = JSON.parse(toolMessage(handler).content); // valid JSON, not a mid-string cut
+  assert.equal(parsed.truncated, true);
+  assert.equal(parsed.rowCount, 80);
+  assert.ok(parsed.rowsShown > 0 && parsed.rowsShown < 80);
+  assert.equal(parsed.rows.length, parsed.rowsShown);
+  assert.match(parsed.note, /showing \d+ of 80 rows/);
+  assert.deepEqual(memory.rec.toolResults[0].result, { rows }, 'the tree reads the full rows');
+});
+
+test('runtime.maxToolResultChars: caps at a custom size; 0 disables', async () => {
+  const big = bigString(5000);
+  const run = async (opts) => {
+    const handler = scripted([{ content: '', tool_calls: [tc('dump', {})] }, 'done']);
+    const pattern = Tree(name('agent'), Tools('dump'), Prompt('main', () => 'go'));
+    await grandma.knit(pattern, {
+      ...mockRuntime(handler, { tools: { dump: tool(async () => big) } }),
+      ...opts,
+    });
+    return handler;
+  };
+
+  const capped = toolMessage(await run({ maxToolResultChars: 100 }));
+  assert.ok(capped.content.length <= 100 + 200, 'capped near 100');
+  assert.match(capped.content, /truncated/);
+
+  const full = toolMessage(await run({ maxToolResultChars: 0 }));
+  assert.equal(full.content, big, '0 disables the cap');
+});
+
+test('runAfterTool(fn): the shaper output is used verbatim, no default cap on top', async () => {
+  const handler = scripted([{ content: '', tool_calls: [tc('dump', {})] }, 'done']);
+  const pattern = Tree(name('agent')
+    , Tools('dump')
+    , Prompt('main', () => 'go', runAfterTool((call) => `SHAPED:${call.name}:${String(call.result).length}`))
+    , Memory('rec', (m) => m.raw.branch.main));
+
+  const { memory } = await grandma.knit(pattern, mockRuntime(handler, {
+    tools: { dump: tool(async () => bigString(10000)) },
+  }));
+
+  assert.equal(toolMessage(handler).content, 'SHAPED:dump:10000', 'verbatim, not capped');
+  assert.equal(memory.rec.toolResults[0].result.length, 10000, 'the tree keeps the full result');
+});
+
+test('runAfterTool("tree"): a registered tree shapes the result, seeded with m.call', async () => {
+  registerTree(Tree(name('shape_under_test'),
+    Return((m) => `TREE:${m.call.name}:${String(m.call.result).slice(0, 4)}`)));
+  const handler = scripted([{ content: '', tool_calls: [tc('dump', {})] }, 'done']);
+  const pattern = Tree(name('agent')
+    , Tools('dump')
+    , Prompt('main', () => 'go', runAfterTool('shape_under_test')));
+
+  await grandma.knit(pattern, mockRuntime(handler, {
+    tools: { dump: tool(async () => bigString(10000)) },
+  }));
+
+  assert.equal(toolMessage(handler).content, 'TREE:dump:xxxx');
+});
+
+test('runAfterTool("tree"): a pausing shaper tree is rejected', async () => {
+  registerTree(Tree(name('pausing_shape_under_test'), Human('reply')));
+  const handler = scripted([{ content: '', tool_calls: [tc('dump', {})] }, 'done']);
+  const pattern = Tree(name('agent')
+    , Tools('dump')
+    , Prompt('main', () => 'go', runAfterTool('pausing_shape_under_test')));
+
+  await assert.rejects(
+    grandma.knit(pattern, mockRuntime(handler, { tools: { dump: tool(async () => 'x') } })),
+    /must be pause-free/,
+  );
+});
+
+test('runAfterTool("tree"): a throwing shaper falls back to the default cap', async () => {
+  registerTree(Tree(name('throwing_shape_under_test'),
+    Return(() => { throw new Error('shaper blew up'); })));
+  const handler = scripted([{ content: '', tool_calls: [tc('dump', {})] }, 'done']);
+  const pattern = Tree(name('agent')
+    , Tools('dump')
+    , Prompt('main', () => 'go', runAfterTool('throwing_shape_under_test')));
+
+  await grandma.knit(pattern, mockRuntime(handler, {
+    tools: { dump: tool(async () => bigString(10000)) },
+  }));
+
+  assert.match(
+    toolMessage(handler).content,
+    /truncated — 10000 chars total/,
+    'a failed shaper does not kill the conversation — the default cap applies',
+  );
 });

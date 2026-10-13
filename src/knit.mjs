@@ -1101,7 +1101,9 @@ async function execPrompt(exec, child, scope, promptResume = null) {
 
     // Append the round's exchange to the local thread: the assistant
     // tool_calls message, then one tool message per call. Final (post-hook)
-    // values, so hook rewrites are what the model sees.
+    // values, so hook rewrites are what the model sees. Each result is shaped
+    // for the model (see toolContentForModel) — the tree still reads the full
+    // result via record.toolResults, and the run log keeps it too.
     thread.push({ role: 'assistant', content: response.content || null, tool_calls: wireCalls });
     const base = record.toolResults.length - toolCalls.length;
     for (let ci = 0; ci < toolCalls.length; ci++) {
@@ -1109,7 +1111,7 @@ async function execPrompt(exec, child, scope, promptResume = null) {
       thread.push({
         role: 'tool',
         tool_call_id: toolCalls[ci].id,
-        content: typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result ?? ''),
+        content: await toolContentForModel(exec, scope, child, tr),
       });
     }
 
@@ -1436,6 +1438,99 @@ function applyToolHookReturn(current, out, phase) {
   return { ...current, result: out };
 }
 
+/** Default cap on the characters of a tool result shown to the model. */
+const DEFAULT_TOOL_RESULT_CHARS = 4000;
+
+/**
+ * What the MODEL sees for one tool result. A prompt may declare
+ * `runAfterTool(shaper)` — a function `(call) => string | object` or a
+ * registered tree name (seeded with the call as `m.call`; may run a model,
+ * e.g. a cheap condenser). Its output is used verbatim, so a prompt may go
+ * tighter OR looser than the default. Without a shaper the result is
+ * stringified and capped at `runtime.maxToolResultChars` (default 4000;
+ * 0 disables).
+ *
+ * The FULL result is never changed here: the tree reads it via
+ * `record.toolResults` (m.raw.prev[0].toolResults) and the `tool_result` log
+ * event keeps it — only this prompt's model view is shaped.
+ */
+async function toolContentForModel(exec, scope, child, tr) {
+  const call = { name: tr.name, result: tr.result, isError: Boolean(tr.isError) };
+  const shaper = child.runAfterTool;
+  if (shaper != null) {
+    // A pattern bug — an unresolved shaper name, or a pausing shaper tree —
+    // must fail loudly. Only an EXECUTION failure (e.g. the condenser's model
+    // call) falls back to the plain default-capped result, so a flaky model
+    // never kills the conversation.
+    let invoke;
+    if (typeof shaper === 'function') {
+      invoke = () => callFn(shaper, call, `runAfterTool of prompt '${child.name}'`);
+    } else {
+      const tree = await loadNamedTree(exec.runtime, shaper);
+      assertPauseFree(tree, 'runAfterTool()');
+      const shaperScope = new Scope(scope);
+      shaperScope.slots.call = call;
+      invoke = async () => (await execTree(exec, tree, shaperScope, scope, null)).value;
+    }
+    try {
+      const shaped = await invoke();
+      return typeof shaped === 'string' ? shaped : JSON.stringify(shaped ?? '');
+    } catch (err) {
+      logEvent(exec, 'error', {
+        where: `runAfterTool of '${child.name}'`,
+        message: err instanceof Error ? err.message : String(err),
+      }, scope);
+    }
+  }
+  const text = typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result ?? '');
+  return capToolResult(text, exec.runtime.maxToolResultChars);
+}
+
+/**
+ * Bound what the model sees for a plain tool result. Rows-shaped JSON
+ * (`{ rows: [...] }` — read_runs and the sql tools) keeps whole rows until the
+ * budget runs out and reports the total, so the result stays valid JSON;
+ * anything else gets a head slice plus an actionable marker. `max` <= 0 (or
+ * non-finite) disables the cap.
+ */
+function capToolResult(text, max) {
+  const limit = max === undefined || max === null ? DEFAULT_TOOL_RESULT_CHARS : Number(max);
+  if (!Number.isFinite(limit) || limit <= 0) return text;
+  if (text.length <= limit) return text;
+  const rows = rowsOf(text);
+  if (rows) {
+    const kept = [];
+    let size = 2;
+    for (const row of rows) {
+      const s = (JSON.stringify(row) ?? '').length;
+      if (size + s + 1 > limit) break;
+      kept.push(row);
+      size += s + 1;
+    }
+    if (kept.length > 0) {
+      return JSON.stringify({
+        rows: kept,
+        rowCount: rows.length,
+        rowsShown: kept.length,
+        truncated: true,
+        note: `showing ${kept.length} of ${rows.length} rows — narrow the query for the rest`,
+      });
+    }
+  }
+  return `${text.slice(0, limit)}\n…[truncated — ${text.length} chars total, first ${limit} shown; narrow the query or fetch specific fields]`;
+}
+
+/** Parse `{ rows: [...] }` without throwing. */
+function rowsOf(text) {
+  if (typeof text !== 'string' || text[0] !== '{') return null;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && Array.isArray(parsed.rows) ? parsed.rows : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Run one hook tree in its declarer's scope. The event value is seeded under
  * `opts.slot` (default `input`); a `when(cond)` gate is evaluated with that
@@ -1473,15 +1568,16 @@ async function runHook(exec, hook, value, opts = {}) {
   }
 }
 
-/** A hook tree that pauses would strand the run inside the hook — build error. */
-function assertPauseFree(tree, seen = new Set()) {
+/** A hook or runAfterTool shaper tree that pauses would strand the run inside
+ *  it — build error. */
+function assertPauseFree(tree, label = 'Hook()', seen = new Set()) {
   if (!tree || seen.has(tree)) return;
   seen.add(tree);
   for (const child of tree.children ?? []) {
     if (child.kind === 'human') {
-      throw new KnitError(`Hook(): tree '${tree.name ?? '?'}' must be pause-free (it has Human('${child.name}'))`);
+      throw new KnitError(`${label}: tree '${tree.name ?? '?'}' must be pause-free (it has Human('${child.name}'))`);
     }
-    if ((child.kind === 'branch' || child.kind === 'map') && child.tree) assertPauseFree(child.tree, seen);
+    if ((child.kind === 'branch' || child.kind === 'map') && child.tree) assertPauseFree(child.tree, label, seen);
   }
   for (const h of tree.hooks ?? []) if (h.tree) assertPauseFree(h.tree, seen);
 }

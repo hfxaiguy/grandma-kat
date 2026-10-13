@@ -205,6 +205,28 @@ export function parameters(schema) {
 
 export const isParameters = (v) => v != null && v[PARAMETERS] === true;
 
+const RUN_AFTER_TOOL = Symbol('grandma-kat/runAfterTool');
+
+/**
+ * Marker for Prompt(name, fn, runAfterTool(shaper)) — shape what THIS prompt's
+ * model sees for each tool result, without touching the result the tree reads
+ * (record.toolResults) or the run log. `shaper` is either a function
+ * `(call) => string | object` (call = { name, result, isError }) or a
+ * registered tree name; the tree is seeded with the call as `m.call` and may
+ * run a model (e.g. a cheap condenser). A declared shaper's output is used
+ * verbatim — the default size cap does NOT also apply, so a prompt may go
+ * tighter OR looser than the default. Must be pause-free and deterministic
+ * (the thread is rebuilt on replay). Positioned like when()/disableAuto().
+ */
+export function runAfterTool(shaper) {
+  if (typeof shaper !== 'function' && (typeof shaper !== 'string' || shaper.length === 0)) {
+    throw new TypeError('runAfterTool(shaper) expects a function or a non-empty registered tree name');
+  }
+  return Object.freeze({ [RUN_AFTER_TOOL]: true, shaper });
+}
+
+export const isRunAfterTool = (v) => v != null && v[RUN_AFTER_TOOL] === true;
+
 const DISABLE_AUTO = Symbol('grandma-kat/disableAuto');
 
 /**
