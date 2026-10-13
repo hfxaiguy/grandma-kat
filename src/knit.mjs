@@ -1860,6 +1860,10 @@ function finalize(rootInput, runtime) {
 // registered so resume() can rebuild the level from the branch_path.
 function autoname(tree) {
   tree.children.forEach((child, idx) => {
+    // Whether the attachment named its own slot before auto-naming. A From()
+    // always does (the bare logical name is the stable slot); a plain
+    // Branch(un-namedTree) does not.
+    const hadOwnName = child.name != null;
     if (child.name == null) child.name = `${tree.name}#${idx + 1}`;
     if (child.kind === 'branch' || child.kind === 'map') {
       // A versioned From() is a deferred port: its tree is resolved from
@@ -1869,9 +1873,12 @@ function autoname(tree) {
         child.tree.name = child.name;
         registerTree(child.tree);
       }
-      // A named subtree reused across parents keeps one identity; the
-      // branch child follows it so results land under the same slot name.
-      if (child.kind === 'branch') child.name = child.tree.name;
+      // An attachment that named its own slot keeps it. In particular a
+      // From('contacts') stays `m.branch.contacts` even when the host pinned
+      // the target as `contacts.v16` (that name is the RESUME identity, held
+      // in the checkpoint's branch_path via the tree name — not the slot).
+      // Only an attachment with no name of its own follows the subtree's name.
+      if (child.kind === 'branch' && !hadOwnName) child.name = child.tree.name;
       autoname(child.tree);
     }
   });

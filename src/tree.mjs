@@ -176,7 +176,11 @@ export function From(...rawArgs) {
     // time, so load order does not matter.
     return fromElement({ tree: null, gate, memoryFn, ref: id, name: id });
   }
-  return fromElement({ tree: def, gate, memoryFn });
+  // Registered now: attach in place, but keep the BARE logical name as the
+  // slot. A host may have renamed the def to a version-qualified internal name
+  // (BOB pins snapshots as `contacts.v16` for checkpoint stability); that name
+  // is the RESUME identity, never the slot an app reads (`m.branch.contacts`).
+  return fromElement({ tree: def, gate, memoryFn, name: id });
 }
 
 /** Register a tree def under its (possibly auto-assigned) name. */
