@@ -640,6 +640,9 @@ Prompt-argument markers tune it:
 - Positional tool hooks — `Hook(toolBefore(), [when(cond)], tree)` /
   `Hook(toolAfter(), …)` — observe and rewrite each call (see *Tool hooks*
   below).
+- **`runAfterTool(fn | 'tree')`** *(deprecated)* — shape each auto-loop result
+  for the model (the tree still reads the full result). Being phased out in
+  favour of an explicit loop; see `docs/auto-tool-loop.md`.
 
 Options: `{ tools: [...] }` — per-prompt tool whitelist, replacing the
 inherited one (`{ tools: [] }` opts out of tools entirely). Unknown option
@@ -686,16 +689,21 @@ Appends a direct tool-call leaf — no LLM involved.
 Call('snapshot', () => ({}))                        // anonymous
 Call('get_page', 'snapshot', () => ({}))            // named
 Call(when(m => m.url), 'navigate', m => ({ url: m.url }))
+Call(m => m.chosen.name, m => m.chosen.args)        // dynamic tool name
 ```
 
-`argsOrFn` is a plain value or `(memory) => args`. The tool is looked up in
-the runtime registry; the leaf's value is the tool's raw return value (any
-JSON). Unknown tool names throw — both at `knit()` start (whole-tree
-validation) and at call time.
+`tool` is a **name** (a runtime tool, or a register declared earlier in scope)
+**or a function** `(memory) => name`, so a tree can dispatch the tool the model
+chose (e.g. after `Prompt(disableAuto(), …)`) without a branch per tool.
+`argsOrFn` is a plain value or `(memory) => args`. The tool is looked up in the
+runtime registry; the leaf's value is the tool's raw return value (any JSON).
+An unknown name — or a dynamic name function that returns nothing — throws at
+call time (a literal name is also checked at `knit()` start).
 
 If the tool declares `tree`, the call runs that tree in place (args seed the
 subtree's scope, its export is the value). A `Human(...)` inside the subtree
 pauses the whole run and resumes back into this call — see *Trees as tools*.
+For a full explicit tool loop, see `docs/auto-tool-loop.md` (*Explicit loops*).
 
 ### `Check([when], fn, [flow])` — step
 

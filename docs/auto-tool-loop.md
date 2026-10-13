@@ -19,11 +19,12 @@ A `Prompt()` with tools runs a **local conversation** by default:
    value is that round's text.
 5. `disableAuto()` offers the tools but does **not** auto-execute the model's
    call — it records it, and the tree runs the chosen tool via a gated
-   `Call(...)`. `max(n[, errFn])` bounds the rounds — default
+   `Call(...)` (which accepts a function for the tool name, so a model-chosen
+   name dispatches directly). `max(n[, errFn])` bounds the rounds — default
    `DEFAULT_MAX` (3) — and exhaustion throws `KnitError`. Positional
    `Hook(toolBefore()/toolAfter(), [when(cond)], tree)` trees run per call,
    seeded with `call`; mutation-by-return; throws abort (see the README's
-   *Tool hooks*).
+   *Tool hooks*). For a fully explicit loop, see *Explicit loops* below.
 
 Tool errors are fed back as tool messages (the model can recover), bounded
 by `max()`.
@@ -54,6 +55,62 @@ returns.
 The `auto` config is written onto a prompt child only when configured
 (`disableAuto()`, `max()`, hooks) — a plain prompt keeps its exact JSON
 shape, so `definitionId` / host session hashes do not churn on upgrade.
+
+## Explicit loops (the recommended way to shape results)
+
+The auto loop hides its thread: results go straight back to the model, and the
+only knobs are the size cap (`runtime.maxToolResultChars`) and the
+`runAfterTool` marker (below). When a tree wants to SEE or SHAPE each round —
+fold in a condense step, emit progress, pause for a human, switch models — run
+the loop itself:
+
+```js
+Tree(
+  Tools(...TOOL_NAMES),
+  // The thread lives in memory: seed once (the fn sees the current value, so a
+  // rewind keeps it) and it survives a pause inside a tree tool.
+  Memory('messages', (m, cur) => (Array.isArray(cur) ? cur : openMessages(m))),
+  Prompt(disableAuto(), 'response', (m) => m.messages),   // model proposes; nothing runs
+  // Capture the calls into a DURABLE slot — see the resume note below.
+  Memory('calls', (m) => (m.raw?.branch?.response?.toolCalls ?? [])),
+  Branch(when((m) => (m.calls ?? []).length > 0), Tree(
+    Each('tool_calls', (m) => m.calls, Tree(
+      Call((m) => m.item.name, (m) => parseArgs(m.item)),      // dynamic tool name
+    )),
+    Memory(update(), 'messages', (m, cur) => foldRound(cur, m)), // shape + append here
+  )),
+  Until((m) => (m.calls ?? []).length === 0, max(12)),
+  Return((m) => m.branch.response),
+)
+```
+
+- `disableAuto()` records the model's calls (`m.raw.branch.<prompt>.toolCalls`)
+  and executes nothing; the tree dispatches them.
+- `Call(tool, args)` accepts a **function** for `tool`, so a model-chosen name
+  dispatches without a per-tool branch. (A tree tool still runs in place and a
+  `Human()` inside it still pauses/resumes the whole run.)
+- `Each('tool_calls', …)` handles a round with several calls; its results land
+  at `m.branch.tool_calls`, in call order, so `foldRound` pairs them with the
+  calls by index.
+- `foldRound` builds the wire messages: one `assistant` message carrying
+  `tool_calls`, then one `tool` message per call with the matching
+  `tool_call_id`. Result shaping is an ordinary step here — no engine hook.
+
+**Resume note (important).** `m.raw.branch.<prompt>` is NOT reconstructed on
+resume — only `record`-kind content and memory slots are. A `when()` gate that
+read `m.raw.branch.response.toolCalls` would go false after a pause and skip the
+very branch (and `Call`) being resumed — the paused subtree is abandoned.
+Capture the calls into a memory slot (`m.calls`) right after the prompt and gate
+on that; memory slots survive the pause.
+
+## `runAfterTool` — deprecated
+
+`Prompt(name, fn, runAfterTool(fnOrName))` shapes each auto-loop result for the
+model without changing what the tree reads (full results stay in
+`record.toolResults` and the run log). It is **being phased out** in favour of
+the explicit loop above, where shaping is a normal step and the rounds are
+visible. The marker and its tests remain for existing trees — do not adopt it in
+new ones.
 
 ## Known limits / open edges
 

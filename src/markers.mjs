@@ -217,6 +217,11 @@ const RUN_AFTER_TOOL = Symbol('grandma-kat/runAfterTool');
  * verbatim — the default size cap does NOT also apply, so a prompt may go
  * tighter OR looser than the default. Must be pause-free and deterministic
  * (the thread is rebuilt on replay). Positioned like when()/disableAuto().
+ *
+ * @deprecated Being phased out in favour of an EXPLICIT tool loop
+ * (`disableAuto()` + a dynamic `Call()` + `Until`), where result shaping is an
+ * ordinary tree step and every round is visible. Kept working for existing
+ * trees; do not adopt it in new ones. See docs/auto-tool-loop.md.
  */
 export function runAfterTool(shaper) {
   if (typeof shaper !== 'function' && (typeof shaper !== 'string' || shaper.length === 0)) {

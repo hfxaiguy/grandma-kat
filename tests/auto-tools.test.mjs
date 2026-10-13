@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import grandma, { Tree, when, max, disableAuto, runAfterTool, toolBefore, toolAfter, Hook, name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until, registerTree } from '../src/index.mjs';
+import grandma, { Tree, when, update, max, disableAuto, runAfterTool, toolBefore, toolAfter, Hook, name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Each, Call, Check, Emit, Return, Until, registerTree } from '../src/index.mjs';
 import { scripted, mockRuntime, tool } from './helpers.mjs';
 
 const tc = (name, args, id = name) => ({
@@ -546,4 +546,92 @@ test('runAfterTool("tree"): a throwing shaper falls back to the default cap', as
     /truncated — 10000 chars total/,
     'a failed shaper does not kill the conversation — the default cap applies',
   );
+});
+
+// ── runner: the explicit loop (disableAuto + dynamic Call + Until) ─────────
+//
+// The recommended replacement for runAfterTool: the tree runs the loop, so
+// shaping a result is an ordinary step. The load-bearing detail is that the
+// model's calls are captured into a MEMORY slot — raw branch records are not
+// reconstructed on resume, so a gate reading them would skip the paused branch.
+
+test('explicit loop: disableAuto + a dynamic Call dispatches and folds each round', async () => {
+  const executed = [];
+  const callsOf = (m) => (m.raw?.branch?.response?.toolCalls ?? []);
+  const pattern = Tree(name('agent')
+    , Tools('search')
+    , Memory('messages', (m, cur) => (Array.isArray(cur) ? cur : [{ role: 'user', content: 'go' }]))
+    , Prompt(disableAuto(), 'response', (m) => m.messages)
+    , Memory('calls', (m) => callsOf(m))
+    , Branch(when((m) => m.calls.length > 0), Tree(
+      Each('tool_calls', (m) => m.calls, Tree(
+        Call((m) => m.item.name, (m) => JSON.parse(m.item.arguments)),
+      )),
+      Memory(update(), 'messages', (m, cur) => [
+        ...cur,
+        { role: 'assistant', tool_calls: m.calls },
+        ...m.calls.map((c, i) => ({ role: 'tool', tool_call_id: c.id, content: String(m.branch.tool_calls[i]) })),
+      ]),
+    ))
+    , Until((m) => m.calls.length === 0, max(5))
+    , Return(() => 'end'));
+
+  const handler = scripted([
+    { content: '', tool_calls: [tc('search', { q: 'cats' })] },
+    'final',
+  ]);
+  const { result } = await grandma.knit(pattern, mockRuntime(handler, {
+    tools: { search: tool(async (args) => { executed.push(args); return 'found'; }) },
+  }));
+
+  assert.deepEqual(executed, [{ q: 'cats' }], 'the dynamic Call ran the model-chosen tool');
+  assert.equal(result, 'end');
+  // Round 2 saw the folded thread: the assistant tool_calls + the tool result.
+  const round2 = handler.calls[1].messages;
+  assert.ok(round2.some((m) => m.role === 'assistant' && Array.isArray(m.tool_calls)), 'assistant tool_calls folded in');
+  assert.ok(round2.some((m) => m.role === 'tool' && m.content === 'found'), 'the tool result folded in');
+});
+
+test('explicit loop: a pause inside a tree tool resumes (calls captured in a memory slot)', async () => {
+  const dbPath = tmpLogger();
+  try {
+    const child = Tree(name('asker_under_test')
+      , Prompt(() => 'q')
+      , Human('answer')
+      , Memory('out', (m) => `answer: ${m.answer}`));
+    const tools = { asker_under_test: { description: 'ask', parameters: {}, tree: child } };
+    const callsOf = (m) => (m.raw?.branch?.response?.toolCalls ?? []);
+    const pattern = Tree(name('agent')
+      , Tools('asker_under_test')
+      , Memory('messages', (m, cur) => (Array.isArray(cur) ? cur : [{ role: 'user', content: 'go' }]))
+      , Prompt(disableAuto(), 'response', (m) => m.messages)
+      // A DURABLE slot: on resume the raw branch record is gone, but this
+      // survives — the gate below must read it, not m.raw.branch.response.
+      , Memory('calls', (m) => callsOf(m))
+      , Branch(when((m) => m.calls.length > 0), Tree(
+        Each('tool_calls', (m) => m.calls, Tree(
+          Call((m) => m.item.name, () => ({})),
+        )),
+      ))
+      , Until((m) => m.calls.length === 0, max(5))
+      , Return(() => 'end'));
+
+    const first = await grandma.knit(pattern, mockRuntime(scripted([
+      { content: '', tool_calls: [tc('asker_under_test')] },
+      'child question', // the asker tree's own prompt
+    ]), { logger: dbPath, tools }));
+    assert.equal(first.status, 'waiting');
+    assert.equal(first.humanSlot, 'answer');
+
+    const handler2 = scripted(['done']);
+    const second = await grandma.knit(pattern, {
+      ...mockRuntime(handler2, { logger: dbPath, tools }),
+      _continuation: first.continuation,
+      humanInput: 'purr',
+    });
+    assert.equal(second.status, undefined, 'the run finished after the pause');
+    assert.equal(second.result, 'end');
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
 });
