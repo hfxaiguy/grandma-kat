@@ -284,6 +284,36 @@ test('sqlite logger writes rows', async () => {
   }
 });
 
+test('an llm call is logged when it starts, before it returns', async () => {
+  // The web UI's event stream needs to show the call while it is in flight,
+  // not only its result — so the engine announces `llm_start` first.
+  const tmp = path.join(os.tmpdir(), `grandma-kat-test-${Date.now()}-start.db`);
+  try {
+    const pattern = Tree(name('announced'), Prompt(m => 'hi'));
+    await grandma.knit(pattern, mockRuntime(scripted(['hello']), { logger: tmp }));
+
+    const db = new DatabaseSync(tmp, { readonly: true });
+    const rows = db.prepare('SELECT seq, kind, content FROM calls ORDER BY seq').all();
+    db.close();
+
+    const start = rows.find((r) => r.kind === 'llm_start');
+    const call = rows.find((r) => r.kind === 'llm_call');
+    assert.ok(start, 'the call is announced when it starts');
+    assert.ok(call, 'the completed call is still logged');
+    assert.ok(start.seq < call.seq, 'the start event precedes the result');
+
+    const sc = JSON.parse(start.content);
+    assert.equal(sc.child, 'announced#1');
+    assert.equal(sc.model, JSON.parse(call.content).model, 'the start names the model the call resolves to');
+    assert.deepEqual(sc.tools, [], 'a bare prompt offers no tools');
+    assert.equal(JSON.parse(call.content).content, 'hello');
+  } finally {
+    fs.rmSync(tmp, { force: true });
+    fs.rmSync(tmp + '-wal', { force: true });
+    fs.rmSync(tmp + '-shm', { force: true });
+  }
+});
+
 test('memory out feeds the next run (sessions)', async () => {
   const first = await grandma.knit(
     Tree(name('s'), Prompt(m => 'v1')),
