@@ -8,6 +8,79 @@
 // recovery) and before the response is returned. See the inline
 // comment below for details.
 
+// ── Transient-failure retry ───────────────────────────────────────────
+// Providers rate-limit (429) and occasionally return 5xx; a single failure
+// used to abort a whole turn — or a hook that maintains context. Retry these
+// with exponential backoff + jitter, honouring a Retry-After header or a
+// provider-suggested delay. Timeouts (AbortError) are NOT retried: a hung
+// server would usually just hang again, and 4×120s is a very long stall.
+const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
+const DEFAULT_MAX_ATTEMPTS = 4;
+const MAX_BACKOFF_MS = 30_000;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** A server-suggested delay in ms: the Retry-After header, or a JSON body's
+ *  retry_strategy.suggested_initial_delay_s (Neuralwatt-style). */
+function suggestedDelayMs(res, bodyText) {
+  const ra = res && res.headers && typeof res.headers.get === 'function' ? res.headers.get('retry-after') : null;
+  if (ra) {
+    const s = Number(ra);
+    if (Number.isFinite(s) && s >= 0) return s * 1000;
+    const at = Date.parse(ra);
+    if (Number.isFinite(at)) return Math.max(0, at - Date.now());
+  }
+  try {
+    const j = JSON.parse(bodyText);
+    const d = j?.retry_strategy?.suggested_initial_delay_s ?? j?.error?.retry_strategy?.suggested_initial_delay_s;
+    if (typeof d === 'number' && d >= 0) return d * 1000;
+  } catch { /* not JSON */ }
+  return null;
+}
+
+function backoffMs(attempt, hinted) {
+  const base = 500 * 2 ** (attempt - 1); // 0.5s, 1s, 2s, …
+  const ms = (hinted ?? base) + base * 0.25 * Math.random();
+  return Math.min(ms, MAX_BACKOFF_MS);
+}
+
+/**
+ * POST a JSON body and return the Response, retrying transient failures.
+ * `baseURL` is only for the error messages; the fetch uses `url`. `maxAttempts`
+ * may be overridden per model entry (`model.retries`).
+ */
+async function postJsonWithRetry(url, { headers, body, timeoutMs, baseURL, kind, maxAttempts }) {
+  const attempts = Math.max(1, Number(maxAttempts) || DEFAULT_MAX_ATTEMPTS);
+  let lastErr;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let res;
+    try {
+      res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal });
+    } catch (err) {
+      clearTimeout(timer);
+      if (err && err.name === 'AbortError') {
+        throw new Error(`${kind} timed out after ${timeoutMs / 1000}s (${baseURL})`);
+      }
+      lastErr = err;
+      if (attempt >= attempts) throw err;
+      await sleep(backoffMs(attempt, null));
+      continue;
+    }
+    clearTimeout(timer);
+
+    if (res.ok) return res;
+
+    const text = await res.text().catch(() => '');
+    const err = new Error(`${kind} failed (${res.status}): ${text}`);
+    err.status = res.status;
+    if (!RETRYABLE_STATUS.has(res.status) || attempt >= attempts) throw err;
+    lastErr = err;
+    await sleep(backoffMs(attempt, suggestedDelayMs(res, text)));
+  }
+  throw lastErr;
+}
+
 export async function callLlm(model, messages, { tools } = {}) {
   if (typeof model.handler === 'function') {
     return model.handler(messages, { tools, model: model.model });
@@ -38,29 +111,14 @@ export async function callLlm(model, messages, { tools } = {}) {
       headers.Authorization = `Bearer ${model.apiKey}`;
     }
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120_000);
-
-    let res;
-    try {
-      res = await fetch(`${baseURL}/chat/completions`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-    } catch (err) {
-      clearTimeout(timeout);
-      if (err.name === 'AbortError') {
-        throw new Error(`LLM request timed out after 120s (${baseURL})`);
-      }
-      throw err;
-    }
-    clearTimeout(timeout);
-
-    if (!res.ok) {
-      throw new Error(`LLM request failed (${res.status}): ${await res.text()}`);
-    }
+    const res = await postJsonWithRetry(`${baseURL}/chat/completions`, {
+      headers,
+      body,
+      timeoutMs: 120_000,
+      baseURL,
+      kind: 'LLM request',
+      maxAttempts: model.retries,
+    });
 
     const data = await res.json();
     const message = data.choices?.[0]?.message ?? {};
@@ -161,29 +219,14 @@ async function callOllama(model, messages, { tools } = {}) {
   const timeoutMs = typeof model.timeout === 'number' && model.timeout > 0
     ? model.timeout
     : 600_000;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-
-  let res;
-  try {
-    res = await fetch(`${baseURL}/api/chat`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-  } catch (err) {
-    clearTimeout(timeout);
-    if (err.name === 'AbortError') {
-      throw new Error(`Ollama request timed out after ${timeoutMs / 1000}s (${baseURL})`);
-    }
-    throw err;
-  }
-  clearTimeout(timeout);
-
-  if (!res.ok) {
-    throw new Error(`Ollama request failed (${res.status}): ${await res.text()}`);
-  }
+  const res = await postJsonWithRetry(`${baseURL}/api/chat`, {
+    headers,
+    body,
+    timeoutMs,
+    baseURL,
+    kind: 'Ollama request',
+    maxAttempts: model.retries,
+  });
 
   const data = await res.json();
   const msg = data.message ?? {};
