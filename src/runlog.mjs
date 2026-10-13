@@ -523,3 +523,47 @@ export function runLogTools(dbPath, { defaultLimit = DEFAULT_LIMIT } = {}) {
     },
   ];
 }
+
+// ── session history: a host rebuilds its UI from the log ────────────────
+//
+// The host hands the engine an opaque `runtime.sessionId`; every run records
+// the key it ran under (logger.mjs `runs` table). These let a host ask "which
+// runs are this session's?" and "what were a run's events?" without writing SQL
+// against the schema — so it can reconstruct history instead of persisting a
+// private snapshot.
+
+/**
+ * The runs belonging to a session, oldest first. Returns [] for a missing db or
+ * key, or a db without the `runs` table (a pre-attribution log).
+ */
+export function listRuns(dbPath, sessionId) {
+  if (!sessionId || !fs.existsSync(dbPath)) return [];
+  let db;
+  try {
+    db = open(dbPath);
+    return db
+      .prepare('SELECT run_id, session_id, started_at FROM runs WHERE session_id = ? ORDER BY started_at, run_id')
+      .all(sessionId);
+  } catch {
+    return [];
+  } finally {
+    db?.close();
+  }
+}
+
+/**
+ * The events of a run, seq-ordered, content parsed. `tail` keeps only the last
+ * N — a bounded window, which is what a UI wants (not the whole run).
+ */
+export function readEvents(dbPath, runId, { tail } = {}) {
+  if (!runId || !fs.existsSync(dbPath)) return [];
+  let db;
+  try {
+    db = open(dbPath);
+    const rows = db.prepare('SELECT * FROM calls WHERE run_id = ? ORDER BY seq').all(runId);
+    const events = rows.map((r) => ({ ...r, content: parse(r.content) }));
+    return Number.isInteger(tail) && tail > 0 && events.length > tail ? events.slice(-tail) : events;
+  } finally {
+    db?.close();
+  }
+}

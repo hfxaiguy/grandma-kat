@@ -68,6 +68,7 @@ export async function knit(rootInput, runtime = {}) {
     // here — they live on the scopes that declare them (see resolveTool).
     tools: { ...(runtime.tools ?? {}) },
   };
+  logger.startRun?.(exec.runId, runtime.sessionId);
 
   let rootScope;
   let resumeState = null;
@@ -311,6 +312,7 @@ export async function resume(checkpointId, runtime) {
       seq: cp.seq,
       tools: { ...(runtime.tools ?? {}) },
     };
+    logger.startRun?.(exec.runId, runtime.sessionId);
     // onHuman hooks fire before delivery: a hook may redirect (Goto) the reply
     // to an ancestor Human instead of the paused slot. A reply that exactly
     // equals a button value offered at the pause is a pressed button (an exact
@@ -1008,6 +1010,17 @@ async function execPrompt(exec, child, scope, promptResume = null) {
     if (!response) {
       const c = await ensureCall();
       record.model = c.modelName;
+      // Announce the call BEFORE awaiting it, so a live event stream (the web
+      // UI) shows the model call while it is in flight, not only when it
+      // returns. Kept small — the completed `llm_call` carries the payload
+      // (messages, content, toolCalls). A resumed round replays its logged
+      // `llm_call` and never reaches here, so it emits no start.
+      logEvent(exec, 'llm_start', {
+        child: child.name,
+        round: rounds + 1,
+        model: c.modelName,
+        tools: (c.tools ?? []).map((t) => t.function?.name ?? t.name).filter(Boolean),
+      }, scope);
       try {
         response = await callLlm(c.modelEntry, thread, { tools: c.tools });
       } catch (err) {

@@ -25,11 +25,12 @@ export function definitionId(rootDef) {
   return `${rootDef.name ?? 'unnamed'}:${hash}`;
 }
 
-const nullLogger = { log() {}, close() {}, saveCheckpoint() {}, getCheckpoint() { return null; }, deleteCheckpoint() {}, getEvents() { return []; } };
+const nullLogger = { log() {}, close() {}, startRun() {}, saveCheckpoint() {}, getCheckpoint() { return null; }, deleteCheckpoint() {}, getEvents() { return []; } };
 
-const INFO_KINDS = new Set(['llm_call', 'llm_error', 'tool_call', 'tool_error', 'tool_result', 'flow']);
+const INFO_KINDS = new Set(['llm_start', 'llm_call', 'llm_error', 'tool_call', 'tool_error', 'tool_result', 'flow']);
 
 const KIND_LABELS = {
+  llm_start: 'LLM…',
   llm_call: 'LLM',
   llm_error: 'LLM-ERR',
   tool_call: 'tool',
@@ -62,6 +63,9 @@ class ConsoleLogger {
     const iter = event.iteration > 1 ? ` #${event.iteration}` : '';
 
     switch (event.kind) {
+      case 'llm_start':
+        console.error(`  ${label}${path}${iter}: ${c.model ?? '?'}${c.round > 1 ? ` round ${c.round}` : ''}${c.tools?.length ? ` (${c.tools.join(', ')})` : ''} — calling`);
+        break;
       case 'llm_call':
         if (this.level === 'debug') {
           console.error(`  ${label}${path}${iter}: ${c.model ?? '?'}${c.round > 1 ? ` round ${c.round}` : ''}`);
@@ -130,6 +134,7 @@ class ConsoleLogger {
 
   close() {}
 
+  startRun() {}
   saveCheckpoint() {}
   getCheckpoint() { return null; }
   deleteCheckpoint() {}
@@ -158,7 +163,13 @@ CREATE TABLE IF NOT EXISTS checkpoints (
   run_id TEXT NOT NULL,
   seq INTEGER NOT NULL,
   resume_positions TEXT NOT NULL
-)`;
+);
+CREATE TABLE IF NOT EXISTS runs (
+  run_id TEXT PRIMARY KEY,
+  session_id TEXT,
+  started_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id)`;
 
 class SqliteLogger {
   constructor(dbPath) {
@@ -182,6 +193,17 @@ class SqliteLogger {
       'DELETE FROM checkpoints WHERE id = ?');
     this.selectEvents = this.db.prepare(
       'SELECT * FROM calls WHERE run_id = ? ORDER BY seq');
+    this.insertRun = this.db.prepare(
+      'INSERT OR IGNORE INTO runs (run_id, session_id, started_at) VALUES (?, ?, ?)');
+  }
+
+  /**
+   * Record which session a run belongs to (once per run; a resumed run keeps
+   * its original row). The host passes an opaque `runtime.sessionId`; the log
+   * stores it so a host can later ask "which runs are this session's?".
+   */
+  startRun(runId, sessionId) {
+    this.insertRun.run(runId, sessionId ?? null, new Date().toISOString());
   }
 
   log(event) {
@@ -237,6 +259,7 @@ class CompositeLogger {
   close() {
     for (const l of this.loggers) l.close?.();
   }
+  startRun(runId, sessionId) { this.reader.startRun?.(runId, sessionId); }
   saveCheckpoint(id, runId, seq, resumePositions) { this.reader.saveCheckpoint(id, runId, seq, resumePositions); }
   getCheckpoint(runId) { return this.reader.getCheckpoint(runId); }
   deleteCheckpoint(runId) { this.reader.deleteCheckpoint(runId); }
