@@ -234,6 +234,12 @@ Inside any prompt/gate/check function, the memory view `m` gives you:
 | `m.item` | current element inside a `Each(...)` subtree |
 | `m.<anything>` | any other name resolves up the scope chain (root inputs, ancestor slots) |
 
+A raw record's `toolCalls`, `toolResults` and `rounds` are **reconstructed on
+resume** from the events already in the log, so a `when()` gate or a read that
+touches them keeps working across a pause. The rest — `reasoning`, and the
+whole-exchange `calls` and `thread` — are **live-only**; a tree that needs them
+across a pause should capture them in memory.
+
 Root inputs come from `memory:` in the runtime. Sessions are just the root
 scope threaded through runs: `knit()` returns `memory`; feed it back into
 the next run.

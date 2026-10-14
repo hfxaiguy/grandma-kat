@@ -71,7 +71,8 @@ Tree(
   // rewind keeps it) and it survives a pause inside a tree tool.
   Memory('messages', (m, cur) => (Array.isArray(cur) ? cur : openMessages(m))),
   Prompt(disableAuto(), 'response', (m) => m.messages),   // model proposes; nothing runs
-  // Capture the calls into a DURABLE slot — see the resume note below.
+  // Capture the calls into a slot — the short, gate-friendly read (m.calls).
+  // m.raw.branch.response.toolCalls works too (resume-safe; see the note below).
   Memory('calls', (m) => (m.raw?.branch?.response?.toolCalls ?? [])),
   Branch(when((m) => (m.calls ?? []).length > 0), Tree(
     Each('tool_calls', (m) => m.calls, Tree(
@@ -96,12 +97,17 @@ Tree(
   `tool_calls`, then one `tool` message per call with the matching
   `tool_call_id`. Result shaping is an ordinary step here — no engine hook.
 
-**Resume note (important).** `m.raw.branch.<prompt>` is NOT reconstructed on
-resume — only `record`-kind content and memory slots are. A `when()` gate that
-read `m.raw.branch.response.toolCalls` would go false after a pause and skip the
-very branch (and `Call`) being resumed — the paused subtree is abandoned.
-Capture the calls into a memory slot (`m.calls`) right after the prompt and gate
-on that; memory slots survive the pause.
+**Resume note.** Prompt raw records are reconstructed on resume from the events
+already in the log: `m.raw.branch.<name>.toolCalls` / `.toolResults` / `.rounds`
+(and the same via `m.raw.prev[0]`) survive a pause, so a `when()` gate may read
+them directly. The rest are **live-only** — `reasoning`, and the whole-exchange
+`calls` (per-round messages/responses) and `thread`; a tree that needs them
+across a pause captures them in memory.
+
+Capturing the calls into a slot right after the prompt (as above) is still the
+recommended gate read: it is shorter (`m.calls`) and durable by construction —
+a memory slot is rebuilt from its own logged write, independent of the record
+reconstruction.
 
 ## `runAfterTool` — deprecated
 
