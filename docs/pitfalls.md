@@ -74,6 +74,25 @@ Memory('pick', (m) => m.rows.find((r) => !r.phone) ?? null)
 
 See [`authoring.md`](authoring.md) — "Tools fetch; code decides".
 
+## Trusting a prompt instruction to hold an invariant
+
+**Symptom:** a rule the prompt states flatly — "never repeat a zero-match
+query", "never write without a plan" — is violated anyway, and the wrong result
+ships.
+
+A prompt **steers**; it does not **guard**. Prose lowers the odds of a bad move,
+but for anything that must *never* happen, enforce it in code: detect the
+offending state and rewind (or reject) with the reason, the way a self-healing
+`Check`+`goto` does.
+
+```js
+// ✗  the rule lives only in the system prompt; the model repeats it anyway
+`…If a PREVIOUS selection matched ZERO, never repeat that statement.`
+
+// ✓  the same rule as a guard: a repeated statement is an error that rewinds
+Check((m) => !repeatsZero(m) || (m.round ?? 0) >= ROUNDS, goto('draft', max(ROUNDS)))
+```
+
 ## Shadowing a parent slot
 
 **Symptom:** a child "updates" a slot and the parent never sees the change (or
@@ -108,6 +127,25 @@ you insert a sibling**. If you read a child's result, give it a name:
 Prompt('…'), Prompt('…')  // then m.branch['x#2']
 // ✓
 Prompt('outline', '…')    // then m.branch.outline
+```
+
+## Reading a value produced inside a child branch
+
+**Symptom:** a slot read from the parent is `undefined` (or a stale earlier
+value), and a downstream gate silently takes the wrong path.
+
+`m.branch.X` resolves **upward** — current scope, then parent, to the root — and
+a completed branch stores its result in its *parent's* memory. It does **not**
+reach down: a value a `Call`/`Memory` produced *inside* a child subtree is not
+in the parent's `m.branch`. Capture it where the parent can see it — declare the
+slot at the owning scope and `Memory(update(), …)` it from the child — or read it
+inside the child.
+
+```js
+// the child subtree runs Call('count', …)
+// ✗  parent: m.branch.count is undefined
+// ✓  child:  Memory(update(), 'count', (m) => countOf(m.branch.count))
+//    parent: Memory('count', () => null)   → read m.count
 ```
 
 ## Gating on a prose prompt without forcing a format
@@ -145,6 +183,30 @@ When the data you need is already in hand inside a subtree (a page walk, a loop
 that reads records), **extend that subtree** rather than spinning up a sibling
 that repeats the work. One pass gets several jobs — a walk that already reads
 pages can also read the partners on them.
+
+## The same facts inlined in two prompts
+
+**Symptom:** one prompt behaves as if the data changed — it filters on a field
+that never existed and matches nothing — while a sibling prompt that "knows the
+same thing" works fine.
+
+When two prompts must agree on a body of facts (a schema, how records are
+stored, a set of rules), inlining the text in both is drift waiting to happen:
+you fix the copy in front of you, and the other silently rots. Extract **one**
+constant and interpolate it into every prompt that needs it.
+
+```js
+// ✗  two hand-typed copies; the one you didn't touch goes stale
+Prompt('draft_query',     () => [{ role: 'system', content: SCHEMA }])
+Prompt('draft_selection', () => [{ role: 'system', content: SCHEMA }])
+
+// ✓  one source, interpolated
+const STORAGE_RULES = `…`
+Prompt('draft_query',     () => [{ role: 'system', content: `…${STORAGE_RULES}` }])
+Prompt('draft_selection', () => [{ role: 'system', content: `…${STORAGE_RULES}` }])
+```
+
+The loops may differ; the facts must not.
 
 ## Loops with no exit and no cap
 

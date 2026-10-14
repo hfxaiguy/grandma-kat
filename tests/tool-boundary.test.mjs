@@ -11,7 +11,7 @@ const tc = (n, a, id = n) => ({ id, function: { name: n, arguments: JSON.stringi
 
 test('tool execute sees boundary:false at top level, boundary:true inside an app tree', async () => {
   const seen = [];
-  const sql = tool(async (args, ctx) => { seen.push(ctx?.boundary === true); return { ok: true }; });
+  const sql = tool(async (args, ctx) => { seen.push({ boundary: ctx?.boundary === true, tree: ctx?.tree ?? null }); return { ok: true }; });
 
   const inner = Tree(name('inner'), Tools('sql_query'),
     Prompt('p', () => 'go'),
@@ -42,6 +42,10 @@ test('tool execute sees boundary:false at top level, boundary:true inside an app
   });
   await grandma.knit(outer, runtime);
 
-  assert.ok(seen.includes(false), 'the top-level agent\'s call is boundary:false');
-  assert.ok(seen.includes(true), 'the app tree\'s call is boundary:true');
+  assert.ok(seen.some((s) => s.boundary === false), 'the top-level agent\'s call is boundary:false');
+  assert.ok(seen.some((s) => s.boundary === true), 'the app tree\'s call is boundary:true');
+  // `tree` names the enclosing NAMED tree (the app whose code is calling):
+  // null at the root, the entered tree's name inside it.
+  assert.ok(seen.some((s) => s.boundary === false && s.tree === null), 'the top-level call reports tree:null');
+  assert.ok(seen.some((s) => s.tree === 'inner'), 'a call inside the `inner` tree reports tree:"inner"');
 });
