@@ -635,3 +635,98 @@ test('explicit loop: a pause inside a tree tool resumes (calls captured in a mem
     fs.rmSync(dbPath, { force: true });
   }
 });
+
+// ── resume: prompt raw records are reconstructed ───────────────────────────
+//
+// A prompt's raw record (m.raw.branch.<name> / m.raw.prev[0]) used to be lost
+// on resume. A when() gate reading a prompt that ran BEFORE the pause then went
+// false and silently skipped the paused branch — the bug that dropped an email
+// send mid-conversation. The record is rebuilt from the events already in the
+// log (llm_call per round, tool_result per call).
+
+test('resume: a pre-pause prompt raw record is reconstructed (gate on m.raw.branch.<name>)', async () => {
+  const dbPath = tmpLogger();
+  try {
+    const emitted = [];
+    const child = Tree(name('raw_asker')
+      , Prompt(() => 'q')
+      , Human('answer')
+      , Emit((m) => ({ text: `got:${m.answer}` })));
+    const tools = { raw_asker: { description: 'ask', parameters: {}, tree: child } };
+    const rawCalls = (m) => (m.raw.branch.response.toolCalls ?? []);
+    const pattern = Tree(name('agent')
+      , Tools('raw_asker')
+      , Memory('messages', (m, cur) => (Array.isArray(cur) ? cur : [{ role: 'user', content: 'go' }]))
+      , Prompt(disableAuto(), 'response', (m) => m.messages)
+      // The gate reads the RAW record of a prompt that ran before the pause.
+      , Branch(when((m) => rawCalls(m).length > 0), Tree(
+        Each('tool_calls', rawCalls, Tree(
+          Call((m) => m.item.name, () => ({})),
+        )),
+      ))
+      , Until((m) => rawCalls(m).length === 0, max(5))
+      , Return(() => 'end'));
+
+    const first = await grandma.knit(pattern, {
+      ...mockRuntime(scripted([
+        { content: '', tool_calls: [tc('raw_asker')] },
+        'child question',
+      ]), { logger: dbPath, tools }),
+      onEmit: (v) => emitted.push(v),
+    });
+    assert.equal(first.status, 'waiting');
+    assert.equal(first.humanSlot, 'answer');
+
+    const second = await grandma.knit(pattern, {
+      ...mockRuntime(scripted(['done']), { logger: dbPath, tools }),
+      _continuation: first.continuation,
+      humanInput: 'purr',
+      onEmit: (v) => emitted.push(v),
+    });
+    assert.equal(second.status, undefined);
+    assert.ok(
+      emitted.some((e) => String(e?.text ?? e).includes('got:purr')),
+      'the raw-record gate resumed the paused tree tool',
+    );
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
+test('resume: an earlier auto-loop prompt raw record carries its toolResults', async () => {
+  const dbPath = tmpLogger();
+  try {
+    const asker = Tree(name('asker_tool'), Prompt(() => 'q'), Human('answer'));
+    const tools = {
+      lookup: tool(async () => 'looked-up'),
+      asker_tool: { description: 'ask', parameters: {}, tree: asker },
+    };
+    const pattern = Tree(name('host')
+      , Tools('lookup', 'asker_tool')
+      , Prompt('act', () => 'go')       // auto loop: calls lookup, then answers
+      , Prompt('next', () => 'go on')   // auto loop: calls asker_tool → pauses
+      , Prompt('report', (m) => `saw ${(m.raw.branch.act.toolResults ?? []).map((r) => r.result).join(',')}`));
+
+    const handler1 = scripted([
+      { content: '', tool_calls: [tc('lookup')] },      // act round 1
+      'act done',                                        // act round 2 (no calls)
+      { content: '', tool_calls: [tc('asker_tool')] },   // next round 1
+      'asker question',                                  // asker prompt
+    ]);
+    const first = await grandma.knit(pattern, mockRuntime(handler1, { logger: dbPath, tools }));
+    assert.equal(first.status, 'waiting');
+    assert.equal(first.humanSlot, 'answer');
+
+    const handler2 = scripted(['next done', 'report']);
+    const second = await grandma.knit(pattern, {
+      ...mockRuntime(handler2, { logger: dbPath, tools }),
+      _continuation: first.continuation,
+      humanInput: 'purr',
+    });
+    assert.equal(second.status, undefined);
+    const reportMsg = String(handler2.calls.at(-1).messages.at(-1).content);
+    assert.match(reportMsg, /saw looked-up/, 'act.toolResults was reconstructed after the pause');
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+});

@@ -119,6 +119,35 @@ export async function resume(checkpointId, runtime) {
     const events = logger.getEvents(cpRunId);
     const resumePositions = JSON.parse(cp.resume_positions);
 
+    // Reconstruct each prompt's recorded exchange from the events that already
+    // hold it (llm_call per round, tool_result per call), so a prompt's raw
+    // record — m.raw.branch.<name> / m.raw.prev[0] — survives a resume the way
+    // slots do. This closes the gap where a when() gate reading
+    // m.raw.branch.<prompt>.toolCalls went false after a pause and skipped the
+    // very branch being resumed. `calls` and `thread` carry the whole exchange
+    // and stay live-only; a tree that needs them across a pause should capture
+    // them in memory.
+    const promptExchanges = new Map(); // `${scopeId}\0${child}` -> { toolCalls, toolResults, rounds }
+    for (const ev of events) {
+      if (ev.seq > cp.seq) break;
+      if (ev.kind !== 'llm_call' && ev.kind !== 'tool_result') continue;
+      const c = ev.content;
+      const key = `${ev.scope_id}\0${c.child}`;
+      let ex = promptExchanges.get(key);
+      if (!ex) {
+        ex = { toolCalls: [], toolResults: [], rounds: 0 };
+        promptExchanges.set(key, ex);
+      }
+      if (ev.kind === 'llm_call') {
+        ex.rounds += 1;
+        for (const tc of (Array.isArray(c.toolCalls) ? c.toolCalls : [])) {
+          ex.toolCalls.push({ id: tc.id, name: tc.function?.name, arguments: tc.function?.arguments });
+        }
+      } else {
+        ex.toolResults.push({ name: c.tool, result: c.result, isError: c.isError === true });
+      }
+    }
+
     // Reconstruct scope chain from events.
     const scopes = new Map();
     let rootScope = null;
@@ -146,10 +175,16 @@ export async function resume(checkpointId, runtime) {
         // scope that ran the child, which is where prev/raw entries belong.
         const execScope = c.execScopeId != null ? (scopes.get(c.execScopeId) ?? scope) : scope;
         scope.slots[c.child] = c.value;
-        // A register memory patch is a slot write with no prev entry — it
-        // does not come from the child loop.
+        // A register memory patch is a slot write with no child outcome — no
+        // prev/raw entry (it does not come from the child loop).
         if (!c.patch) {
+          const ex = promptExchanges.get(`${ev.scope_id}\0${c.child}`);
+          const rec = ex
+            ? { content: c.value, toolCalls: ex.toolCalls, toolResults: ex.toolResults, rounds: ex.rounds }
+            : { content: c.value };
+          scope.raw[c.child] = rec;
           execScope.prev.unshift({ childIndex: c.childIndex, name: c.child, value: c.value });
+          execScope.prevRaw.unshift({ childIndex: c.childIndex, name: c.child, record: rec });
         }
       } else if (ev.kind === 'memory' && !c.update) {
         // Legacy rows: memory writes used to be logged as their own kind, and
@@ -187,6 +222,7 @@ export async function resume(checkpointId, runtime) {
           const checkIdx = scope.prev.findIndex(e => e.name === ev.content.from);
           const cut = (checkIdx >= 0 ? checkIdx : scope.prev.length) - ev.content.n;
           scope.prev = scope.prev.filter(e => e.childIndex < cut);
+          scope.prevRaw = scope.prevRaw.filter(e => e.childIndex < cut);
         }
       }
     }
