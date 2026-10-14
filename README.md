@@ -416,6 +416,13 @@ testing below. The endpoint flavor sends `temperature: 0` with a 120s
 timeout, handles thinking-model `<think>` tag leakage, and can even rescue
 tool calls that small models emit as plain text.
 
+Optional endpoint fields: `transform(response, ctx)` post-processes a reply
+(strip model-specific tags, populate `reasoning`); `protocol: 'ollama'` uses
+Ollama's native `/api/chat`; and `thinking` forwards a reasoning level —
+`{ reasoning_effort }` (e.g. `'high'`) on the OpenAI-compatible path, or
+`{ think, options }` on the Ollama path (top-level `think` flag plus merged
+request `options`).
+
 ## Logging: where dead outputs live
 
 Every event worth debugging is a row in SQLite — including flow control:

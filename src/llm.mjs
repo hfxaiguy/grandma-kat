@@ -3,6 +3,10 @@
 // caller (used by tests), or { baseURL, apiKey, model, protocol: 'ollama' }
 // for Ollama's native API (https://ollama.com/api/chat).
 //
+// The optional `thinking` field forwards a reasoning level to the endpoint:
+// `{ reasoning_effort }` on the OpenAI-compatible path, `{ think, options }`
+// on the native Ollama path.
+//
 // The `transform` hook on the model entry (optional) runs after all
 // built-in handling (thinking-model extraction, text-to-tool-call
 // recovery) and before the response is returned. See the inline
@@ -105,6 +109,11 @@ export async function callLlm(model, messages, { tools } = {}) {
     const baseURL = model.baseURL.replace(/\/$/, '');
     const body = { model: model.model, messages, temperature: 0 };
     if (tools?.length) body.tools = tools;
+    // Reasoning level for OpenAI-compatible endpoints (e.g. "low"/"medium"/
+    // "high"), set per model entry in models.json as `thinking.reasoning_effort`.
+    if (model.thinking?.reasoning_effort !== undefined) {
+      body.reasoning_effort = model.thinking.reasoning_effort;
+    }
 
     const headers = { 'Content-Type': 'application/json' };
     if (model.apiKey && model.apiKey !== 'no-key') {
@@ -208,6 +217,10 @@ async function callOllama(model, messages, { tools } = {}) {
   });
   const body = { model: model.model, messages: ollamaMessages, stream: false };
   if (tools?.length) body.tools = tools;
+  // Ollama's native `think` flag plus any extra model `options`, set per model
+  // entry in models.json as `thinking.think` / `thinking.options`.
+  if (model.thinking?.think !== undefined) body.think = model.thinking.think;
+  if (model.thinking?.options) body.options = { ...(body.options || {}), ...model.thinking.options };
 
   const headers = { 'Content-Type': 'application/json' };
   if (model.apiKey && model.apiKey !== 'no-key') {
