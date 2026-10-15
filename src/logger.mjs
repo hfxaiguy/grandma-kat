@@ -147,6 +147,12 @@ function truncate(s, max) {
   return s.length > max ? s.slice(0, max) + '…' : s;
 }
 
+// `idx_calls_run` serves the hot read paths: resuming a turn replays a run
+// with `WHERE run_id = ? ORDER BY seq` (seq is the rowid, which the index is
+// already ordered by), and runlog's emit-anchor/range lookups filter on
+// run_id too. Without it those queries full-scan `calls`, which grows
+// unboundedly (hundreds of MB in real deployments) — and the scan runs
+// synchronously on the host's event loop, freezing whatever serves the UI.
 const CREATE_TABLES = `
 CREATE TABLE IF NOT EXISTS calls (
   run_id TEXT NOT NULL,
@@ -169,7 +175,8 @@ CREATE TABLE IF NOT EXISTS runs (
   session_id TEXT,
   started_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id)`;
+CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id);
+CREATE INDEX IF NOT EXISTS idx_calls_run ON calls(run_id)`;
 
 class SqliteLogger {
   constructor(dbPath) {
