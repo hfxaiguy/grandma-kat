@@ -592,6 +592,50 @@ test('explicit loop: disableAuto + a dynamic Call dispatches and folds each roun
   assert.ok(round2.some((m) => m.role === 'tool' && m.content === 'found'), 'the tool result folded in');
 });
 
+test('explicit loop: tool hooks fire on the dynamic Call path (before enriches args, after rewrites the result)', async () => {
+  const executed = [];
+  const seen = [];
+  const callsOf = (m) => (m.raw?.branch?.response?.toolCalls ?? []);
+  const pattern = Tree(name('agent_hooked')
+    , Tools('search')
+    // A before-hook merges into the args the Call runs — the context an app
+    // tree would receive.
+    , Hook(toolBefore(), Tree(Return((m) => ({ q: `${m.call.args.q}+ctx` }))))
+    // An after-hook sees the result and may replace it.
+    , Hook(toolAfter(), Tree(
+      Memory('log', (m) => { seen.push(`${m.call.name}:${m.call.result}`); }),
+      Return(() => ({ result: 'REDACTED' })),
+    ))
+    , Memory('messages', (m, cur) => (Array.isArray(cur) ? cur : [{ role: 'user', content: 'go' }]))
+    , Prompt(disableAuto(), 'response', (m) => m.messages)
+    , Memory('calls', (m) => callsOf(m))
+    , Branch(when((m) => m.calls.length > 0), Tree(
+      Each('tool_calls', (m) => m.calls, Tree(
+        Call((m) => m.item.name, (m) => JSON.parse(m.item.arguments)),
+      )),
+      Memory(update(), 'messages', (m, cur) => [
+        ...cur,
+        { role: 'assistant', tool_calls: m.calls },
+        ...m.calls.map((c, i) => ({ role: 'tool', tool_call_id: c.id, content: String(m.branch.tool_calls[i]) })),
+      ]),
+    ))
+    , Until((m) => m.calls.length === 0, max(5))
+    , Return(() => 'end'));
+
+  const handler = scripted([
+    { content: '', tool_calls: [tc('search', { q: 'cats' })] },
+    'final',
+  ]);
+  await grandma.knit(pattern, mockRuntime(handler, {
+    tools: { search: tool(async (args) => { executed.push(args); return 'found'; }) },
+  }));
+
+  assert.deepEqual(executed, [{ q: 'cats+ctx' }], 'the before-hook merged into the args the Call ran');
+  assert.deepEqual(seen, ['search:found'], 'the after-hook saw the call result');
+  const round2 = handler.calls[1].messages;
+  assert.ok(round2.some((m) => m.role === 'tool' && m.content === 'REDACTED'), 'the after-hook rewrite is what the tree folded');
+});
+
 test('explicit loop: a pause inside a tree tool resumes (calls captured in a memory slot)', async () => {
   const dbPath = tmpLogger();
   try {
@@ -631,6 +675,51 @@ test('explicit loop: a pause inside a tree tool resumes (calls captured in a mem
     });
     assert.equal(second.status, undefined, 'the run finished after the pause');
     assert.equal(second.result, 'end');
+  } finally {
+    fs.rmSync(dbPath, { force: true });
+  }
+});
+
+test('explicit loop: a paused Call does not re-run its before-hook on resume', async () => {
+  const dbPath = tmpLogger();
+  try {
+    const counts = { before: 0, after: 0 };
+    const child = Tree(name('asker_hooked')
+      , Prompt(() => 'q')
+      , Human('answer')
+      , Memory('out', (m) => `answer: ${m.answer}`));
+    const tools = { asker_hooked: { description: 'ask', parameters: {}, tree: child } };
+    const callsOf = (m) => (m.raw?.branch?.response?.toolCalls ?? []);
+    const pattern = Tree(name('agent_hooked_resume')
+      , Tools('asker_hooked')
+      , Hook(toolBefore(), Tree(Memory('n', () => { counts.before++; })))
+      , Hook(toolAfter(), Tree(Memory('n', () => { counts.after++; })))
+      , Memory('messages', (m, cur) => (Array.isArray(cur) ? cur : [{ role: 'user', content: 'go' }]))
+      , Prompt(disableAuto(), 'response', (m) => m.messages)
+      , Memory('calls', (m) => callsOf(m))
+      , Branch(when((m) => m.calls.length > 0), Tree(
+        Each('tool_calls', (m) => m.calls, Tree(
+          Call((m) => m.item.name, () => ({})),
+        )),
+      ))
+      , Until((m) => m.calls.length === 0, max(5))
+      , Return(() => 'end'));
+
+    const first = await grandma.knit(pattern, mockRuntime(scripted([
+      { content: '', tool_calls: [tc('asker_hooked')] },
+      'child question',
+    ]), { logger: dbPath, tools }));
+    assert.equal(first.status, 'waiting');
+    assert.deepEqual(counts, { before: 1, after: 0 }, 'before ran pre-pause; after waits for the subtree');
+
+    const second = await grandma.knit(pattern, {
+      ...mockRuntime(scripted(['done']), { logger: dbPath, tools }),
+      _continuation: first.continuation,
+      humanInput: 'purr',
+    });
+    assert.equal(second.status, undefined, 'the run finished after the pause');
+    assert.equal(second.result, 'end');
+    assert.deepEqual(counts, { before: 1, after: 1 }, 'the before-hook did not re-run for the resumed Call');
   } finally {
     fs.rmSync(dbPath, { force: true });
   }

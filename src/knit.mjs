@@ -1212,8 +1212,14 @@ async function execCall(exec, child, scope, callResume = null) {
   if (typeof toolName !== 'string' || toolName.length === 0) {
     throw new KnitError(`'${child.name}': the tool-name function did not return a tool name`);
   }
-  const resolved = resolveTool(exec, scope, toolName);
-  if (!resolved) throw new KnitError(`unknown tool '${toolName}' (called from '${child.name}')`);
+  // Tool hooks fire once per executed call, exactly as on the auto-loop path:
+  // a before-hook may enrich the call args, an after-hook may rewrite the
+  // result. A resumed call already ran its before-hook pre-pause, so it is
+  // skipped — the paused subtree continues in place.
+  let ref = { name: toolName, args };
+  if (!callResume) ref = await fireToolHooks(exec, scope, 'Before', ref);
+  const resolved = resolveTool(exec, scope, ref.name);
+  if (!resolved) throw new KnitError(`unknown tool '${ref.name}' (called from '${child.name}')`);
   const treeSpec = resolved.kind === 'register' ? resolved.entry.tree : resolved.tool?.tree;
   if (treeSpec !== undefined) {
     // A Call() to a tree tool (runtime registry or a tree-backed Register) runs
@@ -1224,15 +1230,21 @@ async function execCall(exec, child, scope, callResume = null) {
     // signals (pause/goto) still propagate.
     let result;
     try {
-      result = await runTreeTool(exec, toolName, { tree: treeSpec }, args, scope, callResume);
+      result = await runTreeTool(exec, ref.name, { tree: treeSpec }, ref.args, scope, callResume);
     } catch (err) {
       if (err instanceof PauseSignal || err instanceof GotoSignal) throw err;
-      const errorValue = { error: err instanceof Error ? err.message : String(err) };
-      logEvent(exec, 'tool_call', { child: child.name, tool: toolName, args, result: errorValue, isError: true }, scope);
-      return { value: errorValue, record: { content: errorValue, tool: toolName, args, toolResults: [errorValue], isError: true } };
+      result = { error: err instanceof Error ? err.message : String(err) };
+      const after = await fireToolHooks(exec, scope, 'After', { ...ref, result, isError: true });
+      logEvent(exec, 'tool_call', { child: child.name, tool: ref.name, args: ref.args, result: after.result, isError: true }, scope);
+      const record = { content: after.result, tool: ref.name, args: ref.args, toolResults: [after.result] };
+      if (after.isError !== false) record.isError = true;
+      return { value: after.result, record };
     }
-    logEvent(exec, 'tool_call', { child: child.name, tool: toolName, args, result }, scope);
-    return { value: result, record: { content: result, tool: toolName, args, toolResults: [result] } };
+    const after = await fireToolHooks(exec, scope, 'After', { ...ref, result, isError: false });
+    logEvent(exec, 'tool_call', { child: child.name, tool: ref.name, args: ref.args, result: after.result }, scope);
+    const record = { content: after.result, tool: ref.name, args: ref.args, toolResults: [after.result] };
+    if (after.isError === true) record.isError = true;
+    return { value: after.result, record };
   }
   // Result may be a string or a plain JSON object; either is stored in the
   // branch slot verbatim so patterns can consume structured output directly.
@@ -1242,21 +1254,22 @@ async function execCall(exec, child, scope, callResume = null) {
   let result;
   try {
     result = resolved.kind === 'register'
-      ? await callRegister(exec, resolved, args, scope)
-      : await resolved.tool.execute(args, { view, context: exec.runtime.context, boundary: insideToolBoundary(scope), tree: enclosingTreeName(scope) });
+      ? await callRegister(exec, resolved, ref.args, scope)
+      : await resolved.tool.execute(ref.args, { view, context: exec.runtime.context, boundary: insideToolBoundary(scope), tree: enclosingTreeName(scope) });
     result = settleRegisterResult(exec, scope, resolved, result);
   } catch (err) {
     // A thrown tool error leaves no value to route — log it for diagnosis.
     logEvent(exec, 'tool_error', {
       child: child.name,
-      tool: toolName,
-      args,
+      tool: ref.name,
+      args: ref.args,
       error: err instanceof Error ? err.message : String(err),
     }, scope);
     throw err;
   }
-  logEvent(exec, 'tool_call', { child: child.name, tool: toolName, args, result }, scope);
-  return { value: result, record: { content: result, tool: toolName, args, toolResults: [result] } };
+  const after = await fireToolHooks(exec, scope, 'After', { ...ref, result, isError: isErrorResult(result) });
+  logEvent(exec, 'tool_call', { child: child.name, tool: ref.name, args: ref.args, result: after.result }, scope);
+  return { value: after.result, record: { content: after.result, tool: ref.name, args: ref.args, toolResults: [after.result] } };
 }
 
 // --- session-persistent memory -------------------------------------------
@@ -1492,12 +1505,13 @@ function resolveHooks(scope, trigger) {
 
 /**
  * Run the positional tool hooks (`Hook(toolBefore()/toolAfter(), …)`) visible
- * from `scope`, innermost first. Each hook tree runs in its declarer's scope,
- * paused-free, with the call seeded as `call`. A `toolBefore` hook's Return is
- * spread into the call's args; a `toolAfter` hook's Return is spread over the
- * call ref (so it can replace `result` / set `isError`). A null/undefined
- * Return leaves the call unchanged; a throw aborts the run. Tool hooks never
- * nest (exec.inHook guards them against hooking their own calls).
+ * from `scope`, innermost first. Fired once per executed tool call, on both the
+ * auto loop and the dynamic Call() path. Each hook tree runs in its declarer's
+ * scope, paused-free, with the call seeded as `call`. A `toolBefore` hook's
+ * Return is spread into the call's args; a `toolAfter` hook's Return is spread
+ * over the call ref (so it can replace `result` / set `isError`). A
+ * null/undefined Return leaves the call unchanged; a throw aborts the run. Tool
+ * hooks never nest (exec.inHook guards them against hooking their own calls).
  */
 async function fireToolHooks(exec, scope, phase, ref) {
   if ((exec.inHook ?? 0) > 0) return ref;

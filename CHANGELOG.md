@@ -2,6 +2,22 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-15 — tool hooks fire on the dynamic `Call()` path
+
+`Hook(toolBefore()/toolAfter(), …)` fired only for tool calls executed by a
+prompt's auto loop. A tree that runs its own explicit loop — `Prompt(disableAuto())`
+plus a dynamic `Call((m) => m.item.name, …)`, the trunk's shape — bypassed them
+entirely, so a hook could not enrich or rewrite a tree tool invoked that way.
+
+`execCall()` now fires the same hooks around every call it dispatches: a
+`toolBefore` Return is merged into the call args; a `toolAfter` Return may
+rewrite the result (or set `isError`); a resumed call skips only its
+before-hook — it already ran pre-pause — and the after-hook still fires when the
+subtree completes. A captured tree failure fires the after-hook too, with
+`isError: true`. This mirrors the auto-loop semantics exactly. Pinned in
+`auto-tools.test.mjs`: args enrichment + result rewrite on the explicit path,
+and no before-hook replay across a pause.
+
 ## 2026-10-15 — a resumed turn keeps its run id (no phantom `runs` row)
 
 `knit()` created a runId and called `startRun` BEFORE dispatching to

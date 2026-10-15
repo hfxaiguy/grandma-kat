@@ -253,7 +253,8 @@ const HOOK_TRIGGER = Symbol('grandma-kat/hookTrigger');
  * the declaring tree (or a descendant) runs, seeded with the emitted value as
  * `input`. onHuman() fires when human input arrives at a Human() pause within
  * that coverage, seeded with the reply. toolBefore() / toolAfter() fire once
- * per tool call executed by a covered prompt, seeded with the call as `call`.
+ * per tool call executed under that coverage — by a covered prompt's auto loop
+ * or by a dynamic Call() — seeded with the call as `call`.
  * A hook is positional (like Register) and runs in the declarer's scope, as if
  * From()'d at its point; hook trees must be pause-free.
  */
