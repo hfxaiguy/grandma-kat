@@ -247,15 +247,24 @@ export async function resume(checkpointId, runtime) {
     if (!humanEvent) throw new KnitError(`checkpoint '${checkpointId}': no human event found at seq ${cp.seq}`);
     const treeNames = humanEvent.branch_path.split('/');
 
-    // Reconstruct completed Each() item results (keyed by the map's location
-    // so a paused map can resume from the right item index with its prior
-    // results intact). Each completed item logs a `map_item` event with its
-    // index + value in the map child's parent scope.
+    // Reconstruct completed Each() item results (keyed by the map's own
+    // SCOPE so a paused map can resume from the right item index with its
+    // prior results intact). Each completed item logs a `map_item` event with
+    // its index + value in the map child's parent scope.
+    //
+    // The scope id is load-bearing, not just the path: an explicit tool loop
+    // (`Prompt → … → Each("tool_calls") → Until`) re-runs the SAME map once
+    // per round at the SAME branch path, so a path-only key mixes a previous
+    // round's completed items into the current round — a paused item then
+    // looks already-done, is skipped, and the loop re-prompts the model
+    // (orphaning the paused app tree; the next human input lands on the trunk).
+    // Each loop round enters the map in a fresh scope, so the scope id
+    // separates the rounds while still grouping one round's items.
     const mapItemResults = new Map();
     for (const ev of events) {
       if (ev.seq > cp.seq) break;
       if (ev.kind === 'map_item' && ev.content?.child != null) {
-        const key = `${ev.branch_path ?? ''}/${ev.content.child}`;
+        const key = `${ev.scope_id}\u0000${ev.content.child}`;
         if (!mapItemResults.has(key)) mapItemResults.set(key, []);
         mapItemResults.get(key).push({ index: ev.content.index, value: ev.content.value });
       }
@@ -1434,7 +1443,20 @@ async function loadNamedTree(runtime, name) {
       return def;
     }
   }
-  if (Tree.has(name)) return registered(name);
+  if (Tree.has(name)) {
+    // A tree the host only registered (self-registration on import, or
+    // registerTree) never ran the build pass that auto-names its subtrees.
+    // A deferred From()/tree-tool port resolves here, so normalize the cached
+    // def exactly as the loaded path above (and resume) does — otherwise the
+    // unnamed subtrees push empty branch_path segments and the NEXT resume
+    // fails to resolve tree ''.
+    const cached = registered(name);
+    if (cached && Array.isArray(cached.children)) {
+      autoname(cached);
+      registerTree(cached);
+    }
+    return cached;
+  }
   const detail = loadError.message ? `: ${loadError.message}` : '';
   throw new KnitError(`tree '${name}' is not registered and loadTree did not provide it${detail}`);
 }
@@ -1921,9 +1943,10 @@ async function execMap(exec, child, scope, resume = null) {
   // Reconstruct prior items and the paused item index from the log when
   // resuming. The paused item's subtree reaches here with the map tree as
   // the top stack frame (stackIdx already advanced past this level).
-  // The key mirrors resume(): `${branch_path}/${child}` where branch_path
-  // is this map's parent path.
-  const mapKey = `${exec.stack.map((s) => s.name).join('/')}/${child.name}`;
+  // The key mirrors resume(): the map's OWN scope id + child name (NOT the
+  // branch path — an explicit tool loop re-runs this map every round at the
+  // same path, and a path key would mix rounds; see resume()).
+  const mapKey = `${scope.id}\u0000${child.name}`;
   const prior = resume
     ? (resume.mapItemResults?.get(mapKey) ?? [])
     : [];

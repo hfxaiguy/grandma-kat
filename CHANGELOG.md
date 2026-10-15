@@ -2,6 +2,30 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-15 — a deferred port resolves an unbuilt registry tree without poisoning resume
+
+A deferred `From('app')` port (the target is not registered when the host tree
+is built, so the branch keeps a run-time ref) falls back to the registry when
+the host has no `loadTree`. A tree that only self-registered on import — or via
+`registerTree` — never ran the build pass that auto-names its subtrees, and
+`loadNamedTree` returned it as-is. Its unnamed `Branch`/`Each` bodies then
+pushed empty stack frames, so the checkpoint's `branch_path` gained empty
+segments (`…/trunk_turn///caller-list/…`) and the NEXT resume split on `/` and
+threw `cannot resume: tree '' is not registered (call .name() to register)`.
+
+This is the live shape behind a real crash: the trunk attaches
+`From('trunk_turn')` before `trunk_step` is imported, and `trunk_turn`'s
+`Branch(when(…), Tree(…))` and `Each(…, Tree(Call(…)))` bodies are unnamed.
+The two earlier resume fixes covered a `loadTree`-returned tree
+(`resume-loadtree.test.mjs`) and the resume-time normalization of a
+host-registered tree (`resume-registered.test.mjs`); neither covered
+`loadNamedTree`'s registry fallback — the path a deferred port takes on the
+*initial* run, which poisoned the pause before resume ever ran.
+
+`loadNamedTree` now auto-names and re-registers the cached def exactly as its
+loaded path (and `resolveTreeForResume`) do. Pinned in
+`resume-deferred-port.test.mjs`.
+
 ## 2026-10-15 — tool hooks fire on the dynamic `Call()` path
 
 `Hook(toolBefore()/toolAfter(), …)` fired only for tool calls executed by a
