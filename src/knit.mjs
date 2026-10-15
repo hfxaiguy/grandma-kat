@@ -73,6 +73,15 @@ export async function knit(rootInput, runtime = {}) {
 
   const logger = createLogger(runtime.logger ?? false, runtime.logLevel ?? 'none');
   const callerOwnsLogger = typeof runtime.logger === 'object' && runtime.logger !== null && typeof runtime.logger.log === 'function';
+
+  // Resume from checkpoint: state is rebuilt from the event log below and the
+  // run keeps its ORIGINAL id — `resume()` registers it. Registering a fresh
+  // run id here first would file a phantom `runs` row for every resumed turn
+  // (invisible until hosts delegated startRun through their wrappers).
+  if (runtime._continuation) {
+    return await resume(runtime._continuation, runtime);
+  }
+
   const exec = {
     runtime,
     logger,
@@ -86,24 +95,14 @@ export async function knit(rootInput, runtime = {}) {
   };
   logger.startRun?.(exec.runId, runtime.sessionId);
 
-  let rootScope;
-  let resumeState = null;
-
-  if (runtime._continuation) {
-    // Resume from checkpoint: reconstruct state from event log.
-    const result = await resume(runtime._continuation, runtime);
-    return result;
-  } else {
-    resetScopeIdCounter(0);
-    rootScope = new Scope(null);
-    logEvent(exec, 'scope_init', { scopeId: rootScope.id, parentScopeId: null }, rootScope);
-    for (const [k, v] of Object.entries(runtime.memory ?? {})) {
-      rootScope.slots[k] = v;
-    }
+  resetScopeIdCounter(0);
+  const rootScope = new Scope(null);
+  logEvent(exec, 'scope_init', { scopeId: rootScope.id, parentScopeId: null }, rootScope);  for (const [k, v] of Object.entries(runtime.memory ?? {})) {
+    rootScope.slots[k] = v;
   }
 
   try {
-    const outcome = await execTree(exec, def, rootScope, rootScope, resumeState);
+    const outcome = await execTree(exec, def, rootScope, rootScope, null);
     return { result: outcome.value, memory: rootScope.slots, runId: exec.runId };
   } catch (err) {
     if (err instanceof PauseSignal) {
