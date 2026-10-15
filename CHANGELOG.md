@@ -2,6 +2,31 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-15 — resume re-derives a level whose stored name is gone; a pause reports its `treePath`
+
+A checkpoint names the paused tree stack by `branch_path`, whose segments are
+positional auto-names (`r#2`, `draft_profile#3`) — valid only for the exact
+build that wrote them. When the tree was rebuilt (an anonymous body gets an
+author name, a sibling shifts, an app is re-versioned) the name no longer
+resolved and resume died with `cannot resume: tree 'draft_profile#3' is not
+registered`, even though the pause point was intact.
+
+Resume now resolves each level by name first and, when that name is gone,
+re-derives the level from its **parent's recorded child index**: a branch/map
+child carries its subtree (or a ref to load), so the paused subtree is picked
+by position. A `Call` to a tree tool is not structural and still resolves by
+name (the tool name in the branch_path). An auto-name already meant "child k of
+parent", so this recovers the same subtree without depending on the name — and
+it also revives checkpoints already poisoned with an empty segment. A host that
+would rather not resume into a changed tree should drop the session first; the
+engine cannot know the old build.
+
+A waiting result now also carries `treePath` — the paused stack's
+`branch_path` — so a host can pin which runtime-loaded subtrees a session
+depends on. Pinned in `resume-positional.test.mjs` (a stale auto-name resumes
+cleanly across two processes; fails with the exact error when the re-derivation
+is disabled).
+
 ## 2026-10-15 — a deferred port resolves an unbuilt registry tree without poisoning resume
 
 A deferred `From('app')` port (the target is not registered when the host tree

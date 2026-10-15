@@ -36,10 +36,14 @@ function enclosingTreeName(scope) {
 }
 
 export class PauseSignal {
-  constructor(checkpointId, humanSlot, context) {
+  constructor(checkpointId, humanSlot, context, path) {
     this.checkpointId = checkpointId;
     this.humanSlot = humanSlot;
     this.context = context;
+    // The paused stack's branch_path (tree names joined by '/'). A host uses it
+    // to pin which runtime-loaded subtrees a session depends on — see the
+    // `treePath` field of a waiting result.
+    this.path = path;
   }
 }
 
@@ -111,6 +115,7 @@ export async function knit(rootInput, runtime = {}) {
         humanSlot: err.humanSlot,
         context: err.context,
         continuation: err.checkpointId,
+        treePath: err.path,
       };
     }
     if (err instanceof GotoSignal) {
@@ -294,12 +299,30 @@ export async function resume(checkpointId, runtime) {
     // Build the resume stack. Each level resolves by name: the registry
     // holds the build the run started with (hosts reload it every turn),
     // and loadTree is the fallback for trees that were loaded dynamically
-    // and are gone from the registry after a restart.
+    // and are gone from the registry after a restart. A stored name that no
+    // longer resolves — a positional auto-name the rebuilt tree no longer
+    // produces (`draft_profile#3`), or an empty segment from a subtree that
+    // was never auto-named — is re-derived from its parent's recorded child
+    // index instead, so a valid pause is not lost to a cosmetic rename.
     const stack = [];
     for (let idx = 0; idx < treeNames.length; idx += 1) {
+      const stored = treeNames[idx];
+      let tree = null;
+      try {
+        tree = await resolveTreeForResume(stored, runtime);
+      } catch (err) {
+        if (!(err instanceof KnitError) || !/is not registered/.test(err.message)) throw err;
+      }
+      if (!tree && idx > 0) {
+        tree = await deriveChildTree(stack[idx - 1].tree, resumePositions[idx - 1], runtime);
+      }
+      if (!tree) {
+        // Nothing resolved (e.g. the root itself): surface the original error.
+        tree = await resolveTreeForResume(stored, runtime);
+      }
       stack.push({
-        name: treeNames[idx],
-        tree: await resolveTreeForResume(treeNames[idx], runtime),
+        name: tree.name ?? stored,
+        tree,
         childIndex: 0,
         pass: 0,
         edgeCounters: new Map(),
@@ -410,6 +433,7 @@ export async function resume(checkpointId, runtime) {
           humanSlot: err.humanSlot,
           context: err.context,
           continuation: err.checkpointId,
+          treePath: err.path,
         };
       }
       if (err instanceof GotoSignal) {
@@ -780,7 +804,7 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         // Save checkpoint with a unique ID.
         const checkpointId = `${exec.runId}:${humanSeq}`;
         exec.logger.saveCheckpoint(checkpointId, exec.runId, humanSeq, resumePositions);
-        throw new PauseSignal(checkpointId, child.name, context);
+        throw new PauseSignal(checkpointId, child.name, context, exec.stack.map((s) => s.name).join('/'));
         }
       } else if (child.kind === 'emit') {
         await execEmit(exec, child, scope);
@@ -1490,6 +1514,37 @@ async function resolveTreeForResume(name, runtime) {
     } catch { /* fall through to the error below */ }
   }
   throw new KnitError(`cannot resume: tree '${name}' is not registered (call .name() to register)`);
+}
+
+/**
+ * Re-derive the subtree a paused level ran in from its PARENT, using the child
+ * index the parent recorded (`resume_positions`). This is the resume fallback
+ * when the checkpoint's stored name no longer resolves: a positional auto-name
+ * the rebuilt tree no longer produces, or an empty segment left by a subtree
+ * that was never auto-named. A branch/map child carries its subtree (or a ref
+ * to load); a `Call` to a tree tool is not structural — that level is resolved
+ * by the tool name recorded in the branch_path, not from the parent — so this
+ * returns null and the caller falls back to name resolution.
+ *
+ * Deriving by position can pick a different child if the parent's children were
+ * reordered. That is safe for a well-behaved host (it drops a session whose
+ * tree changed before resume), and for a raw one it is no worse than the
+ * stored auto-name it replaces: an auto-name like `parent#3` already means
+ * "child 3 of parent".
+ */
+async function deriveChildTree(parentTree, childIndex, runtime) {
+  const child = parentTree?.children?.[childIndex];
+  if (!child) return null;
+  if (child.kind !== 'branch' && child.kind !== 'map') return null;
+  let tree = child.tree ?? null;
+  if (!tree && typeof child.ref === 'string') {
+    try { tree = await loadNamedTree(runtime, child.ref); } catch { tree = null; }
+  }
+  if (tree && Array.isArray(tree.children)) {
+    autoname(tree);
+    registerTree(tree);
+  }
+  return tree;
 }
 
 // Calls runtime.onEmit(value) then continues. Then fires the tree's own
