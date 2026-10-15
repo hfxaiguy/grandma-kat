@@ -153,6 +153,14 @@ function truncate(s, max) {
 // run_id too. Without it those queries full-scan `calls`, which grows
 // unboundedly (hundreds of MB in real deployments) — and the scan runs
 // synchronously on the host's event loop, freezing whatever serves the UI.
+//
+// `idx_calls_run_kind` serves kind-filtered reads within a run: a host
+// deriving UI state (e.g. web session turns from `human`/`emit` events) or
+// rolling up its own marker kinds (`run_id` = session key) reads
+// `WHERE run_id = ? AND kind ...`; the composite makes that an index seek,
+// and a whole-table `GROUP BY run_id, kind` becomes an index-only ordered
+// pass (rowid is the trailing column, so MAX(seq) per group needs no table
+// rows).
 const CREATE_TABLES = `
 CREATE TABLE IF NOT EXISTS calls (
   run_id TEXT NOT NULL,
@@ -176,7 +184,8 @@ CREATE TABLE IF NOT EXISTS runs (
   started_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id);
-CREATE INDEX IF NOT EXISTS idx_calls_run ON calls(run_id)`;
+CREATE INDEX IF NOT EXISTS idx_calls_run ON calls(run_id);
+CREATE INDEX IF NOT EXISTS idx_calls_run_kind ON calls(run_id, kind)`;
 
 class SqliteLogger {
   constructor(dbPath) {
@@ -200,6 +209,8 @@ class SqliteLogger {
       'DELETE FROM checkpoints WHERE id = ?');
     this.selectEvents = this.db.prepare(
       'SELECT * FROM calls WHERE run_id = ? ORDER BY seq');
+    this.selectRow = this.db.prepare(
+      'SELECT * FROM calls WHERE seq = ?');
     this.insertRun = this.db.prepare(
       'INSERT OR IGNORE INTO runs (run_id, session_id, started_at) VALUES (?, ?, ?)');
   }
@@ -244,6 +255,15 @@ class SqliteLogger {
     }));
   }
 
+  /**
+   * One log row by seq, content parsed — the store behind `ref://` handles
+   * (see refs.mjs). Returns null when the seq is unknown.
+   */
+  readRow(seq) {
+    const row = this.selectRow.get(seq);
+    return row ? { ...row, content: JSON.parse(row.content) } : null;
+  }
+
   close() {
     this.db.close();
   }
@@ -271,6 +291,7 @@ class CompositeLogger {
   getCheckpoint(runId) { return this.reader.getCheckpoint(runId); }
   deleteCheckpoint(runId) { this.reader.deleteCheckpoint(runId); }
   getEvents(runId) { return this.reader.getEvents(runId); }
+  readRow(seq) { return this.reader.readRow?.(seq) ?? null; }
 }
 
 export function createLogger(opt, logLevel = 'none') {

@@ -98,10 +98,15 @@ test('calls are indexed by run_id — the resume query never full-scans', () => 
     }
     const info = db.prepare("PRAGMA index_info('idx_calls_run')").all();
     assert.deepEqual(info.map((r) => r.name), ['run_id'], 'the index must cover exactly run_id');
+    const infoKind = db.prepare("PRAGMA index_info('idx_calls_run_kind')").all();
+    assert.deepEqual(infoKind.map((r) => r.name), ['run_id', 'kind'], 'the composite index covers run_id, kind');
     const plan = db.prepare('EXPLAIN QUERY PLAN SELECT * FROM calls WHERE run_id = ? ORDER BY seq')
       .all().map((r) => r.detail).join('; ');
     assert.match(plan, /idx_calls_run/, `the resume query must use the index, got: ${plan}`);
     assert.doesNotMatch(plan, /SCAN calls/i, `the resume query must not full-scan, got: ${plan}`);
+    const kindPlan = db.prepare("EXPLAIN QUERY PLAN SELECT * FROM calls WHERE run_id = ? AND kind = 'emit'")
+      .all().map((r) => r.detail).join('; ');
+    assert.match(kindPlan, /idx_calls_run_kind/, `kind-filtered reads must use the composite index, got: ${kindPlan}`);
   } finally {
     db.close();
     logger.close();
@@ -128,8 +133,8 @@ test('an existing log DB from before the index gets it on open', () => {
   const logger = createLogger(p, 'none');
   const db = new DatabaseSync(p, { readOnly: true });
   try {
-    const idx = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'calls'").all();
-    assert.deepEqual(idx.map((r) => r.name), ['idx_calls_run'], 'opening an old log must build the index');
+    const idx = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'calls' ORDER BY name").all();
+    assert.deepEqual(idx.map((r) => r.name), ['idx_calls_run', 'idx_calls_run_kind'], 'opening an old log must build the indexes');
   } finally {
     db.close();
     logger.close();
