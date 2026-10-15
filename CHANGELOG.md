@@ -2,6 +2,42 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-15 — a resumed turn keeps its run id (no phantom `runs` row)
+
+`knit()` created a runId and called `startRun` BEFORE dispatching to
+`resume()`, which then built its own exec from the checkpoint's run id and
+registered that. Every resumed turn therefore registered a fresh run id that
+never ran — invisible only because hosts' telemetry wrappers never delegated
+`startRun` (so the phantom registration had nowhere to go). With hosts now
+delegating it, the duplicate would have filed a bogus `runs` row per turn and
+split each session's registry.
+
+The resume dispatch now happens before any runId/startRun work: a resumed
+turn registers exactly once, under its original run id. Pinned in
+`session-log.test.mjs` (fresh run → pause → resume → one row, same run_id,
+the delivered human event under it).
+
+## 2026-10-15 — the `calls` log is indexed for its read paths
+
+Hosts read the run log constantly (resume replays, tree viewer, run-log
+tools, and read-time UI derivation), and every read scanned `calls` — 407 MB
+/ 175k rows in the live workspace — synchronously on the process that serves
+HTTP/SSE and the bot. Two indexes land at logger init (`IF NOT EXISTS`, so
+existing logs build them on open; the live DB took ~0.5 s each):
+
+- `idx_calls_run ON calls(run_id)` — the resume read
+  (`WHERE run_id = ? ORDER BY seq`; `seq` is the rowid, so the index already
+  serves the order) and runlog's emit-anchor/range lookups.
+- `idx_calls_run_kind ON calls(run_id, kind)` — kind-filtered reads within a
+  run (index seek) and whole-table `GROUP BY run_id, kind` roll-ups (covering
+  index-only pass; `MAX(seq)` per group needs no table rows). This is the
+  read path a host derives per-session UI state with.
+
+Also pinned: resume replays every row of a run up to the checkpoint seq, so a
+host that logs its own event kinds into `calls` must not break a resume —
+`resume-foreign-events.test.mjs` proves unknown kinds are ignored and the run
+resumes cleanly across them.
+
 ## 2026-10-15 — tool-result refs: `ref://<seq>` handles into the run log
 
 A tool result too large to show the model no longer dead-ends at the display
