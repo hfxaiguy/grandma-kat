@@ -7,6 +7,7 @@ import { callLlm, normalizeMessages } from './llm.mjs';
 import { createLogger, createRunId, definitionId } from './logger.mjs';
 import { unwrap, Tree, registerTree, registered } from './tree.mjs';
 import { DEFAULT_MAX } from './markers.mjs';
+import { resolveRefs, refsResolvable } from './refs.mjs';
 
 /**
  * True when the scope chain crosses an app-tree boundary — i.e. the call is
@@ -1153,10 +1154,16 @@ async function execPrompt(exec, child, scope, promptResume = null) {
       if (!replayState) {
         record.toolCalls.push({ id: out.id, name: out.name, arguments: wireCalls[ci].function.arguments });
       }
-      record.toolResults.push({ name: out.name, result: out.result, isError: out.isError });
-      logEvent(exec, 'tool_result', {
+      const seq = logEvent(exec, 'tool_result', {
         child: child.name, round: rounds, tool: out.name, args: out.args, result: out.result, isError: out.isError,
       }, scope);
+      // The row's seq is the address a truncation note turns into a ref://
+      // handle (see toolContentForModel / refs.mjs). Only mintable when the
+      // logger can read rows back — a logger-less run has no rows to address.
+      record.toolResults.push({
+        name: out.name, result: out.result, isError: out.isError,
+        ...(refsResolvable(exec) ? { seq } : {}),
+      });
     }
 
     // Append the round's exchange to the local thread: the assistant
@@ -1343,7 +1350,10 @@ async function runTreeTool(exec, toolName, tool, args, scope, resumeState = null
   if (args && typeof args === 'object' && !Array.isArray(args)) {
     for (const [k, v] of Object.entries(args)) {
       if (k === 'fresh') continue; // a directive, not tree data
-      if (!(k in childScope.slots)) childScope.slots[k] = v;
+      // `ref://<seq>/<path>` handles resolve against the run log BEFORE the
+      // slots are seeded, so a tree never sees a ref — it gets the full value
+      // (see refs.mjs). Values without refs pass through untouched.
+      if (!(k in childScope.slots)) childScope.slots[k] = resolveRefs(exec, v);
     }
   }
   // Session memory: hydrate on a fresh invocation (call args win over stored).
@@ -1523,7 +1533,8 @@ const DEFAULT_TOOL_RESULT_CHARS = 4000;
  * e.g. a cheap condenser). Its output is used verbatim, so a prompt may go
  * tighter OR looser than the default. Without a shaper the result is
  * stringified and capped at `runtime.maxToolResultChars` (default 4000;
- * 0 disables).
+ * 0 disables); when the run log can be read back, the capped note carries a
+ * `ref://<seq>` handle to the full value (the `tool_result` row).
  *
  * The FULL result is never changed here: the tree reads it via
  * `record.toolResults` (m.raw.prev[0].toolResults) and the `tool_result` log
@@ -1558,7 +1569,7 @@ async function toolContentForModel(exec, scope, child, tr) {
     }
   }
   const text = typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result ?? '');
-  return capToolResult(text, exec.runtime.maxToolResultChars);
+  return capToolResult(text, exec.runtime.maxToolResultChars, tr.seq);
 }
 
 /**
@@ -1566,12 +1577,21 @@ async function toolContentForModel(exec, scope, child, tr) {
  * (`{ rows: [...] }` — read_runs and the sql tools) keeps whole rows until the
  * budget runs out and reports the total, so the result stays valid JSON;
  * anything else gets a head slice plus an actionable marker. `max` <= 0 (or
- * non-finite) disables the cap.
+ * non-finite) disables the cap. `seq` (the `tool_result` row) adds the
+ * `ref://` handle the model may pass to another tree tool — same wording as
+ * the trunk's shaper (workspace tests/flows/tool-policy.mjs).
  */
-function capToolResult(text, max) {
+function capToolResult(text, max, seq) {
   const limit = max === undefined || max === null ? DEFAULT_TOOL_RESULT_CHARS : Number(max);
   if (!Number.isFinite(limit) || limit <= 0) return text;
   if (text.length <= limit) return text;
+  const ref = Number.isFinite(seq) ? `ref://${seq}` : null;
+  const value = safeParse(text);
+  const list = Array.isArray(value) ? value : Array.isArray(value?.list) ? value.list : null;
+  const preview = list ? list.slice(0, 8).map(previewName).filter(Boolean) : [];
+  const refText = ref && list
+    ? `${ref} (${list.length} row${list.length === 1 ? '' : 's'}${preview.length ? `: ${preview.join(', ')}…` : ''})`
+    : ref;
   const rows = rowsOf(text);
   if (rows) {
     const kept = [];
@@ -1588,11 +1608,38 @@ function capToolResult(text, max) {
         rowCount: rows.length,
         rowsShown: kept.length,
         truncated: true,
-        note: `showing ${kept.length} of ${rows.length} rows — narrow the query for the rest`,
+        ...(ref ? { ref } : {}),
+        note:
+          `showing ${kept.length} of ${rows.length} rows — narrow the query for the rest` +
+          (ref ? `, or pass ${ref} as a tree tool's input for the whole result` : ''),
       });
     }
   }
-  return `${text.slice(0, limit)}\n…[truncated — ${text.length} chars total, first ${limit} shown; narrow the query or fetch specific fields]`;
+  return (
+    `${text.slice(0, limit)}\n…[truncated — ${text.length} chars total, first ${limit} shown` +
+    (ref
+      ? `. Full value: ${refText}. Pass the ref as a tree tool's input to hand over the whole value, or narrow the query.]`
+      : `; narrow the query or fetch specific fields]`)
+  );
+}
+
+/** Parse JSON without throwing, else null. */
+function safeParse(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/** A display name for one row of a ref preview. */
+function previewName(item) {
+  if (typeof item === 'string') return item.trim();
+  if (item && typeof item === 'object') {
+    const name = item.name ?? [item.first_name, item.last_name].filter(Boolean).join(' ');
+    return String(name ?? '').trim();
+  }
+  return '';
 }
 
 /** Parse `{ rows: [...] }` without throwing. */
@@ -1855,7 +1902,7 @@ async function execMap(exec, child, scope, resume = null) {
   if (!Array.isArray(items) || items.length === 0) {
     const empty = [];
     logEvent(exec, 'map', { child: child.name, count: 0 }, scope);
-    return { value: empty, record: { content: empty } };
+    return { value: empty, record: { content: empty, itemSeqs: [] } };
   }
 
   // Reconstruct prior items and the paused item index from the log when
@@ -1876,12 +1923,17 @@ async function execMap(exec, child, scope, resume = null) {
   for (const p of prior) completed.set(p.index, p.value);
 
   const results = [];
+  // Each item's `map_item` row seq — the address behind a truncated result's
+  // `ref://` handle (see refs.mjs). Replayed items (already executed before a
+  // resume) carry null: their rows exist but are not minted anew.
+  const itemSeqs = [];
   for (let idx = 0; idx < items.length; idx++) {
     const pausedHere = resume != null && idx === prior.length;
 
     if (resume != null && !pausedHere && completed.has(idx)) {
       // Already done before the pause — replay its recorded value.
       results.push(completed.get(idx));
+      itemSeqs.push(null);
       continue;
     }
 
@@ -1899,11 +1951,12 @@ async function execMap(exec, child, scope, resume = null) {
       ? await execTree(exec, child.tree, itemScope, scope, resume)
       : await execTree(exec, child.tree, itemScope, scope);
     results.push(out.value);
-    logEvent(exec, 'map_item', { child: child.name, index: idx, value: out.value }, scope);
+    const itemSeq = logEvent(exec, 'map_item', { child: child.name, index: idx, value: out.value }, scope);
+    itemSeqs.push(itemSeq);
   }
 
   logEvent(exec, 'map', { child: child.name, count: results.length }, scope);
-  return { value: results, record: { content: results } };
+  return { value: results, record: { content: results, itemSeqs } };
 }
 
 // --- memory helpers ---

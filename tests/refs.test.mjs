@@ -1,0 +1,80 @@
+// refs.mjs — the `ref://<seq>/<path>` resolver behind truncated tool results.
+//
+// A ref names the run-log row that holds a full value (a map_item/tool_call/
+// record row). Resolution happens at the tree-tool boundary; these tests pin
+// the grammar, the guards (missing row, another run, missing path), and the
+// structural-sharing contract (no refs ⇒ identity, no copy).
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { isRef, parseRef, resolveRef, resolveRefs } from '../src/refs.mjs';
+
+const fakeExec = (rows, runId = 'run-1') => ({
+  runId,
+  logger: {
+    readRow: (seq) => rows[seq] ?? null,
+  },
+});
+
+const row = (runId, content) => ({ run_id: runId, content });
+
+test('grammar: isRef/parseRef accept only ref://<digits>(/<path>)', () => {
+  assert.equal(isRef('ref://146629/list'), true);
+  assert.equal(isRef('ref://42'), true);
+  assert.equal(isRef('ref:// 42'), false);
+  assert.equal(isRef('REF://42'), false);
+  assert.equal(isRef('ref://42x'), false);
+  assert.equal(isRef('see ref://42'), false);
+  assert.equal(isRef(42), false);
+
+  assert.deepEqual(parseRef('ref://146629/list'), { seq: 146629, path: ['list'] });
+  assert.deepEqual(parseRef('ref://7/a/b/0'), { seq: 7, path: ['a', 'b', '0'] });
+  assert.deepEqual(parseRef('ref://7/'), { seq: 7, path: [] });
+  assert.equal(parseRef('nope'), null);
+});
+
+test('resolveRef walks map_item/tool_call/record payloads and paths', () => {
+  const rows = {
+    10: row('run-1', { child: 'tool_calls', index: 0, value: { handled: true, list: [{ name: 'A' }, { name: 'B' }] } }),
+    11: row('run-1', { child: 'x', tool: 'contacts', args: {}, result: [1, 2, 3] }),
+    12: row('run-1', { child: 'slot', childIndex: 0, value: 'plain text', op: 'set' }),
+  };
+  const exec = fakeExec(rows);
+
+  assert.deepEqual(resolveRef(exec, 'ref://10/list'), [{ name: 'A' }, { name: 'B' }]);
+  assert.deepEqual(resolveRef(exec, 'ref://10/list/1/name'), 'B');
+  assert.deepEqual(resolveRef(exec, 'ref://11/2'), 3);
+  assert.equal(resolveRef(exec, 'ref://12'), 'plain text');
+});
+
+test('guards: missing row, another run, missing path all throw loudly', () => {
+  const exec = fakeExec({ 10: row('run-1', { value: { list: [] } }) });
+  assert.throws(() => resolveRef(exec, 'ref://99999'), /no run-log row at seq 99999/);
+  assert.throws(() => resolveRef(exec, 'ref://10/other'), /path 'other' not found/);
+  assert.throws(
+    () => resolveRef(fakeExec({ 10: row('other-run', { value: 1 }) }), 'ref://10'),
+    /belongs to another run/,
+  );
+});
+
+test('resolveRefs substitutes recursively and returns identity without refs', () => {
+  const exec = fakeExec({ 5: row('run-1', { value: [1, 2, 3] }) });
+
+  const args = { input: 'ref://5', keep: { deep: 'ref://5/1' }, list: [{ x: 'ref://5' }] };
+  assert.deepEqual(resolveRefs(exec, args), {
+    input: [1, 2, 3],
+    keep: { deep: 2 },
+    list: [{ x: [1, 2, 3] }],
+  });
+
+  // No refs anywhere ⇒ the SAME reference comes back (no big-array copies).
+  const big = { rows: Array.from({ length: 1000 }, (_, i) => i) };
+  assert.equal(resolveRefs(exec, big), big);
+  assert.equal(resolveRefs(exec, 'plain'), 'plain');
+
+  // A ref-free sibling array is preserved by reference inside a changed object.
+  const inner = [1, 2, 3];
+  const mixed = { a: 'ref://5', b: inner };
+  const out = resolveRefs(exec, mixed);
+  assert.notEqual(out, mixed);
+  assert.equal(out.b, inner);
+});
