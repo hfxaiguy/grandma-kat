@@ -71,6 +71,26 @@ section short: it rides in the caller's prompt on every turn.
 KAT itself never reads `## Guide` — it is a host convention, honored by hosts
 that expose trees as tools and ignored by those that do not.
 
+## The app README, and the spec
+
+A tree app carries two Markdown documents, and they answer different questions:
+
+- `tree.spec.md` — **how the tree is built**: the notation block, the modes, the
+  prompts, the guards. The source of truth for the tree's *behavior*.
+- `README.md` — **what the app is**: its tools, data model, config, run
+  commands, and how it is wired into a host. The source of truth for the app
+  *around* the tree.
+
+They overlap only where the tree meets the app, and that overlap is where they
+rot. The README is **not** a second copy of the tree: reference the spec (`see
+tree.spec.md`) instead of restating its modes, prompts, steps or guard values.
+A restated tree drifts silently — a real one kept describing a `lookup` mode
+(and a `tree.mjs`) long after the tree had neither, because nothing checks prose
+the way spec-parity checks the sketch.
+
+One source of truth per fact: tree facts live in the spec, app facts in the
+README, and where they touch the README points.
+
 ## The notation, in one breath
 
 The symbols are defined once, authoritatively, in
