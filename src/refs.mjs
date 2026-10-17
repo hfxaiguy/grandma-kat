@@ -1,7 +1,6 @@
-// refs.mjs — `ref://<seq>/<path>` handles into the run log.
+// refs.mjs — `ref://<name>.<seq>/<path>` handles into the run log.
 //
-// A tool result too large to show the model is truncated, and the note that
-// replaces it can carry a ref (minted by the trunk's note — see
+// Every tool result can carry a ref (minted where the round is folded — see
 // tests/flows/tool-policy.mjs). The ref names the run-log row that already
 // holds the FULL value (an `Each` item's `map_item` row, a `tool_call` row),
 // so nothing needs to be stashed: the log is the store.
@@ -10,16 +9,18 @@
 // happens here, at the tree-tool boundary in knit.mjs, BEFORE the args are
 // seeded into the child scope — the app never sees a ref string.
 //
-// Grammar: `ref://<digits>` selects the row's payload whole; a trailing
-// `/`-separated path walks into it (object keys and array indices). The trunk
-// mints `…/list` for `{ …, list: […] }` results and the bare form otherwise.
+// Grammar: `ref://<name>.<seq>` (or the bare legacy `ref://<seq>`) selects the
+// row's payload whole; a trailing `/`-separated path walks into it (object
+// keys and array indices). `<name>` is a readable label for the slot/tool the
+// result belongs to — the `seq` is the unique, resolvable address (so two
+// rounds may reuse a name safely). Resolution ignores the name.
 //
 // Guards: the row must exist and belong to THIS run (a ref can never address
 // another session's rows), and the path must find a value. Anything else
 // throws — the message reaches the model as a normal tool error, so it can
 // re-query instead of silently working on the wrong data.
 
-const REF = /^ref:\/\/(\d+)(?:\/([\w.\-/]*))?$/;
+const REF = /^ref:\/\/(?:([a-z][\w-]*)\.)?(\d+)(?:\/([\w.\-/]*))?$/;
 
 /** True for the exact ref grammar (a plain string). */
 export function isRef(value) {
@@ -34,11 +35,15 @@ export function refsResolvable(exec) {
   return typeof exec?.logger?.readRow === 'function';
 }
 
-/** The parsed ref — { seq, path } — or null when the string is not one. */
+/** The parsed ref — { name, seq, path } — or null when the string is not one. */
 export function parseRef(value) {
   const m = typeof value === 'string' ? REF.exec(value) : null;
   if (!m) return null;
-  return { seq: Number(m[1]), path: (m[2] ?? '').split('/').filter((p) => p !== '') };
+  return {
+    name: m[1] ?? null,
+    seq: Number(m[2]),
+    path: (m[3] ?? '').split('/').filter((p) => p !== ''),
+  };
 }
 
 /** The payload of a log row: map_item/tool_call rows carry `.value`/`.result`;

@@ -188,10 +188,11 @@ export function callFields(rawArgs, label) {
   // A leading function is the (dynamic) tool name here, not a condition — so
   // opt out of the "bare function in condition slot" guard.
   const { gate, args } = takeGate(rawArgs, label, { allowLeadingFn: true });
-  // If the first two positional args are both strings, the first is the
-  // call's name (the 3-arg form); otherwise the tool name comes first.
+  // If the first two positional args are a string name and a tool (a string,
+  // or a function of memory for a dynamic pick), the first is the call's name
+  // (the 3-arg form); otherwise the tool name comes first.
   let name = null;
-  if (args.length >= 3 && typeof args[0] === 'string' && typeof args[1] === 'string') {
+  if (args.length >= 3 && typeof args[0] === 'string' && (typeof args[1] === 'string' || typeof args[1] === 'function')) {
     name = args.shift();
     assertValidName(name, label);
   }

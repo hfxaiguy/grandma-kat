@@ -17,19 +17,31 @@ const fakeExec = (rows, runId = 'run-1') => ({
 
 const row = (runId, content) => ({ run_id: runId, content });
 
-test('grammar: isRef/parseRef accept only ref://<digits>(/<path>)', () => {
+test('grammar: isRef/parseRef accept ref://<name>.<seq>(/<path>) and legacy ref://<seq>', () => {
   assert.equal(isRef('ref://146629/list'), true);
   assert.equal(isRef('ref://42'), true);
+  assert.equal(isRef('ref://rows.146629'), true);
+  assert.equal(isRef('ref://rows.146629/list'), true);
   assert.equal(isRef('ref:// 42'), false);
   assert.equal(isRef('REF://42'), false);
   assert.equal(isRef('ref://42x'), false);
   assert.equal(isRef('see ref://42'), false);
   assert.equal(isRef(42), false);
 
-  assert.deepEqual(parseRef('ref://146629/list'), { seq: 146629, path: ['list'] });
-  assert.deepEqual(parseRef('ref://7/a/b/0'), { seq: 7, path: ['a', 'b', '0'] });
-  assert.deepEqual(parseRef('ref://7/'), { seq: 7, path: [] });
+  assert.deepEqual(parseRef('ref://146629/list'), { name: null, seq: 146629, path: ['list'] });
+  assert.deepEqual(parseRef('ref://7/a/b/0'), { name: null, seq: 7, path: ['a', 'b', '0'] });
+  assert.deepEqual(parseRef('ref://7/'), { name: null, seq: 7, path: [] });
+  assert.deepEqual(parseRef('ref://rows.146629'), { name: 'rows', seq: 146629, path: [] });
+  assert.deepEqual(parseRef('ref://sql_query.42/list'), { name: 'sql_query', seq: 42, path: ['list'] });
+  assert.deepEqual(parseRef('ref://caller-list.9/0/name'), { name: 'caller-list', seq: 9, path: ['0', 'name'] });
   assert.equal(parseRef('nope'), null);
+});
+
+test('a named ref resolves by its seq (the name is a label)', () => {
+  const exec = fakeExec({ 10: row('run-1', { child: 'rows', index: 0, value: { list: [{ name: 'A' }, { name: 'B' }] } }) });
+  assert.deepEqual(resolveRef(exec, 'ref://rows.10/list'), [{ name: 'A' }, { name: 'B' }]);
+  assert.deepEqual(resolveRef(exec, 'ref://rows.10/list/1/name'), 'B');
+  assert.deepEqual(resolveRefs(exec, { input: 'ref://rows.10/list' }), { input: [{ name: 'A' }, { name: 'B' }] });
 });
 
 test('resolveRef walks map_item/tool_call/record payloads and paths', () => {

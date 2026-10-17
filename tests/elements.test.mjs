@@ -221,3 +221,25 @@ test('host seeds in runtime.memory survive a resume', async () => {
     fs.rmSync(dbPath, { force: true });
   }
 });
+
+test('Call(name, dynamicToolFn, argsFn) keeps a literal name with a model-chosen tool', () => {
+  const toolFn = (m) => m.item.name;
+  const argsFn = (m) => m.item.arguments;
+  const tree = Tree(
+    name('named_dynamic_call'),
+    Each('rows', (m) => m.calls, Tree(Call('rows', toolFn, argsFn))),
+  );
+  const map = tree.children[0];
+  assert.equal(map.kind, 'map');
+  assert.equal(map.name, 'rows');
+  const call = map.tree.children[0];
+  assert.equal(call.kind, 'call');
+  assert.equal(call.name, 'rows', 'the literal call name is kept');
+  assert.equal(call.tool, toolFn, 'the tool is the dynamic function');
+  assert.equal(call.argsFn, argsFn);
+
+  // The two-arg dynamic form is unchanged: no name, tool first.
+  const dyn = Tree(name('dynamic_call'), Call(toolFn, argsFn)).children[0];
+  assert.equal(dyn.name, null);
+  assert.equal(dyn.tool, toolFn);
+});
