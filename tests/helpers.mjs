@@ -18,13 +18,15 @@ export function scripted(responses) {
   return handler;
 }
 
-// A runtime with a single default mock model.
-export function mockRuntime(handler, { tools = {}, memory, models, logger = false } = {}) {
+// A runtime with a single default mock model. Extra options are passed through
+// on the runtime verbatim (e.g. maxToolResultChars, sessionId, context).
+export function mockRuntime(handler, { tools = {}, memory, models, logger = false, ...rest } = {}) {
   return {
     models: models ?? { default: { model: 'mock', handler } },
     tools,
     memory,
     logger,
+    ...rest,
   };
 }
 

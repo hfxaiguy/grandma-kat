@@ -206,11 +206,11 @@ const autoTrunk = Tree(name("auto_trunk"),
 
 const extractBareRef = (messages) => {
   const tool = [...messages].reverse().find((m) => m.role === "tool");
-  const match = String(tool?.content ?? "").match(/ref:\/\/(\d+)(?![\d/])/);
+  const match = String(tool?.content ?? "").match(/ref:\/\/[a-z][\w-]*\.\d+(?:\/[\w.\-/]*)?/i);
   if (!match) {
     throw new Error(`the note shown to the model carried no usable ref:\n${tool?.content}`);
   }
-  return `ref://${match[1]}`;
+  return match[0];
 };
 
 test("auto loop (one-shot subagent path): the engine's own cap mints the same ref", async () => {
@@ -238,7 +238,7 @@ test("auto loop (one-shot subagent path): the engine's own cap mints the same re
   const round2 = handler.calls[1].messages;
   const toolMsg = [...round2].reverse().find((m) => m.role === "tool");
   assert.match(toolMsg.content, /truncated/);
-  assert.match(toolMsg.content, /ref:\/\/\d+/);
+  assert.match(toolMsg.content, /ref:\/\/producer\.\d+/);
   assert.match(toolMsg.content, /50 rows: Person 1, Person 2/);
   assert.ok(toolMsg.content.length < 4000 + 500, "the model never carried the full list");
 

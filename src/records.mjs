@@ -30,6 +30,12 @@ export function unwrap(v) {
 export const valueLike = (v) =>
   typeof v === 'function' || typeof v === 'string' || Array.isArray(v);
 
+// A predicate slot (Check/Until condition, max errFn) accepts a function OR a
+// tree — an element (wrapped into a one-child tree at build time) or a built
+// Tree def. See knit.mjs normalizeConditions.
+export const isTreeSpec = (v) =>
+  v != null && typeof v === 'object' && (v.kind === 'tree' || isElement(v));
+
 export function assertValidName(name, label) {
   if (typeof name !== 'string' || name.length === 0) {
     throw new TypeError(`${label}: name must be a non-empty string`);
@@ -276,8 +282,8 @@ export function registerFields(rawArgs, label) {
 export function checkFields(rawArgs, label) {
   const { gate, args } = takeGate(rawArgs, label);
   const checkFn = args.shift();
-  if (typeof checkFn !== 'function') {
-    throw new TypeError(`${label}: first argument must be the check function`);
+  if (typeof checkFn !== 'function' && !isTreeSpec(checkFn)) {
+    throw new TypeError(`${label}: first argument must be the check function or a Tree`);
   }
   let flow = args.shift();
   if (flow === undefined) flow = goback(1);
@@ -434,8 +440,8 @@ export function untilFields(rawArgs, label) {
     }
   }
   const checkFn = args.shift();
-  if (typeof checkFn !== 'function') {
-    throw new TypeError(`${label}: first argument must be the condition function (or a goto/goback marker followed by the condition)`);
+  if (typeof checkFn !== 'function' && !isTreeSpec(checkFn)) {
+    throw new TypeError(`${label}: first argument must be the condition function (or a goto/goback marker followed by the condition) or a Tree`);
   }
   const maxMarker = args.shift();
   if (maxMarker !== undefined && !isMax(maxMarker)) {

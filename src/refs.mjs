@@ -11,14 +11,18 @@
 //
 // Grammar: `ref://<name>.<seq>` (or the bare legacy `ref://<seq>`) selects the
 // row's payload whole; a trailing `/`-separated path walks into it (object
-// keys and array indices). `<name>` is a readable label for the slot/tool the
-// result belongs to — the `seq` is the unique, resolvable address (so two
-// rounds may reuse a name safely). Resolution ignores the name.
+// keys and array indices). `<seq>` is the unique, resolvable address (so two
+// rounds may reuse a name safely). `<name>` is a readable label, and the log
+// attests it: every value-bearing row carries `content.refName` — the tool,
+// loop or slot name that wrote it. A label that disagrees with the row is
+// rejected, so a model cannot relabel a real handle (see `rowRefName`). A row
+// without `refName` (old logs, nameless kinds) is not checked.
 //
 // Guards: the row must exist and belong to THIS run (a ref can never address
-// another session's rows), and the path must find a value. Anything else
-// throws — the message reaches the model as a normal tool error, so it can
-// re-query instead of silently working on the wrong data.
+// another session's rows), the name — when both sides carry one — must match,
+// and the path must find a value. Anything else throws — the message reaches
+// the model as a normal tool error, so it can re-query instead of silently
+// working on the wrong data.
 
 const REF = /^ref:\/\/(?:([a-z][\w-]*)\.)?(\d+)(?:\/([\w.\-/]*))?$/;
 
@@ -46,6 +50,26 @@ export function parseRef(value) {
   };
 }
 
+/**
+ * The handle for a logged value: `ref://<name>.<seq>[/<path>]`. `name` is
+ * optional (a bare `ref://<seq>` is the legacy form); `path` is an array of
+ * steps or a `/`-separated string. Mints go through here so every producer
+ * writes the same grammar.
+ */
+export function formatRef(name, seq, path = []) {
+  const steps = Array.isArray(path)
+    ? path.map(String).filter((p) => p !== '')
+    : String(path ?? '').split('/').filter((p) => p !== '');
+  const label = typeof name === 'string' && name ? `${name}.` : '';
+  return `ref://${label}${seq}${steps.length ? `/${steps.join('/')}` : ''}`;
+}
+
+/** The name the row itself attests (`content.refName`), or null. */
+function rowRefName(row) {
+  const name = row?.content?.refName;
+  return typeof name === 'string' && name ? name : null;
+}
+
 /** The payload of a log row: map_item/tool_call rows carry `.value`/`.result`;
  *  a record row carries `.value`; anything else is its own content. */
 function payloadOf(content) {
@@ -56,7 +80,7 @@ function payloadOf(content) {
 }
 
 /** Walk a path into a value (object keys and array indices). */
-function walk(value, path) {
+export function walk(value, path) {
   let cur = value;
   for (const step of path) {
     if (cur == null) return undefined;
@@ -79,6 +103,15 @@ export function resolveRef(exec, ref) {
   if (!row) throw new Error(`ref ${ref}: no run-log row at seq ${parsed.seq}`);
   if (exec.runId && row.run_id !== exec.runId) {
     throw new Error(`ref ${ref}: row ${parsed.seq} belongs to another run`);
+  }
+  // The label must be the name the row attests. Both sides must carry one: a
+  // bare ref, a nameless row, and an old log (no `refName` yet) are unchecked.
+  const attested = rowRefName(row);
+  if (parsed.name && attested && parsed.name !== attested) {
+    throw new Error(
+      `ref ${ref}: that row is '${attested}' — pass ${formatRef(attested, parsed.seq, parsed.path)}` +
+      ` or drop the label: ${formatRef(null, parsed.seq, parsed.path)}`,
+    );
   }
   const value = walk(payloadOf(row.content), parsed.path);
   if (value === undefined) {

@@ -59,6 +59,29 @@ function collectKeys(scope) {
   return [...keys];
 }
 
+/**
+ * The slots visible from `scope`, nearest binding first, with provenance:
+ * `{ scopeId, parentScopeId, slots: [{ name, ownerScopeId, seq }] }`. A name
+ * bound in a nearer scope shadows an outer one and is reported once; `seq` is
+ * the run-log row that last wrote the slot (null for a host seed, which has no
+ * write row). This is the listing behind the `inspect_memory` tool and the
+ * engine's `ctx.scopeInfo()` (see inspect.mjs).
+ */
+export function scopeInventory(scope) {
+  const seen = new Set();
+  const slots = [];
+  let s = scope;
+  while (s) {
+    for (const name of Object.keys(s.slots)) {
+      if (seen.has(name)) continue;
+      seen.add(name);
+      slots.push({ name, ownerScopeId: s.id, seq: s.wrote?.[name] ?? null });
+    }
+    s = s.parent;
+  }
+  return { scopeId: scope.id, parentScopeId: scope.parent?.id ?? null, slots };
+}
+
 // The memory object handed to prompt/gate/check/args functions. Framework
 // keys (prev, branch, raw, error) are intercepted; everything else resolves
 // up the scope chain (root inputs, ancestor slots).

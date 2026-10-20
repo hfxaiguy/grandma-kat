@@ -2,6 +2,86 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-19 — package: a `grandma-kat/llm` subpath
+
+Hosts and tests that drive a model directly can now `import { callLlm } from
+"grandma-kat/llm"` — the package exports gained `"./llm": "./src/llm.mjs"`.
+Previously a workspace consumer had to reach into the checkout's `src/` by
+relative path, which breaks the npm-link contract.
+
+## 2026-10-19 — ref labels are attested: every row names itself, a mismatched handle is rejected
+
+A `ref://<name>.<seq>` handle's label used to be decoration — resolution parsed
+only the seq. So a model could relabel or swap a real handle
+(`ref://caller-list.99001` where 99001 is the contacts result) and a tree would
+silently receive another value wearing the wrong name.
+
+`logEvent` now stamps `content.refName` on every kind, best-effort: the tool for
+a `tool_result`, the child/loop/slot for `map_item`/`map`/`record`, the hook
+tree, the prompt for `llm_call`. Kinds with none (`scope_init`, `error`, …) are
+left unstamped — the key is uniform, its presence is not. `resolveRef` compares
+a handle's label to that field: when both are present and differ, the call fails
+with the row's real name and both fixes (`ref://contacts.99001` or the bare
+`ref://99001`). Bare handles, nameless rows, and pre-`refName` logs still
+resolve, so old sessions and mixed-period logs keep working.
+
+The mints now line up with the rows they point at. The engine's auto-loop cap
+mints `ref://<tool>.<seq>` (and `/list` for a `{ list: […] }` result) instead of
+a bare handle; `execMap`'s record carries `refName` so the trunk and trunk_step
+folds label with the map's own name (`tool_calls`, `rows`); the contacts app's
+hand-written `rows` literal already matches its `Each("rows", …)`. `refs.mjs`
+exports `formatRef` so every producer writes the one grammar.
+`tests/refname.test.mjs` pins the stamping per kind and the end-to-end
+rejection; `tests/refs.test.mjs` pins the resolver.
+
+## 2026-10-19 — predicate slots accept a Tree (`Until`, `Check`, `max` errFn)
+
+`Until(cond, max(n, errFn))` and `Check(cond, goback/goto(…, max(n, errFn)))`
+required a **function** for the condition and for the `max` error message.
+Now either slot also takes a **Tree** — a bare element (wrapped into a
+one-child tree) or a built `Tree(...)` def. The tree runs paused-free in a
+fresh child scope and its exported value is the predicate result: for a
+condition, truthy passes (a falsy value is the failure feedback); for an errFn,
+the value is the exhaustion message.
+
+Mechanically: `records.mjs` accepts an element/def in `checkFields`/
+`untilFields` (`isTreeSpec`); `markers.mjs` `max()` accepts an object errFn;
+`knit.mjs` `normalizeConditions` (run in `finalize`) wraps elements, names and
+registers them, and asserts they are pause-free; `evalPredicate` runs the tree
+at evaluation time; `validateTree`/`validateRuntime` walk predicate trees so
+their child names, `Tools()`, `Call()` and model references are checked like
+any other subtree. `exhaustionMessage` now takes the exec/scope so an errFn
+tree can run.
+
+Note for authors: a condition tree runs on **every pass**, so a prompt-backed
+condition is one model call per loop pass — intended for "let the model decide
+when to stop", costly if the loop is hot. Pinned in
+`tests/until-tree.test.mjs`.
+
+## 2026-10-17 — `inspect_memory`: a bounded view of a value held only by handle
+
+A tool result too big for context crosses trees as a `ref://<name>.<seq>`
+handle, and a live slot is addressable by its `m.<name>` — but both are opaque
+to the model: a ref is a string it can only forward, and a slot it never read is
+invisible. A model facing a 50-row list could only guess, or haul the whole
+thing into context.
+
+`inspect_memory` (new `src/inspect.mjs`, exported as `inspectMemoryTool()`) is a
+host tool merged into `runtime.tools` like `runLogTools`. Given `name` (a live
+slot), `ref` (a handle), or `name: '*'` (list the scope), it returns a small,
+valid-JSON view: a type/size summary plus a random sample of rows (default 5;
+`head` for the first N), with `path` to walk in, `seed` for a reproducible draw,
+and `maxChars` for the budget. The full value stays in memory / the run log; only
+the view enters context. A bad name or ref comes back as a normal tool error.
+
+The engine grew two read-only capabilities on the tool context (`ctx.view`
+already existed): `ctx.readRef(ref)` resolves a handle against this run's log,
+and `ctx.scopeInfo()` lists the slots visible from the call site with each
+slot's write `seq` — so the tool can cite a live slot's own `ref://<name>.<seq>`
+for a later handoff. `src/memory.mjs` adds `scopeInventory`; `src/refs.mjs`
+exports its `walk`; `tests/helpers.mjs` `mockRuntime` passes extra runtime
+options through. Pinned in `tests/inspect-memory.test.mjs`.
+
 ## 2026-10-15 — resume re-derives a level whose stored name is gone; a pause reports its `treePath`
 
 A checkpoint names the paused tree stack by `branch_path`, whose segments are

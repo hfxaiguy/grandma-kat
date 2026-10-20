@@ -42,6 +42,16 @@ CREATE TABLE calls (
 | `kind` | the event kind (below) |
 | `content` | JSON — the event's payload |
 
+Value-bearing rows also carry `content.refName` — the name the row **attests**
+(the tool for a `tool_result`, the loop/slot for `map_item`/`map`/`record`, the
+prompt for `llm_call`). A `ref://<name>.<seq>` handle must match it when it
+resolves, so this is the field to read when a ref is refused:
+
+```sql
+SELECT seq, kind, content->>'$.refName' AS ref_name
+FROM calls WHERE run_id = '…' ORDER BY seq;
+```
+
 ## Event kinds
 
 | `kind` | `content` | Notes |

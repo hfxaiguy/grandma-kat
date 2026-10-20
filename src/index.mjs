@@ -36,6 +36,7 @@ export { when, update, keep, memory, version, goback, goto, max, calls, paramete
 export { knit, resume, KnitError, PauseSignal } from './knit.mjs';
 export { createLogger } from './logger.mjs';
 export { runLogTools, runLogToolFromQuery, listRuns, readEvents } from './runlog.mjs';
+export { inspectMemoryTool, DEFAULT_SAMPLE, DEFAULT_MAX_CHARS } from './inspect.mjs';
 
 export const grandma = { knit, resume };
 export default grandma;

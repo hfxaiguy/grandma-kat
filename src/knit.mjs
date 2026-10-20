@@ -2,12 +2,13 @@
 // runtime, then executes the tree with an injected runtime (models, tools,
 // memory, logger).
 
-import { Scope, makeView, lookupChain, resetScopeIdCounter } from './memory.mjs';
+import { Scope, makeView, lookupChain, resetScopeIdCounter, scopeInventory } from './memory.mjs';
 import { callLlm, normalizeMessages } from './llm.mjs';
 import { createLogger, createRunId, definitionId } from './logger.mjs';
 import { unwrap, Tree, registerTree, registered } from './tree.mjs';
+import { isElement } from './records.mjs';
 import { DEFAULT_MAX } from './markers.mjs';
-import { resolveRefs, refsResolvable } from './refs.mjs';
+import { resolveRefs, resolveRef, refsResolvable, formatRef } from './refs.mjs';
 
 /**
  * True when the scope chain crosses an app-tree boundary — i.e. the call is
@@ -33,6 +34,31 @@ function insideToolBoundary(scope) {
 function enclosingTreeName(scope) {
   for (let s = scope; s; s = s.parent) if (s.treeName) return s.treeName;
   return null;
+}
+
+/**
+ * The context a registry tool's `execute(args, ctx)` receives: the call-site
+ * memory view, the host's opaque `context`, the boundary/tree flags, and two
+ * read-only handles the host's `inspect_memory` tool is built on (inspect.mjs)
+ * — `readRef(ref)` resolves a `ref://…` handle against this run's log, and
+ * `scopeInfo()` lists the slots visible from here (with their write seqs).
+ * Both are engine capabilities: a plain host tool could neither read the log
+ * nor the live scope chain without them.
+ */
+function toolCtxFor(exec, scope) {
+  return {
+    view: makeView(scope),
+    context: exec.runtime.context,
+    boundary: insideToolBoundary(scope),
+    tree: enclosingTreeName(scope),
+    readRef: (ref) => {
+      if (!refsResolvable(exec)) {
+        throw new KnitError('this run has no readable run log; ref:// handles are unavailable');
+      }
+      return resolveRef(exec, ref);
+    },
+    scopeInfo: () => scopeInventory(scope),
+  };
 }
 
 export class PauseSignal {
@@ -613,7 +639,7 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
       }
 
       if (child.kind === 'check') {
-        const r = await callFn(child.check, view, `check '${child.name}'`);
+        const r = await evalPredicate(exec, child.check, scope, view, `check '${child.name}'`);
         if (r === true) {
           scope.error = undefined; // cleared when a check passes
           logEvent(exec, 'check', { child: child.name, pass: true }, scope);
@@ -629,7 +655,7 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         if (used > child.flow.max.count) {
           logEvent(exec, 'flow', { type: 'exhausted', child: child.name, used }, scope);
           throw new KnitError(await exhaustionMessage(child.flow.max, view,
-            `check '${child.name}' failed after ${child.flow.max.count} retries: ${scope.error}`));
+            `check '${child.name}' failed after ${child.flow.max.count} retries: ${scope.error}`, exec, scope));
         }
         if (child.flow.type === 'goto') {
           const targetIdx = tree.children.findIndex(c => c.name === child.flow.target);
@@ -812,7 +838,7 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         continue;
       } else if (child.kind === 'until') {
         const view = makeView(scope);
-        const passed = await callFn(child.check, view, `until check '${child.name}'`);
+        const passed = await evalPredicate(exec, child.check, scope, view, `until check '${child.name}'`);
         if (passed) {
           scope.error = undefined;
           logEvent(exec, 'until', { child: child.name, pass: true }, scope);
@@ -828,7 +854,7 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         if (used > child.max.count) {
           logEvent(exec, 'flow', { type: 'exhausted', child: child.name, used }, scope);
           throw new KnitError(await exhaustionMessage(child.max, view,
-            `until '${child.name}' exhausted after ${child.max.count} iterations: ${scope.error}`));
+            `until '${child.name}' exhausted after ${child.max.count} iterations: ${scope.error}`, exec, scope));
         }
 
         // Compute jump target.
@@ -1071,7 +1097,7 @@ async function execPrompt(exec, child, scope, promptResume = null) {
         // { value }). Registry tools ignore the extra argument.
         result = resolved.kind === 'register'
           ? await callRegister(exec, resolved, ref.args, scope)
-          : await resolved.tool.execute(ref.args, { view: makeView(scope), context: exec.runtime.context, boundary: insideToolBoundary(scope), tree: enclosingTreeName(scope) });
+          : await resolved.tool.execute(ref.args, toolCtxFor(exec, scope));
         result = settleRegisterResult(exec, scope, resolved, result);
       }
       // Tools may return error-shaped results instead of throwing.
@@ -1217,7 +1243,7 @@ async function execPrompt(exec, child, scope, promptResume = null) {
     if (rounds >= bound.count) {
       const last = toolCalls.map((tc) => tc.function?.name).filter(Boolean).join(', ');
       const message = await exhaustionMessage(bound, view,
-        `auto tool loop exhausted after ${rounds} round(s) — the model kept calling tools (last: ${last})`);
+        `auto tool loop exhausted after ${rounds} round(s) — the model kept calling tools (last: ${last})`, exec, scope);
       throw new KnitError(`prompt '${child.name}': ${message}`);
     }
 
@@ -1624,7 +1650,8 @@ const DEFAULT_TOOL_RESULT_CHARS = 4000;
  * tighter OR looser than the default. Without a shaper the result is
  * stringified and capped at `runtime.maxToolResultChars` (default 4000;
  * 0 disables); when the run log can be read back, the capped note carries a
- * `ref://<seq>` handle to the full value (the `tool_result` row).
+ * `ref://<tool>.<seq>` handle to the full value (the `tool_result` row, whose
+ * `refName` is that same tool name).
  *
  * The FULL result is never changed here: the tree reads it via
  * `record.toolResults` (m.raw.prev[0].toolResults) and the `tool_result` log
@@ -1659,7 +1686,7 @@ async function toolContentForModel(exec, scope, child, tr) {
     }
   }
   const text = typeof tr.result === 'string' ? tr.result : JSON.stringify(tr.result ?? '');
-  return capToolResult(text, exec.runtime.maxToolResultChars, tr.seq);
+  return capToolResult(text, exec.runtime.maxToolResultChars, tr.seq, tr.name);
 }
 
 /**
@@ -1667,17 +1694,24 @@ async function toolContentForModel(exec, scope, child, tr) {
  * (`{ rows: [...] }` — read_runs and the sql tools) keeps whole rows until the
  * budget runs out and reports the total, so the result stays valid JSON;
  * anything else gets a head slice plus an actionable marker. `max` <= 0 (or
- * non-finite) disables the cap. `seq` (the `tool_result` row) adds the
- * `ref://` handle the model may pass to another tree tool — same wording as
- * the trunk's shaper (workspace tests/flows/tool-policy.mjs).
+ * non-finite) disables the cap. `seq` (the `tool_result` row) and `name` (the
+ * tool it ran — the row's attested `refName`) add the `ref://<name>.<seq>`
+ * handle the model may pass to another tree tool — same wording as the trunk's
+ * shaper (workspace tests/flows/tool-policy.mjs).
  */
-function capToolResult(text, max, seq) {
+function capToolResult(text, max, seq, name) {
   const limit = max === undefined || max === null ? DEFAULT_TOOL_RESULT_CHARS : Number(max);
   if (!Number.isFinite(limit) || limit <= 0) return text;
   if (text.length <= limit) return text;
-  const ref = Number.isFinite(seq) ? `ref://${seq}` : null;
   const value = safeParse(text);
-  const list = Array.isArray(value) ? value : Array.isArray(value?.list) ? value.list : null;
+  const isWrapperList = !Array.isArray(value) && Array.isArray(value?.list);
+  const list = Array.isArray(value) ? value : isWrapperList ? value.list : null;
+  // The tool name is the row's attested `refName`, so the handle's label and
+  // the row agree (refs.mjs checks it). A `{ list: […] }` result refs the list
+  // itself, matching the trunk's `shapeToolResult` mint.
+  const ref = Number.isFinite(seq)
+    ? formatRef(name, seq, isWrapperList ? ['list'] : [])
+    : null;
   const preview = list ? list.slice(0, 8).map(previewName).filter(Boolean) : [];
   const refText = ref && list
     ? `${ref} (${list.length} row${list.length === 1 ? '' : 's'}${preview.length ? `: ${preview.join(', ')}…` : ''})`
@@ -1992,7 +2026,7 @@ async function execMap(exec, child, scope, resume = null) {
   if (!Array.isArray(items) || items.length === 0) {
     const empty = [];
     logEvent(exec, 'map', { child: child.name, count: 0 }, scope);
-    return { value: empty, record: { content: empty, itemSeqs: [] } };
+    return { value: empty, record: { content: empty, itemSeqs: [], refName: child.name } };
   }
 
   // Reconstruct prior items and the paused item index from the log when
@@ -2047,7 +2081,9 @@ async function execMap(exec, child, scope, resume = null) {
   }
 
   logEvent(exec, 'map', { child: child.name, count: results.length }, scope);
-  return { value: results, record: { content: results, itemSeqs } };
+  // The name the map's rows attest (`map_item.refName`) travels with the
+  // record, so a fold can mint `ref://<name>.<item seq>` without guessing.
+  return { value: results, record: { content: results, itemSeqs, refName: child.name } };
 }
 
 // --- memory helpers ---
@@ -2158,9 +2194,51 @@ async function callFn(fn, view, label, ...extra) {
   }
 }
 
-async function exhaustionMessage(maxRule, view, fallback) {
+async function exhaustionMessage(maxRule, view, fallback, exec, scope) {
   if (!maxRule.errFn) return fallback;
-  return String(await callFn(maxRule.errFn, view, 'max errFn'));
+  const value = typeof maxRule.errFn === 'function'
+    ? await callFn(maxRule.errFn, view, 'max errFn')
+    : await evalPredicate(exec, maxRule.errFn, scope, view, 'max errFn');
+  return String(value);
+}
+
+/**
+ * Evaluate a predicate slot — a Check/Until condition or a max errFn. A
+ * function is called with the memory view (the classic form). A tree (a def,
+ * normalized from an element at build time) runs in a fresh child scope and
+ * its exported value is used: for a condition, `true` passes and a string is
+ * the failure feedback; for an errFn, the value is the message.
+ */
+async function evalPredicate(exec, source, scope, view, label) {
+  if (typeof source === 'function') return callFn(source, view, label);
+  const childScope = new Scope(scope);
+  childScope.treeName = source.name ?? childScope.treeName;
+  logEvent(exec, 'scope_init', { scopeId: childScope.id, parentScopeId: scope.id }, childScope);
+  const out = await execTree(exec, source, childScope, scope, null);
+  return out.value;
+}
+
+/**
+ * Best-effort name for a log row: the tool it ran, the child/loop/slot it
+ * belongs to, or the hook that fired. Stamped into `content.refName` so every
+ * value-bearing row vouches for the label on a `ref://<name>.<seq>` handle
+ * (see refs.mjs). Kinds with none of these (scope_init, error, …) are left
+ * unstamped; the key is uniform, its presence is not.
+ */
+function refNameFor(content) {
+  if (content == null || typeof content !== 'object' || Array.isArray(content)) return null;
+  for (const key of ['tool', 'child', 'hook']) {
+    const value = content[key];
+    if (typeof value === 'string' && value) return value;
+  }
+  return null;
+}
+
+function withRefName(content) {
+  if (content == null || typeof content !== 'object' || Array.isArray(content)) return content;
+  if (content.refName !== undefined) return content;
+  const name = refNameFor(content);
+  return name ? { ...content, refName: name } : content;
 }
 
 function logEvent(exec, kind, content, scope) {
@@ -2172,7 +2250,7 @@ function logEvent(exec, kind, content, scope) {
     iteration: exec.stack[exec.stack.length - 1]?.pass ?? 0,
     scope_id: scope?.id ?? null,
     kind,
-    content,
+    content: withRefName(content),
   });
   // With no logger attached `log` yields nothing; fall back to the monotonic
   // seq so callers that need a write token (slot provenance, Human freshness)
@@ -2186,10 +2264,50 @@ function finalize(rootInput, runtime) {
   const root = unwrap(rootInput);
   const warnings = [];
   autoname(root);
+  normalizeConditions(root, warnings);
   validateTree(root, warnings);
   validateNeeds(root, runtime, warnings);
   for (const w of warnings) console.warn(`[grandma-kat] ${w}`);
   return root;
+}
+
+/**
+ * A predicate source (a Check/Until condition or a max errFn) may be a function
+ * or a Tree. Normalize an element into a one-child tree, name/register it, and
+ * assert it is pause-free (a Human() inside a predicate would strand the loop).
+ * Returns a function or a tree def.
+ */
+function normalizePredicateSource(spec, homeName, label) {
+  if (typeof spec === 'function') return spec;
+  let def;
+  if (isElement(spec)) def = Tree(spec);
+  else if (spec && spec.kind === 'tree') def = spec;
+  else return spec; // records.mjs already rejected anything else
+  if (def.name == null) def.name = `${homeName ?? 'tree'}#predicate`;
+  if (Array.isArray(def.children)) autoname(def);
+  registerTree(def);
+  assertPauseFree(def, label);
+  return def;
+}
+
+/** Normalize every predicate tree in a def (recursively) before validation. */
+function normalizeConditions(tree, warnings, seen = new Set()) {
+  if (!tree || seen.has(tree)) return;
+  seen.add(tree);
+  for (const child of tree.children ?? []) {
+    if (child.kind === 'until' || child.kind === 'check') {
+      const kind = child.kind === 'until' ? 'Until' : 'Check';
+      child.check = normalizePredicateSource(child.check, tree.name, `${kind} '${child.name}' condition`);
+    }
+    if (child.kind === 'until' && child.max?.errFn) {
+      child.max = { ...child.max, errFn: normalizePredicateSource(child.max.errFn, tree.name, `Until '${child.name}' max errFn`) };
+    }
+    if (child.kind === 'check' && child.flow?.max?.errFn) {
+      child.flow = { ...child.flow, max: { ...child.flow.max, errFn: normalizePredicateSource(child.flow.max.errFn, tree.name, `Check '${child.name}' max errFn`) } };
+    }
+    if ((child.kind === 'branch' || child.kind === 'map') && child.tree) normalizeConditions(child.tree, warnings, seen);
+  }
+  for (const h of tree.hooks ?? []) if (h.tree) normalizeConditions(h.tree, warnings, seen);
 }
 
 // Auto-names are assigned at build time: `${parentName}#${k}`, k = 1-based
@@ -2259,6 +2377,13 @@ function validateTree(tree, warnings) {
     }
     if (child.kind === 'branch' && child.tree) validateTree(child.tree, warnings);
     if (child.kind === 'map') validateTree(child.tree, warnings);
+    // A predicate tree (Check/Until condition, or a max errFn tree) is a
+    // subtree too — validate its names/slots like any other.
+    if ((child.kind === 'until' || child.kind === 'check') && child.check && typeof child.check !== 'function') {
+      validateTree(child.check, warnings);
+    }
+    const errTree = child.kind === 'until' ? child.max?.errFn : child.kind === 'check' ? child.flow?.max?.errFn : null;
+    if (errTree && typeof errTree !== 'function') validateTree(errTree, warnings);
   }
 
   for (const kind of ['models', 'tools']) {
@@ -2439,6 +2564,15 @@ function validateRuntime(def, runtime) {
         const childPending = new Map(pendingAncestors);
         for (const e of pendingRegisters) childPending.set(e.name, path);
         walkTree(c.tree, `${path}/${c.name}`, active, childPending);
+      }
+      // Predicate trees (Check/Until condition, max errFn) are inline subtrees:
+      // validate their own Tools()/Call() references in this scope too.
+      if ((c.kind === 'until' || c.kind === 'check') && c.check && typeof c.check !== 'function') {
+        walkTree(c.check, `${path}/${c.name}`, active, new Map(pendingAncestors));
+      }
+      const predErr = c.kind === 'until' ? c.max?.errFn : c.kind === 'check' ? c.flow?.max?.errFn : null;
+      if (predErr && typeof predErr !== 'function') {
+        walkTree(predErr, `${path}/${c.name}`, active, new Map(pendingAncestors));
       }
     }
     activate(t.children.length); // registers/rules declared after the last child

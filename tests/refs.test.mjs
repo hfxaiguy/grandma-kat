@@ -6,7 +6,7 @@
 // structural-sharing contract (no refs ⇒ identity, no copy).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isRef, parseRef, resolveRef, resolveRefs } from '../src/refs.mjs';
+import { isRef, parseRef, resolveRef, resolveRefs, formatRef } from '../src/refs.mjs';
 
 const fakeExec = (rows, runId = 'run-1') => ({
   runId,
@@ -89,4 +89,43 @@ test('resolveRefs substitutes recursively and returns identity without refs', ()
   const out = resolveRefs(exec, mixed);
   assert.notEqual(out, mixed);
   assert.equal(out.b, inner);
+});
+
+test('the label must match the row\'s attested refName', () => {
+  const exec = fakeExec({
+    7: row('run-1', { tool: 'contacts', refName: 'contacts', result: [{ name: 'A' }] }),
+  });
+  assert.deepEqual(resolveRef(exec, 'ref://contacts.7'), [{ name: 'A' }]);
+  assert.throws(
+    () => resolveRef(exec, 'ref://caller-list.7'),
+    (err) => {
+      assert.match(err.message, /that row is 'contacts'/);
+      assert.match(err.message, /ref:\/\/contacts\.7/);
+      assert.match(err.message, /drop the label: ref:\/\/7/);
+      return true;
+    },
+  );
+  // The path rides along in the corrective handle.
+  assert.throws(
+    () => resolveRef(exec, 'ref://caller-list.7/0'),
+    /ref:\/\/contacts\.7\/0/,
+  );
+});
+
+test('bare refs, nameless rows, and pre-refName logs skip the name check', () => {
+  const exec = fakeExec({
+    7: row('run-1', { refName: 'contacts', result: [1] }),
+    8: row('run-1', { result: [2] }), // an older log row, before refName existed
+  });
+  assert.deepEqual(resolveRef(exec, 'ref://7'), [1], 'bare handle: no label to check');
+  assert.deepEqual(resolveRef(exec, 'ref://anything.8'), [2], 'the row attests no name');
+});
+
+test('formatRef builds the one grammar every minter uses', () => {
+  assert.equal(formatRef('contacts', 7), 'ref://contacts.7');
+  assert.equal(formatRef('contacts', 7, ['list']), 'ref://contacts.7/list');
+  assert.equal(formatRef('rows', 7, '0/name'), 'ref://rows.7/0/name');
+  assert.equal(formatRef(null, 7), 'ref://7');
+  assert.equal(formatRef('', 7, []), 'ref://7');
+  assert.equal(parseRef(formatRef('caller-list', 9, ['0', 'name'])).name, 'caller-list');
 });

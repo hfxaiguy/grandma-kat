@@ -106,8 +106,10 @@ export function max(count, errFn) {
   if (!Number.isInteger(count) || count < 1) {
     throw new TypeError('max(count) expects a positive integer');
   }
-  if (errFn !== undefined && typeof errFn !== 'function') {
-    throw new TypeError('max(count, errFn): errFn must be a function');
+  // errFn may be a function (called with the memory view) or a Tree/element
+  // (run paused-free; its value becomes the message). Normalized in knit().
+  if (errFn !== undefined && typeof errFn !== 'function' && !(errFn != null && typeof errFn === 'object')) {
+    throw new TypeError('max(count, errFn): errFn must be a function or a Tree');
   }
   return Object.freeze({ [MAX]: true, count, errFn: errFn ?? null });
 }

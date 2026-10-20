@@ -137,6 +137,8 @@ mistakes surface immediately, with the path to the offending node:
   line-notation sketch layer you write a tree in first (`//` comments run to
   the end of the line; `##` and `#->` are chunks, never comments).
 - [`docs/auto-tool-loop.md`](auto-tool-loop.md) — how a prompt calls tools.
+- [`docs/inspect-memory.md`](inspect-memory.md) — `inspect_memory`: a bounded
+  view of a value the model holds only by a `ref://` handle or a slot name.
 - [`docs/values-flow.md`](values-flow.md) — `m.branch` / `m.prev` / `m.raw`,
   and how values move between scopes.
 - [`docs/pitfalls.md`](pitfalls.md) — the mistakes trees invite, with fixes.

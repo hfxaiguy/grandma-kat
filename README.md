@@ -9,6 +9,10 @@
   <strong>Grandma Knits Agent Trees.</strong>
 </p>
 
+<p align="center">
+  <sub>📖 Read the write-up in <a href="https://newsletter.aicollective.com/p/what-happens-when-the-ai-guy-can-t-use-ai">The AI Collective Newsletter</a>: “What Happens When the AI Guy Can't Use AI”</sub>
+</p>
+
 Yes, really. The name is absurd, and also just… accurate: you write a
 *pattern*, hand it to grandma, and she knits it into a finished thing —
 `grandma.knit(pattern)`. What comes off the needles is a tree of LLM steps:
@@ -366,6 +370,46 @@ never re-sent to the model, and already-completed sibling tool calls are not
 re-executed). The caller sees the result and keeps going, which is what
 makes patterns like *route to any workspace tree, then summarize* trivial.
 
+#### `inspect_memory` — look inside a handle
+
+A big tool result crosses trees as a `ref://<name>.<seq>` handle (see *Logging*),
+and a live slot is addressable by its `m.<name>` — but neither is *readable*: a
+ref is a string to forward, and a slot the model never read is invisible.
+`inspect_memory` (`inspectMemoryTool()`, merged into `runtime.tools` like
+`runLogTools`) hands the model a bounded view so it can plan without loading the
+whole value:
+
+```js
+import { inspectMemoryTool } from 'grandma-kat';
+
+const tools = {
+  navigate: { /* … */ },
+  inspect_memory: inspectMemoryTool(),   // sample/maxChars overridable here
+};
+```
+
+It needs the engine's per-call `ctx` (`view` / `readRef` / `scopeInfo`). A host
+registry that substitutes its own context for app tools must dispatch it
+specially and forward `ctx` — BOB does (`src/tools/index.ts`). Its handle's
+label is checked against the addressed row's `refName` (see *Handles attest
+their name*).
+
+| arg | meaning |
+|---|---|
+| `name` | a live slot (`m.<name>`); `"*"` lists every slot in scope |
+| `ref` | a `ref://<name>.<seq>[/path]` handle from a truncated result |
+| `path` | walk into the value (`'list/0/email'`) |
+| `sample` | random rows (default 5) · `head` takes the first N · `seed` repeats a draw |
+| `maxChars` | bound on the returned JSON (default 2000) |
+
+The result is always valid JSON — for an array, a type/size summary plus the
+sampled `rows` (`rowsShown`, `order`, `truncated`, `note`); for an oversized
+object, its keys. It echoes the `ref` it read through, and a live slot with a
+write row is reported as its own `ref://<name>.<seq>` — either can be passed on
+to another tree tool to hand over the whole value. A bad name or ref comes back
+as a normal tool error, so the model recovers in-loop. See
+[`docs/inspect-memory.md`](docs/inspect-memory.md).
+
 ### Validation up front
 
 `knit()` sees the whole tree before the first LLM call and fails loudly:
@@ -443,7 +487,7 @@ ORDER BY seq;
 | `branch_path` | path from root, e.g. `agent/draft#1` |
 | `iteration` | loop pass number |
 | `kind` | `record` (every scope write; `content.op` is `set` · `memory` · `memoryUpdate`) · `llm_call` · `tool_call` · `tool_result` · `check` · `gate` · `flow` · … |
-| `content` | JSON — messages, response, tool args/results, check feedback, goback target; for `record`, the written value plus `op` and (for `memoryUpdate`) `execScopeId`; `reads` on `llm_call`/`record` names the slots the fn read (provenance) |
+| `content` | JSON — messages, response, tool args/results, check feedback, goback target; for `record`, the written value plus `op` and (for `memoryUpdate`) `execScopeId`; `reads` on `llm_call`/`record` names the slots the fn read (provenance); `refName` on value-bearing rows is the name the row attests (see *Handles attest their name*) |
 
 Since rewound retries drop outputs from memory, **the log is where dead
 outputs live.** `logLevel: 'info'` gives you a live console trace;
@@ -479,6 +523,28 @@ ORDER BY CAST(j.value->>'$.seq' AS INTEGER);
 slots). Framework keys (`prev`, `branch`, `raw`, `error`) are not reads. A
 `Memory(update(), 'list', m => [...m.list, x])` reads its own slot — a
 self-edge you can ignore.
+
+### Handles attest their name
+
+Every value-bearing row carries `content.refName`: the tool (`tool_result`), the
+loop (`map_item`, `map`), the slot (`record`), the hook, or the prompt
+(`llm_call`). A `ref://<name>.<seq>` handle is checked against that field when
+it resolves — a label that disagrees with the addressed row is rejected, and
+the error names the row's real name and both fixes:
+
+```
+ref caller-list.99001: that row is 'contacts' — pass ref://contacts.99001
+or drop the label: ref://99001
+```
+
+So a model cannot relabel or swap a real handle and have a tree silently work
+on the wrong data. A bare `ref://<seq>`, a row with no name (`scope_init`,
+`error`, …), and an older log without `refName` are not checked.
+
+```sql
+SELECT seq, kind, content->>'$.refName' AS ref_name
+FROM calls ORDER BY seq LIMIT 40;
+```
 
 ## Testing without a live model
 
@@ -966,9 +1032,19 @@ rewind. Exhaustion throws `KnitError` (`errFn` message or framework
 default). With no matching rule (e.g. its gate is false), no loop happens.
 Edge counters reset when an outer loop re-runs the container.
 
+`cond` (and the `max` `errFn`) may be a **function** or a **Tree** — a bare
+element or a `Tree(...)` def. A tree runs paused-free in a fresh child scope
+and its exported value is the predicate: truthy passes; falsy fails. A
+condition tree runs on **every** pass, so a prompt-backed condition is one
+model call per pass.
+
 ```js
 Until(m => !isNo(m.branch.check_address),
   max(3, m => `gave up after 3 iterations: ${m.error ?? 'not found'}`))
+
+// A model decides when to stop, and a tree writes the give-up message:
+Until(Tree(name('done?'), Prompt(disableAuto(), 'ask', …), Return(m => …)),
+  max(4, Tree(name('give_up'), Prompt('why', …), Return(m => m.branch.why))))
 ```
 
 Conceptually sugar for an implicit `Check(...)` at the end of the container
@@ -994,9 +1070,11 @@ import { when, goback, max, calls, parameters, DEFAULT_MAX } from 'grandma-kat';
   children (positive integer). `n` counts children, not the check.
 - **`max(count, errFn?)`** — bounds a backward edge: `count` = maximum
   backward jumps (positive integer; the initial run doesn't count, so
-  `max(3)` = 1 run + 3 retries). `errFn(memory)` returns the exhaustion
-  error message — `m.error` holds the last check feedback there. Omit
-  `max()` entirely and `DEFAULT_MAX` (3) applies. There is no way to
+  `max(3)` = 1 run + 3 retries). `errFn` returns the exhaustion error
+  message — `m.error` holds the last check feedback there. `errFn` may be a
+  function `(memory) => string` or a **Tree** (a bare element or `Tree(...)`
+  def; its exported value is the message, and it is asserted pause-free).
+  Omit `max()` entirely and `DEFAULT_MAX` (3) applies. There is no way to
   express an unbounded loop.
 - **`KnitError`** — the error type thrown for build errors, validation
   failures, and budget exhaustion (`err.details` may carry context).
