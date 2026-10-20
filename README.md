@@ -64,27 +64,41 @@ bounded, and logged.
 
 ## Where it fits (vs. LangChain & friends)
 
-The LLM tooling landscape roughly splits into three camps:
+The landscape, from each project's current docs:
 
 | Tool | Mental model | Who decides what happens next |
 |---|---|---|
-| **LangChain / LangGraph** | Big framework: chains, retrievers, agents, graph state machines, an integration for everything | You wire the graph; within agent nodes, often the model |
-| **CrewAI / AutoGen** | Multi-agent role-play: autonomous "agents" converse and delegate | Mostly the models |
-| **Grandma KAT** | A recipe: a fixed tree of small steps with checks and bounded loops | You — always. The model only answers the questions you ask it |
+| **LangChain** | `create_agent`: a configurable harness — model, tools, middleware — over a large provider/integration ecosystem | The harness runs the loop; the model's tool calls steer it |
+| **LangGraph** | Low-level orchestration runtime: a graph of nodes and edges, with persistence, interrupts, durable execution | You wire the graph; nodes are your code or model-driven loops |
+| **CrewAI** | Crews: role-playing agents as sequential, pre-assigned tasks or a manager-led hierarchy. Flows: event-driven `@start`/`@listen` steps with state | Sequential: you. Hierarchical: the manager agent. Flows: your decorators |
+| **OpenAI Agents SDK** | Few primitives — agents, handoffs, guardrails — orchestrated in plain Python | The model: the loop runs until it emits a final answer (capped by `max_turns`, default 10) |
+| **Microsoft Agent Framework** | AutoGen + Semantic Kernel's successor: agents plus graph workflows with explicit execution paths | You define the workflow; agents within it loop until the model stops |
+| **Grandma KAT** | The procedure as data: a fixed tree of small steps, each checked | You decide the flow at build time; model calls are scoped to the questions it asks |
 
-More concretely:
+To be fair about the overlap: validation, bounded retries, deterministic
+ordering, persistence, and logging all exist in the projects above, usually
+with more maturity. If you need integrations, hosted tracing, durable
+execution, RAG plumbing, or multi-agent delegation, those libraries are the
+better choice; KAT doesn't compete there.
 
-- **Use LangChain/LangGraph** if you want a large ecosystem of integrations,
-  RAG plumbing, and prebuilt agent abstractions — and you're comfortable
-  with the abstraction layers and dependency weight that come with it.
-- **Use CrewAI/AutoGen** if you want emergent behavior from agents talking
-  to each other and have frontier-model budget to burn.
-- **Use Grandma KAT** if you *already know the procedure* for your task and
-  want an LLM (especially a small/local one) to execute the unreliable
-  parts of it reliably: granular steps, explicit retries, visible
-  validation, and a complete audit log — with zero dependencies and no
-  framework lock-in. The tree *is* the control flow; you can read it, diff
-  it, log it, and test it without a live model.
+KAT is alpha, single-purpose, and has no platform around it. Its narrower bet:
+the flow is plain data you can read, diff, and test without a live model;
+backward edges must carry a bound, so runaway loops are impossible to construct
+(the frameworks above cap them at runtime via `recursion_limit`, `max_turns`,
+or `max_iter`); and it's one zero-dependency import, aimed at small/local
+models.
+
+- **Use LangChain/LangGraph** for the largest integration and hosting
+  ecosystem (LangSmith for tracing/deployment) and long-running stateful
+  applications.
+- **Use CrewAI** for role-based crews — sequential by default, or a manager
+  agent that plans, delegates and validates — with Flows for event-driven
+  orchestration around them.
+- **Use OpenAI's or Microsoft's SDK** if you're invested in their stacks and
+  want a managed agent harness.
+- **Use Grandma KAT** if you *already know the procedure*, are working with
+  small/local models, and would rather have a tiny tree than an ecosystem. If
+  a graph, a crew, or a hand-rolled function already covers you, prefer those.
 
 It's also designed so that **LLMs are good at writing the trees
 themselves**: the `Tree(...)` surface is small and patterned, and it fails
