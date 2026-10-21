@@ -2,6 +2,18 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-21 — token usage on `llm_call`
+
+`callLlm()` now returns `usage: { input, output }`, normalized from the
+provider's response (`usage.prompt_tokens`/`completion_tokens`, the
+`input_tokens`/`output_tokens` aliases some gateways use, or Ollama's
+`prompt_eval_count`/`eval_count`). Nothing is invented when an endpoint — or a
+mock handler — reports no usage: `usage` is then absent, so "not reported" is
+distinguishable from zero. A knit prompt logs it on the `llm_call` event, so a
+host can meter tokens per call/turn without reaching into the raw response.
+`extractUsage` is exported for callers that already hold a raw body. Tests:
+`tests/llm-usage.test.mjs`.
+
 ## 2026-10-21 — tools see the whole enclosing-tree chain (`ctx.trees`)
 
 A registry tool's `execute(args, ctx)` now receives `ctx.trees` — every

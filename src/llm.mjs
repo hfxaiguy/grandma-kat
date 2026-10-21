@@ -182,7 +182,31 @@ export async function callLlm(model, messages, { tools } = {}) {
     }
   }
 
-  return { content, reasoning, tool_calls, raw };
+  return { content, reasoning, tool_calls, raw, usage: extractUsage(raw) };
+}
+
+/**
+ * Normalize the provider's token accounting to `{ input, output }`.
+ *
+ * OpenAI-compatible endpoints report `usage.prompt_tokens` /
+ * `usage.completion_tokens` (some gateways spell them `input_tokens` /
+ * `output_tokens`); Ollama's native API puts `prompt_eval_count` /
+ * `eval_count` at the top level. Returns undefined when the response reports
+ * no usage at all (a mock handler, or an endpoint that omits it) so callers
+ * can tell "not reported" from "zero tokens".
+ */
+export function extractUsage(raw) {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const u = raw.usage && typeof raw.usage === 'object' ? raw.usage : raw;
+  const input = tokenCount(u.prompt_tokens ?? u.input_tokens ?? u.prompt_eval_count);
+  const output = tokenCount(u.completion_tokens ?? u.output_tokens ?? u.eval_count);
+  if (input === undefined && output === undefined) return undefined;
+  return { input: input ?? 0, output: output ?? 0 };
+}
+
+function tokenCount(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
 }
 
 // ── Native Ollama protocol ────────────────────────────────────────────
