@@ -76,8 +76,10 @@ substitutes its own context for app tools — BOB's `ToolRegistry.dispatch` hand
 app tools the app's secrets context — must special-case `inspect_memory` and
 forward `ctx` (see `grandpa-bob-bot/src/tools/index.ts`). In BOB it is a
 built-in definition, not a `tools.mjs` app tool. Offer it to a prompt by name
-(`Tools('inspect_memory')`) and include it in the host's tool list; BOB adds it
-to `TOOL_NAMES` so the trunk sees it.
+(`Tools('inspect_memory')`) and include it in the host's tool list. It also works
+as a direct `Call('peek', 'inspect_memory', …)` or a register's
+`calls('inspect_memory')`: every invocation path passes the same engine ctx, so
+the tool does not depend on the model's auto loop.
 
 ## Gotchas
 

@@ -1314,7 +1314,7 @@ async function execCall(exec, child, scope, callResume = null) {
   try {
     result = resolved.kind === 'register'
       ? await callRegister(exec, resolved, ref.args, scope)
-      : await resolved.tool.execute(ref.args, { view, context: exec.runtime.context, boundary: insideToolBoundary(scope), tree: enclosingTreeName(scope) });
+      : await resolved.tool.execute(ref.args, toolCtxFor(exec, scope));
     result = settleRegisterResult(exec, scope, resolved, result);
   } catch (err) {
     // A thrown tool error leaves no value to route — log it for diagnosis.
@@ -1947,7 +1947,7 @@ function registerToolSet(exec, entry, declaringScope) {
       }
       const value = target.kind === 'register'
         ? await callFn(target.entry.fn, makeView(declaringScope), `register '${name}'`, args ?? {}, registerToolSet(exec, target.entry, target.declaringScope))
-        : await target.tool.execute(args ?? {}, { view: makeView(declaringScope), context: exec.runtime.context, boundary: insideToolBoundary(declaringScope), tree: enclosingTreeName(declaringScope) });
+        : await target.tool.execute(args ?? {}, toolCtxFor(exec, declaringScope));
       logEvent(exec, 'tool_result', {
         tool: name,
         args: args ?? {},

@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import grandma, { Tree, name, Model, Tools, Prompt, Return } from '../src/index.mjs';
+import grandma, { Tree, name, Model, Tools, Prompt, Memory, Call, Return } from '../src/index.mjs';
 import { inspectMemoryTool, DEFAULT_SAMPLE } from '../src/inspect.mjs';
 import { mockRuntime, scripted } from './helpers.mjs';
 
@@ -167,6 +167,25 @@ test('engine: a live slot read by name (ctx.view + ctx.scopeInfo)', async () => 
   assert.equal(seen.type, 'array');
   assert.equal(seen.length, 50);
   assert.deepEqual(seen.rows, rows(50).slice(0, 2));
+});
+
+test('engine: a direct Call(...) gets the same ctx as the auto loop', async () => {
+  // A tree may call the tool directly (`Call('peek', 'inspect_memory', …)`)
+  // instead of offering it to a model. That path used to pass only
+  // view/context/boundary/tree, so a live-slot read saw an empty scope.
+  const runtime = mockRuntime(scripted([]), {
+    tools: { inspect_memory: inspectMemoryTool() },
+  });
+  const tree = Tree(name('inspect_call_agent'), Model('default'), Tools('inspect_memory'),
+    Memory('contacts', () => rows(4)),
+    Call('peek', 'inspect_memory', { name: 'contacts', head: 2 }),
+    Return((m) => JSON.stringify(m.branch.peek)));
+
+  const { result } = await grandma.knit(tree, runtime);
+  const seen = JSON.parse(result);
+  assert.equal(seen.type, 'array');
+  assert.equal(seen.length, 4);
+  assert.deepEqual(seen.rows, rows(4).slice(0, 2));
 });
 
 test('engine: a ref from a truncation note is resolved by ctx.readRef', async () => {

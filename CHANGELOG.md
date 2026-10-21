@@ -2,6 +2,15 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-21 — direct `Call()` / `calls()` tools get the full engine ctx
+
+A host tool invoked directly — `Call('peek', 'inspect_memory', …)` or a
+Register's `calls('inspect_memory')` — used to receive only
+`view`/`context`/`boundary`/`tree`, so `inspect_memory` saw no
+`ctx.readRef`/`ctx.scopeInfo` and returned an empty-scope error. Both paths now
+use the same `toolCtxFor()` as the auto tool loop, so the tool works however it
+is invoked. Test: `tests/inspect-memory.test.mjs` (direct-Call case).
+
 ## 2026-10-19 — package: a `grandma-kat/llm` subpath
 
 Hosts and tests that drive a model directly can now `import { callLlm } from
