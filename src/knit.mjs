@@ -1573,12 +1573,33 @@ async function deriveChildTree(parentTree, childIndex, runtime) {
   return tree;
 }
 
+/**
+ * Apply `flag(...)` markers to an emitted value. Objects get a `level` field;
+ * strings (and other scalars) are wrapped as `{ text, level }`, which is the
+ * shape chat surfaces already read. With no flag the value is untouched.
+ */
+function applyEmitFlags(value, flags) {
+  const level = Array.isArray(flags) && flags.length ? String(flags[flags.length - 1]) : '';
+  if (!level) return value;
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return { ...value, level };
+  }
+  if (typeof value === 'string') return { text: value, level };
+  if (value == null) return { text: '', level };
+  try {
+    return { text: JSON.stringify(value), level };
+  } catch {
+    return { text: String(value), level };
+  }
+}
+
 // Calls runtime.onEmit(value) then continues. Then fires the tree's own
 // `onEmit` hooks (positional declarations, innermost scope first). Hooks do
 // not nest: a hook's own emits must not re-fire hooks.
 async function execEmit(exec, child, scope) {
   const view = makeView(scope);
-  const value = await callFn(child.fn, view, `emit fn of '${child.name}'`);
+  const raw = await callFn(child.fn, view, `emit fn of '${child.name}'`);
+  const value = applyEmitFlags(raw, child.flags);
   logEvent(exec, 'emit', { child: child.name, value }, scope);
   // Remember the button values this emit offered: a reply that exactly equals
   // one is a pressed button (a confirm), not free text — see the Human() pause.

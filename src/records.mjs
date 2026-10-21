@@ -15,7 +15,7 @@
 
 import {
   isWhen, isUpdate, isKeep, isReadFromMemoryOnce, isMemory, isVersion, isGoback, isGoto, isMax, isCalls, isParameters,
-  isDisableAuto, isRunAfterTool, isDescription, isOptional, isHookTrigger, goback, resolveMax,
+  isDisableAuto, isRunAfterTool, isDescription, isOptional, isHookTrigger, isFlag, goback, resolveMax,
 } from './markers.mjs';
 
 // --- tree defs ------------------------------------------------------------
@@ -390,12 +390,26 @@ export function humanFields(rawArgs, label) {
 
 export function emitFields(rawArgs, label) {
   const { gate, args } = takeGate(rawArgs, label);
-  const fn = args.shift();
-  if (typeof fn !== 'function') {
+  // Flags are markers, not values: pull them out wherever they sit. The last
+  // flag wins when a value carries more than one.
+  const flags = [];
+  for (let i = args.length - 1; i >= 0; i -= 1) {
+    if (!isFlag(args[i])) continue;
+    flags.unshift(args.splice(i, 1)[0].name);
+  }
+  const raw = args.shift();
+  if (raw === undefined) {
+    throw new TypeError(`${label}: first argument must be a function, e.g. Emit(m => ({ text: "hi" }))`);
+  }
+  // Literals are the shorthand form, but only when a flag makes the intent
+  // explicit: Emit("ready", flag("machine")). A bare string stays an error so
+  // a forgotten function is caught at build time.
+  if (typeof raw !== 'function' && flags.length === 0) {
     throw new TypeError(`${label}: first argument must be a function, e.g. Emit(m => ({ text: "hi" }))`);
   }
   if (args.length !== 0) throw new TypeError(`${label}: too many arguments`);
-  return { fn, gate };
+  const fn = typeof raw === 'function' ? raw : () => raw;
+  return { fn, gate, flags };
 }
 
 /**
@@ -569,7 +583,13 @@ export const humanRecord = ({ name, contextFn = null, gate = null, readFromMemor
   kind: 'human', name, contextFn, gate, ...(readFromMemoryOnce ? { readFromMemoryOnce: true } : {}),
 });
 
-export const emitRecord = ({ fn, gate = null }) => ({ kind: 'emit', name: null, fn, gate });
+export const emitRecord = ({ fn, gate = null, flags = [] }) => ({
+  kind: 'emit',
+  name: null,
+  fn,
+  gate,
+  ...(flags.length ? { flags } : {}),
+});
 
 export const untilRecord = ({ check, max, jumpType = null, jumpTarget = null, gate = null }) =>
   ({ kind: 'until', name: null, check, max, jumpType, jumpTarget, gate });

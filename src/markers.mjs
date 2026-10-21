@@ -1,4 +1,4 @@
-// Marker factories: when(), update(), goback(), goto(), max(), calls(),
+// Marker factories: when(), flag(), update(), goback(), goto(), max(), calls(),
 // parameters(), disableAuto(), onEmit(), onHuman(), toolBefore(), toolAfter(),
 // memory().
 // Each marker is a distinct type so the builder can validate argument slots
@@ -20,6 +20,23 @@ export function when(cond) {
 }
 
 export const isWhen = (v) => v != null && v[WHEN] === true;
+
+const FLAG = Symbol('grandma-kat/flag');
+
+/**
+ * Mark an Emit value with a channel tag, e.g. `Emit("note", flag("machine"))`.
+ * Emit flags are carried on the emitted value as `level` (when the value is a
+ * string, it is wrapped as `{ text, level }`), so hosts can style or filter
+ * the output without losing it. Positioned anywhere among the Emit arguments.
+ */
+export function flag(name) {
+  if (typeof name !== 'string' || !name.trim()) {
+    throw new TypeError('flag(name) expects a non-empty string, e.g. flag("machine")');
+  }
+  return Object.freeze({ [FLAG]: true, name: name.trim() });
+}
+
+export const isFlag = (v) => v != null && v[FLAG] === true;
 
 /**
  * Marker for .memory(update(), name, fn) — the .memoryUpdate() leaf in

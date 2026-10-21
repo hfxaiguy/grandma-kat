@@ -224,7 +224,7 @@ elements both run. Two `Model(...)` rules resolve to the last match.
 | `Memory(name, fn)` | memory write | the written value (also stored under `name`) |
 | `Memory(update(), name, fn)` | memory update (slot must already exist) | the updated value |
 | `Return(fn)` | early exit | stops the tree if `fn` returns non-null |
-| `Emit(fn)` | non-blocking output | calls `runtime.onEmit(value)`, continues |
+| `Emit(fn[, flag(name)])` | non-blocking output | calls `runtime.onEmit(value)`, continues |
 | `Human(name, contextFn?)` | human-in-the-loop | pauses execution, waits for input |
 | `Each(name, arrayFn, tree)` | run a subtree per element | array of results, stored under `name` |
 
@@ -866,7 +866,7 @@ Return(m => m.prev[0].includes('no candidates') ? 'no candidates' : undefined)
 Return(when(m => m.branch.rated.length === 0), m => 'nothing to do')
 ```
 
-### `Emit([when], fn)` — step
+### `Emit([when], fn | value, ...flags)` — step
 
 Appends a non-blocking output leaf. `fn(memory)` returns a value, which is
 passed to `runtime.onEmit(value)` if provided. The tree continues
@@ -877,7 +877,17 @@ immediately — emit does **not** pause execution, does **not** write to
 Emit(m => ({ text: 'Thinking...' }))
 Emit(m => ({ text: `Result: ${m.branch.answer}` }))
 Emit(when(m => m.branch.needsReview), m => ({ text: 'Needs review' }))
+
+// A static value is allowed when it carries a flag.
+Emit('starting the app', flag('machine'))
+Emit(m => ({ text: `input: ${JSON.stringify(m.call.args)}` }), flag('machine'))
 ```
+
+`flag(name)` tags the emitted value with `level: name`; strings become
+`{ text, level }`, objects get a `level` field (preserving their other
+fields). A host can use that tag to hide or style machine narration without
+losing the value — `onEmit` still receives every emit. A bare literal
+without a flag is a build error, so a missing function is still caught.
 
 Multiple emits per turn are fine. If `onEmit` is not provided in the
 runtime, emit is a no-op (no error). This gives grandma-kat a clean

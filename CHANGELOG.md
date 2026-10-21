@@ -2,6 +2,17 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-21 — Emit channel flags
+
+`Emit()` takes a `flag(name)` marker anywhere among its arguments:
+`Emit("starting", flag("machine"))` or
+`Emit((m) => ({ text, buttons }), flag("machine"))`. The emitted value is
+tagged with `level: name` (strings become `{ text, level }`; objects keep
+their fields), so hosts can filter or style narration without losing it.
+Literals are accepted only when a flag is present, preserving the existing
+"missing function" build error. `flag` is exported from the package and added
+to `PatternContext` in BOB. Tests: `tests/emit-flag.test.mjs`.
+
 ## 2026-10-21 — direct `Call()` / `calls()` tools get the full engine ctx
 
 A host tool invoked directly — `Call('peek', 'inspect_memory', …)` or a
