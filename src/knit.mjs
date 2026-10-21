@@ -37,6 +37,20 @@ function enclosingTreeName(scope) {
 }
 
 /**
+ * Every enclosing named tree, outermost → innermost. Unlike enclosingTreeName
+ * (the nearest one), the whole chain lets a host tool recognise an app's code
+ * even when the call is made from one of its inner subtrees — e.g. a tool call
+ * from the contacts tree's own `select` loop reports ["contacts", "select"]
+ * (["enrich-profile", "save_run", "contacts", "select"] during a hand-off),
+ * where enclosingTreeName alone reports "select". Empty at the root.
+ */
+function enclosingTreeNames(scope) {
+  const names = [];
+  for (let s = scope; s; s = s.parent) if (s.treeName) names.unshift(s.treeName);
+  return names;
+}
+
+/**
  * The context a registry tool's `execute(args, ctx)` receives: the call-site
  * memory view, the host's opaque `context`, the boundary/tree flags, and two
  * read-only handles the host's `inspect_memory` tool is built on (inspect.mjs)
@@ -44,6 +58,10 @@ function enclosingTreeName(scope) {
  * `scopeInfo()` lists the slots visible from here (with their write seqs).
  * Both are engine capabilities: a plain host tool could neither read the log
  * nor the live scope chain without them.
+ *
+ * `tree` is the nearest enclosing named tree; `trees` is the whole chain
+ * (outermost → innermost), so a host can recognise an app even when the call
+ * comes from one of its inner subtrees.
  */
 function toolCtxFor(exec, scope) {
   return {
@@ -51,6 +69,7 @@ function toolCtxFor(exec, scope) {
     context: exec.runtime.context,
     boundary: insideToolBoundary(scope),
     tree: enclosingTreeName(scope),
+    trees: enclosingTreeNames(scope),
     readRef: (ref) => {
       if (!refsResolvable(exec)) {
         throw new KnitError('this run has no readable run log; ref:// handles are unavailable');
@@ -1165,6 +1184,7 @@ async function execPrompt(exec, child, scope, promptResume = null) {
         child: child.name, round: rounds, model: c.modelName,
         messages: thread,
         content: response.content, reasoning: response.reasoning, toolCalls: response.tool_calls ?? null,
+        ...(response.usage ? { usage: response.usage } : {}),
         ...(record.reads?.length ? { reads: record.reads } : {}),
       }, scope);
     }

@@ -2,6 +2,17 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-21 — tools see the whole enclosing-tree chain (`ctx.trees`)
+
+A registry tool's `execute(args, ctx)` now receives `ctx.trees` — every
+enclosing named tree, outermost → innermost — alongside `ctx.tree` (the nearest
+one). `ctx.tree` alone misidentifies an app whose flow runs inside a named
+inner subtree: the contacts app's `select` loop reported `"select"`, so the
+app's own company-creation gate (`upsert_contact`) refused calls made by the
+app itself. Host tools can now check the whole chain (e.g.
+`["contacts", "select"]`); `ctx.tree` is unchanged. Tested via the contacts
+tool-gate and tree e2e suites.
+
 ## 2026-10-21 — Emit channel flags
 
 `Emit()` takes a `flag(name)` marker anywhere among its arguments:
