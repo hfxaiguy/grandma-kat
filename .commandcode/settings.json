@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(npm:*)",
+      "Shell(node examples/tree-smith/tree-smith.test.mjs)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}
