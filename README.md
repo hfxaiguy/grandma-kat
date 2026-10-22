@@ -555,6 +555,12 @@ So a model cannot relabel or swap a real handle and have a tree silently work
 on the wrong data. A bare `ref://<seq>`, a row with no name (`scope_init`,
 `error`, …), and an older log without `refName` are not checked.
 
+An `Each` record ships the addresses ready-made: `m.raw.branch.<slot>.itemSeqs`
+(each item's `map_item` row seq; null for an item replayed on resume) and
+`itemRefs` (the finished `ref://<name>.<seq>` handles, minted beside the rows
+with `formatRef`). Read the handles instead of composing the grammar; a fold
+appends them verbatim.
+
 ```sql
 SELECT seq, kind, content->>'$.refName' AS ref_name
 FROM calls ORDER BY seq LIMIT 40;

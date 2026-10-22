@@ -2067,7 +2067,7 @@ async function execMap(exec, child, scope, resume = null) {
   if (!Array.isArray(items) || items.length === 0) {
     const empty = [];
     logEvent(exec, 'map', { child: child.name, count: 0 }, scope);
-    return { value: empty, record: { content: empty, itemSeqs: [], refName: child.name } };
+    return { value: empty, record: { content: empty, itemSeqs: [], itemRefs: [], refName: child.name } };
   }
 
   // Reconstruct prior items and the paused item index from the log when
@@ -2092,7 +2092,18 @@ async function execMap(exec, child, scope, resume = null) {
   // Each item's `map_item` row seq — the address behind a truncated result's
   // `ref://` handle (see refs.mjs). Replayed items (already executed before a
   // resume) carry null: their rows exist but are not minted anew.
+  // Kept for one compatibility cycle beside `itemRefs`: a fold that predates
+  // the ready-made handles still derives them from `refName` + this seq.
+  // RETIRE once no consumer reads `itemSeqs` (grandma-workspace
+  // lib/tool-policy.mjs `rowRef` is the known one; see its fallback).
   const itemSeqs = [];
+  // The finished `ref://<name>.<seq>` handle for each item, minted here beside
+  // the row it addresses (the same refs.mjs `formatRef` the auto loop's cap
+  // uses). A fold reads these instead of re-deriving the grammar, so label and
+  // row can never disagree. Entries with no seq (replayed items) stay null:
+  // their rows belong to the PREVIOUS run, and resolveRef rejects a cross-run
+  // handle.
+  const itemRefs = [];
   for (let idx = 0; idx < items.length; idx++) {
     const pausedHere = resume != null && idx === prior.length;
 
@@ -2100,6 +2111,7 @@ async function execMap(exec, child, scope, resume = null) {
       // Already done before the pause — replay its recorded value.
       results.push(completed.get(idx));
       itemSeqs.push(null);
+      itemRefs.push(null);
       continue;
     }
 
@@ -2119,12 +2131,14 @@ async function execMap(exec, child, scope, resume = null) {
     results.push(out.value);
     const itemSeq = logEvent(exec, 'map_item', { child: child.name, index: idx, value: out.value }, scope);
     itemSeqs.push(itemSeq);
+    itemRefs.push(itemSeq != null ? formatRef(child.name, itemSeq) : null);
   }
 
   logEvent(exec, 'map', { child: child.name, count: results.length }, scope);
-  // The name the map's rows attest (`map_item.refName`) travels with the
-  // record, so a fold can mint `ref://<name>.<item seq>` without guessing.
-  return { value: results, record: { content: results, itemSeqs, refName: child.name } };
+  // The name the map's rows attest (`map_item.refName`) and each item's
+  // finished handle (`itemRefs`, minted above) travel with the record, so a
+  // fold neither guesses the label nor writes the ref grammar.
+  return { value: results, record: { content: results, itemSeqs, itemRefs, refName: child.name } };
 }
 
 // --- memory helpers ---

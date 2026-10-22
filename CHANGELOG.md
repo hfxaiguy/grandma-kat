@@ -2,6 +2,35 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-22 — Each records carry ready-made refs (`itemRefs`)
+
+An `Each` record now ships the finished `ref://<name>.<seq>` handle for every
+item (`itemRefs`, parallel to `itemSeqs`), minted beside the row it addresses:
+`execMap` calls `refs.mjs` `formatRef` at the same moment it logs the
+`map_item` row, with the loop's own name — the label that row attests via
+`refName`. A fold or emit reads the handle instead of re-deriving the grammar,
+so the label cannot drift from the row, and the case-sensitive ref grammar is
+written in one place. Replayed items on resume stay null: their rows belong to
+the previous run, and `resolveRef` rejects a cross-run handle.
+
+`itemSeqs` and `refName` remain for one compatibility cycle — consumers that
+predate `itemRefs` (grandma-workspace `lib/tool-policy.mjs` `rowRef`) can still
+derive the handle from them.
+
+**After:** once no live session can resume across this change, retire the
+consumer fallback in `lib/tool-policy.mjs`, then `itemSeqs` here — the `RETIRE`
+comments at both sites mark the pair. Tests: `tests/ref-passthrough.test.mjs`
+now asserts the record's handle and passes it to a consumer unchanged.
+
+## 2026-10-21 — pitfalls: reject natural-language allowlists
+
+Documented a bad practice in `docs/pitfalls.md`: classifying prose (bare
+affirmations, greetings, cancel words) with a hand-maintained `Set` of
+phrases. Coverage is unbounded and every miss is a silent, arbitrary-looking
+misclassification. Give the model the utterance and its context; keep code for
+verifying the chosen action, not for deciding whether a phrase belongs to a
+semantic category.
+
 ## 2026-10-21 — token usage on `llm_call`
 
 `callLlm()` now returns `usage: { input, output }`, normalized from the

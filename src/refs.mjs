@@ -1,9 +1,11 @@
 // refs.mjs — `ref://<name>.<seq>/<path>` handles into the run log.
 //
-// Every tool result can carry a ref (minted where the round is folded — see
-// tests/flows/tool-policy.mjs). The ref names the run-log row that already
-// holds the FULL value (an `Each` item's `map_item` row, a `tool_call` row),
-// so nothing needs to be stashed: the log is the store.
+// Every tool result can carry a ref: a mint happens beside the row when it is
+// logged — `execMap` ships each item's finished handle in the Each record
+// (`itemRefs`), and the auto loop's cap mints from the `tool_result` row — so
+// the handle never has to be re-derived downstream. The ref names the run-log
+// row that already holds the FULL value (an `Each` item's `map_item` row, a
+// `tool_call` row), so nothing needs to be stashed: the log is the store.
 //
 // A tree tool called with a ref in its args gets the real value: resolution
 // happens here, at the tree-tool boundary in knit.mjs, BEFORE the args are

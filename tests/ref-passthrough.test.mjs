@@ -1,7 +1,7 @@
 // End-to-end: an `Each` over tool calls (the trunk's tool loop shape) collects
-// the item row seqs, and a later tree-tool call can hand the FULL value to
-// another tree as a `ref://` handle — resolved by the engine before the args
-// are seeded, inside the same run.
+// each item's row seq AND its ready-made `ref://` handle (`itemRefs`), and a
+// later tree-tool call can hand the FULL value to another tree as that handle —
+// resolved by the engine before the args are seeded, inside the same run.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -25,12 +25,15 @@ function outerTree(withBadRef = false) {
       Tree(Call((m) => m.item.name, (m) => m.item.arguments))),
     Memory('produced', (m) => m.branch.tool_calls),
     Memory('seqs', (m) => m.raw.branch.tool_calls?.itemSeqs ?? []),
-    Call('whole', 'consumer', (m) => ({ input: `ref://${m.seqs[0]}` })),
+    // The ready-made handles the engine mints beside each row.
+    Memory('refs', (m) => m.raw.branch.tool_calls?.itemRefs ?? []),
+    Call('whole', 'consumer', (m) => ({ input: m.refs[0] })),
     Call('path', 'consumer', (m) => ({ input: `ref://${m.seqs[0]}/1/name` })),
     ...(withBadRef ? [Call('bad', 'consumer', () => ({ input: 'ref://99999999' }))] : []),
     Return((m) => ({
       produced: m.produced,
       seqs: m.seqs,
+      refs: m.refs,
       whole: m.branch.whole,
       path: m.branch.path,
       ...(withBadRef ? { bad: m.branch.bad } : {}),
@@ -54,6 +57,10 @@ test('refs: a tree-tool arg ref resolves to the full value from the run log', as
 
   assert.equal(result.seqs.length, 1);
   assert.ok(Number.isFinite(result.seqs[0]), 'the Each record carries the item row seq');
+
+  // The record carries the FINISHED handle, minted beside the row: the
+  // consumer receives it without the caller ever writing the grammar.
+  assert.deepEqual(result.refs, [`ref://tool_calls.${result.seqs[0]}`]);
 
   // Whole-value ref: the consumer receives the producer's full result (the
   // map_item row's value — the single call's outcome, like the trunk's fold).
