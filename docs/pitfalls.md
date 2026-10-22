@@ -60,19 +60,21 @@ Tree(
 **Symptom:** the model miscounts, mis-sorts, or formats inconsistently; the run
 is slow and non-deterministic for no reason.
 
-Prompts are for **reading free text, choosing among ambiguous options, and
-writing prose**. Everything else — parse, filter, sort, rank, dedupe, count,
-join, format, decide — is code in a callback.
+Prompts are for **decisions and semantic lookups** (which record / page / link
+is meant, what the text means), ambiguous choices, and prose. Counting,
+filtering by a known predicate, sorting, formatting, dedupe, validation and
+verification are code in a callback. Do not ask a prompt to count or format;
+do not encode a semantic lookup as a matcher.
 
 ```js
 // ✗  a whole model round to pick the first row with no phone
 Prompt('pick', (m) => [{ role: 'user', content: `Pick one: ${JSON.stringify(m.rows)}` }])
 
-// ✓  Array.prototype, free and correct
+// ✓  Array.prototype, free and correct — a mechanical filter
 Memory('pick', (m) => m.rows.find((r) => !r.phone) ?? null)
 ```
 
-See [`authoring.md`](authoring.md) — "Tools fetch; code decides".
+See [`authoring.md`](authoring.md) — "The model decides; code verifies".
 
 ## Trusting a prompt instruction to hold an invariant
 
@@ -92,6 +94,96 @@ offending state and rewind (or reject) with the reason, the way a self-healing
 // ✓  the same rule as a guard: a repeated statement is an error that rewinds
 Check((m) => !repeatsZero(m) || (m.round ?? 0) >= ROUNDS, goto('draft', max(ROUNDS)))
 ```
+
+## Letting a write tool guess its record
+
+**Symptom:** re-running a save creates a second contact, or an "email match"
+renames the wrong person. The tool looked helpful by matching id → email → name.
+
+A write tool should update the **id** it is given, or create with an explicit
+`create: true`. Resolution belongs to the caller: read the candidates, let the
+model pick (see below), then pass the id. Matching inside the tool hides the
+decision — and a company name is the worst key: "Acme", "Acme Ltd." and "Acme
+Corporation" are the same company; a legal suffix or a trade name defeats exact
+match on the first try. Key companies on their website / registrable domain,
+then distinctive name tokens, and keep the stored name.
+
+The tool still **verifies** the write: the id exists, the target is not the row
+itself, an email already stored on another contact is refused, `create: true`
+is explicit.
+
+## Promising behavior the tool does not implement
+
+**Symptom:** the prompt says "match by exact name, then by its website"; the
+tool only matches name/email; the model follows the prompt, no match happens,
+and a duplicate is created.
+
+The prompt and the tool are one contract. Describe only behavior the tool
+implements — or, if the model is meant to do a read first, say that and give it
+the read tool. Test the boundary: a name variant, a missing website, an
+ambiguous match.
+
+## Encoding a semantic lookup as a deterministic matcher
+
+**Symptom:** a hand-written matcher, fuzzy-name score, or growing rule table
+tries to cover "Acme" vs "Acme Ltd.", "Jon" vs "John", a page title vs a nav
+label — and still guesses wrong.
+
+Decisions and semantic lookups are model work: hand the model the candidates
+(or a read tool) and an output schema; let it choose. Keep code for verifying
+the choice (the id exists, the domain matches, the total adds up) and for
+mechanical filters ("rows with no phone"). A deterministic function is excellent
+at checking a decision and terrible at making one.
+
+## Hard-coding a natural-language allowlist
+
+**Symptom:** a legal user reply is classified as "not clear" because a `Set` of
+expected phrases ("yes", "ok", "go ahead", …) missed the one they typed —
+"go on then", "yeah do that", "affirmative". Adding the missing phrase fixes
+that report and leaves the next one broken.
+
+Classifying prose is model judgement, not enumeration. An allowlist can never
+cover paraphrase, register, locale, typos, punctuation, or multi-clause replies,
+and every miss is a silent, arbitrary-looking misclassification. It also freezes
+the vocabulary into code, far from the prompt that needs it.
+
+```js
+// ✗  code pretends to decide what "agreement" means
+const BARE_AFFIRMATIONS = new Set(["yes", "ok", "go ahead", ...])
+const isAffirmation = (text) => BARE_AFFIRMATIONS.has(normalize(text))
+```
+
+```js
+// ✓  give the model the utterance and the context; state the rule once
+// system: A bare affirmation inherits the action offered in the immediately
+//         preceding assistant message. Do not widen beyond that offer.
+// user:   Immediately preceding assistant message: "… Say go and I'll do it."
+//         User request (verbatim): "go on then"
+```
+
+Keep code for **verification**: the selected action matches the offer, the
+provenance quote is verbatim, the write went through. Do not keep it for
+deciding whether a phrase belongs to a semantic category. See
+[`authoring.md`](authoring.md) — "The model decides; code verifies".
+
+## Static policy embedded in a per-run message
+
+**Symptom:** the invariant instructions, the output schema, and the per-run
+payload share one user message, so a prefix cache never hits.
+
+Put the invariant contract — tool semantics, output schema, allowed actions —
+in the **system** message, byte-identical across runs. Put the per-run material
+(one JSON record, one page, one query) in the **user** message. The stable
+prefix is the cache; the variable suffix is the work.
+
+## A receipt that claims a write that didn't land
+
+**Symptom:** "Saved / Noted / Linked" is emitted even though the write was
+skipped or failed; the caller re-reads the database to find out.
+
+Compose every receipt from the tool result, or say it failed. If a save was
+skipped because a required value was missing (no company name, no target id),
+emit that. A success-shaped summary that hides a no-op is worse than an error.
 
 ## Shadowing a parent slot
 
