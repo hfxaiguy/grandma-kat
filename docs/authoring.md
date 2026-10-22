@@ -2,22 +2,43 @@
 
 A Grandma-KAT tree exists to **do work in JavaScript**. A prompt is one tool
 among many — a way to get a judgement from a model — not the default step. The
-strongest trees keep the model on a short leash: it reads, decides or writes,
-and ordinary code does everything else. Every extra prompt is a slow,
+strongest trees hand the model the decisions and keep the code for verification,
+mechanics, and the invariants that must never break. Every extra prompt is a slow,
 non-deterministic, unrepeatable round trip; every line of code is none of those.
+
+## The model decides; code verifies
+
+The default split is **judgement in a prompt, verification in code**.
+
+- **The model decides** what a request refers to, which record / page / link is
+  the one meant, whether a document is relevant, what a piece of text means, and
+  how a multi-step job should be structured. Those are semantic lookups and
+  choices; a hand-written matcher or rule table fails on the first legal suffix,
+  typo, or paraphrase.
+- **Code verifies** the chosen value: the id exists, the target belongs to the
+  expected domain, the address clears the provenance bar, the write returned
+  `ok`, the list item is deduped, the cap is respected — and owns the mechanics
+  (normalize, count, sort, format, attach sources, guard invariants).
+
+Deterministic functions are **excellent at checking a decision and terrible at
+making one**. If you find yourself growing a matcher, a fuzzy-name heuristic, or
+a rule table to work out what the caller meant, that is the signal to give the
+model the candidates (or a read tool) and let it choose; keep the check in code.
 
 ## The rule
 
-**Push the work into code.** Parse, filter, sort, rank, dedupe, count, join,
-format, validate and decide in plain functions. Let a prompt do only what needs
-a model.
+**Push judgement into the model and verification into code.** A prompt (with
+tools) resolves the semantic questions; plain functions check the answer and do
+the mechanics. Let a prompt do only what needs a model — and do not hand the
+model what a loop or a comparison already knows.
 
 | Do it in code | Reach for a prompt |
 |---|---|
-| arithmetic, aggregation, shaping | reading free text into structure |
-| choosing the max / first / matching row | choosing among genuinely ambiguous options |
-| building tool arguments | writing prose for a human |
-| deciding a branch on a computed value | classifying intent with no rule |
+| verifying an id / target exists and is the right kind | resolving which record / page / link is meant |
+| arithmetic, aggregation, shaping, formatting | reading free text into structure |
+| dedupe, normalization, provenance, caps | choosing among genuinely ambiguous options |
+| mechanical filters by a known predicate | classifying intent with no rule |
+| shaping the verified material a prompt hands to a tool | writing prose for a human |
 
 ## Where the code goes
 
@@ -51,30 +72,23 @@ Every callback is an ordinary function — that is where the logic lives.
   const rank = (rows) => [...rows].sort((a, b) => b.score - a.score);
   ```
 
-## Tools fetch; code decides
+## Tools fetch; the model decides; code verifies
 
-A `Call(...)` gets data in; the tree's code decides what it means. Do not hand
-the same data to a prompt just to have it repeated, counted, compared or
-filtered — `Array.prototype` will be faster, cheaper and correct every time.
+A `Call(...)` gets data in. If the question is **mechanical** — "which rows have
+no phone?", "which address is closest?" — compute it in code; `Array.prototype`
+is faster, cheaper and correct every time. If the question is **semantic** —
+"which of these three Acmes is the company?", "which link is the pricing page?"
+— hand the model the candidates (or the read tool) and let it choose; a matcher
+will guess.
 
-Prompts that call tools are a real pattern (the **auto tool loop**), but prefer
-a fixed `Call(...)` when the tool and its arguments are known: a `Call` cannot
-hallucinate a tool name or arguments, and it costs no model round.
+Prompts that call tools are a real pattern (the **auto tool loop**). Prefer a
+fixed `Call(...)` when the tool and its arguments are already known: a `Call`
+cannot hallucinate a name, and costs no model round. When the choice of tool or
+target **is** the work, use the model.
 
 ## A worked contrast
 
-Asking a model to pick from data it was handed:
-
-```js
-// ✗ slow, non-deterministic, and the model may miscount
-Call('rows', 'sql_query', () => ({ path: 'contacts.db', query: 'SELECT id, phone FROM profiles' })),
-Prompt('pick', (m) => [
-  { role: 'user', content: `Pick one with no phone: ${JSON.stringify(m.branch.rows.rows)}` },
-]),
-Return((m) => m.branch.pick),
-```
-
-Doing it in code:
+Mechanical filtering stays in code:
 
 ```js
 // ✓ deterministic, free, testable
@@ -92,6 +106,20 @@ const pattern = Tree(
 
 The model is declared — a tree with several runtime models and no `Model(...)`
 in scope fails to knit — but never called.
+
+Semantic resolution goes to the model, then code verifies the choice:
+
+```js
+// ✗ a hand-written matcher misses "Acme Ltd." and "Acme Corporation"
+const company = candidates.find((row) => row.name === 'Acme');
+
+// ✓ the model reads the candidates + website and picks; code checks the id
+Prompt('resolve', (m) => [
+  { role: 'system', content: 'Choose the company these candidates describe. Return {"id": …} or {"id": null}.' },
+  { role: 'user', content: `Website: ${m.website}\nCandidates: ${JSON.stringify(m.candidates)}` },
+]),
+Check((m) => contactExists(m.branch.resolve?.id) || 'unknown contact id — re-read the candidates'),
+```
 
 ## Attach trees by name; capabilities don't cross a call
 
