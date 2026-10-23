@@ -107,9 +107,10 @@ between the opening `()` and the closing `()`:
 
 ## Translating this notation (for the translator / LLM author)
 
-The notation `.md` is the source of truth for a tree's behavior; the `.mjs` is
-its translation. When the spec changes, update the `.md` first and regenerate
-the `.mjs` from it rather than hand-patching the code, so the two stay in sync.
+The notation is the source of truth for a tree's behavior. In a tree file it
+lives in the leading comment block, and the elements below it are the
+translation. When the sketch changes, update both in the same edit rather than
+hand-patching the code and leaving the header behind, so the two stay in sync.
 
 A translated tree is one call: `export default Tree(...)` with one element per
 chunk, in order. Elements are the constructors from grandma-kat:

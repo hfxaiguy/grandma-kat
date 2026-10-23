@@ -1,60 +1,49 @@
-# Spec parity: the `.md` is the source of truth
+# Spec parity: the tree's header comment is the spec
 
-A grandma-kat tree is authored **twice**: as a `.md` notation sketch (the
-source of truth for *behavior*) and as the `.mjs` translation (the source of
-truth for *execution*). The rule is simple and non-negotiable:
+A grandma-kat tree is **one file**. Its leading comment block is the notation
+sketch — the spec for its behavior — and the elements below it are the
+execution. The rule is simple and non-negotiable:
 
-> **When the spec changes, change the `.md` first, then regenerate the `.mjs`
-> from it — never hand-patch the code and leave the sketch behind.**
+> **Change the header and the code on the same edit. A tree whose header no
+> longer describes the code is a defect, not a note to leave.**
 
-A `.mjs` with a `.md` beside it is a *translation*, not an original. Editing
-the `.mjs` alone is how the two drift until neither can be trusted.
+Git is the version history. There is no parallel `.spec.md`, no draft copy,
+and no snapshot file: those just create two artifacts that drift.
 
-## What a paired file looks like
+## What a tree file looks like
 
 ```
-app/<name>/
-  tree.spec.md # the notation sketch — behavior
-  tree.mjs     # the translation — execution, with inline comments citing the spec
+patterns/<name>.prod.mjs     a pattern (the trunk, reusable trees)
+app/<name>/tree.prod.mjs     an app tree
 ```
 
-A pattern names the same pair with the tree: `patterns/<name>.spec.md` beside
-`patterns/<name>.mjs`.
-
-The `.md` carries a fenced block whose first line names the tree and its file:
-
-````text
-```text
-## caller-list: app/caller-list/tree.mjs
-!! input
-...
-```
-````
-
-Every `Tree(...)` in the `.mjs` is built from that block, one element per
-notation line, in order. The `.mjs` header says so:
+Both are single modules whose top comment block carries the notation:
 
 ```js
-// Generated from tree.spec.md, the source of truth for this tree's behavior.
+// <name> — one sentence saying what the tree is for.
+//
+//   !! input
+//   ++ conversation: []
+//   ()
+//   || -- step: …
+//   || -> fetch: some_tool
+//   ()
+//
+// (prose about why the tree is shaped this way)
+
+import { Tree, ... } from "grandma-kat";
+
+export default Tree(...);
 ```
 
-## The file's prose, and the `## Guide` host contract
+Every `Tree(...)` in the file is built from that block, one element per
+notation line, in order.
 
-The fenced block is the *behavior*. The rest of the `.md` is prose about the
-tree — `## The flow`, `## Requirements`, and so on — for humans and for the
-authoring LLM. One prose section is a contract with the **host**: `## Guide`.
+## The file's header, and the `## Guide` host contract
 
-```md
-## Guide
-
-To send an email, call this tree with the request. …
-After a send, relay the returned `text` — and nothing else.
-```
-
-`## Guide` is **caller-facing usage text**: the host reads it into the guidance
-it gives the model that decides whether and how to call this tree as a tool
-(a host that registers trees as tools — the BOB harness — parses the section and
-injects it as tool guidance). Write it for that reader, and nobody else:
+The comment block is the *behavior*. `## Guide` is not part of the tree file:
+it is **caller-facing usage text** in the app's `README.md`, read by hosts that
+register trees as tools. Write it for that reader, and nobody else:
 
 - **When to call** — the trigger, in the caller's words.
 - **What to pass** — each `Needs(...)` slot and what it means.
@@ -63,32 +52,31 @@ injects it as tool guidance). Write it for that reader, and nobody else:
 
 Do **not** put the tree's own implementation or authoring philosophy in it. A
 line like "write the tree in code, not prompts" is for the tree's prompts and
-code, not its caller; in `## Guide` it is noise the caller cannot act on. A host
-may derive the tool's short description from elsewhere in the file (the BOB
-harness uses the first prose paragraph), so don't restate it here. Keep the
-section short: it rides in the caller's prompt on every turn.
+code, not its caller; in `## Guide` it is noise the caller cannot act on. Do not
+restate the short description either. Keep the section short: it rides in the
+caller's prompt on every turn.
 
 KAT itself never reads `## Guide` — it is a host convention, honored by hosts
 that expose trees as tools and ignored by those that do not.
 
-## The app README, and the spec
+## The app README, and the tree header
 
-A tree app carries two Markdown documents, and they answer different questions:
+An app carries two documents, and they answer different questions:
 
-- `tree.spec.md` — **how the tree is built**: the notation block, the modes, the
-  prompts, the guards. The source of truth for the tree's *behavior*.
-- `README.md` — **what the app is**: its tools, data model, config, run
-  commands, and how it is wired into a host. The source of truth for the app
-  *around* the tree.
+- the **tree file's header** — how the tree is built: the notation block, the
+  modes, the prompts, the guards. The source of truth for the tree's *behavior*.
+- `README.md` — what the app is: its tools, data model, config, run commands,
+  and how it is wired into a host. The source of truth for the app *around* the
+  tree, plus the caller-facing `## Guide`.
 
 They overlap only where the tree meets the app, and that overlap is where they
-rot. The README is **not** a second copy of the tree: reference the spec (`see
-tree.spec.md`) instead of restating its modes, prompts, steps or guard values.
-A restated tree drifts silently — a real one kept describing a `lookup` mode
-(and a `tree.mjs`) long after the tree had neither, because nothing checks prose
-the way spec-parity checks the sketch.
+rot. The README is **not** a second copy of the tree: reference the header
+instead of restating its modes, prompts, steps or guard values. A restated tree
+drifts silently — a real one kept describing a `lookup` mode long after the
+tree had none, because nothing checks prose the way the header sits beside the
+code it describes.
 
-One source of truth per fact: tree facts live in the spec, app facts in the
+One source of truth per fact: tree facts live in the header, app facts in the
 README, and where they touch the README points.
 
 ## The notation, in one breath
@@ -120,10 +108,10 @@ Single-line branch forms (`--`, `##`) take no closer.
 
 ## Translating (the recipe)
 
-1. **One notation line → one element, in order.** The `.mjs` is
+1. **One notation line → one element, in order.** The file is
    `Tree(...)` with the elements as arguments, position for position.
 2. **Every chunk keeps an inline comment citing its notation line.** The
-   generated `.mjs` should be readable *without* the `.md`:
+   file should be readable *without* scrolling back to the header:
 
    ```js
    //   ** if the batch has rows
@@ -145,47 +133,46 @@ Single-line branch forms (`--`, `##`) take no closer.
 4. **Name only what you reference.** Unnamed subtrees are fine; the runtime
    auto-names and registers them. Name a subtree when the sketch names it or
    the parent reads its result.
-5. **Keep the header comment** saying the file is generated from its `.md`.
 
 ## The parity audit
 
 Periodically — and before trusting a tree — check **both directions**, against
 concrete markers, not vibes:
 
-**Spec → code** (is every notation line implemented?):
-- For each `## <name>: <path>` header, does the file exist and export that tree?
+**Header → code** (is every notation line implemented?):
 - For each `!!`, `++`, `--`, `->`, `#->`, `@@`, `**`, `()`, `<<`, `>>` line, is
-  there a corresponding element in the `.mjs` (find its inline comment)?
+  there a corresponding element in the file (find its inline comment)?
 - Does every `**` branch end at the right `|` depth (by dedent, or at an explicit `***`)?
 
-**Code → spec** (is every code step in the sketch?):
-- Walk the `.mjs` elements; each should name a notation line in its comment.
-  Any element with no sketch line is **code ahead of the spec**.
+**Code → header** (is every code step in the sketch?):
+- Walk the elements; each should name a notation line in its comment. Any
+  element with no sketch line is **code ahead of the spec**.
 - Any slot written in code but not declared (`++`) in the sketch is a gap.
 
 **Then close the gap in one pass.** Enumerate honestly — including places where
-the *code* is right and the *sketch* is stale — then update the `.md` (usually)
-or the `.mjs`, and re-run the audit. A gap you can name is a to-do; a gap you
-paper over becomes a lie.
+the *code* is right and the *header* is stale — then update them in the same
+edit, and re-run the audit. A gap you can name is a to-do; a gap you paper over
+becomes a lie.
 
 ## A checklist you can run
 
-- [ ] `## <name>: <path>` header matches the file and the exported tree name.
+- [ ] The header's first line matches the exported tree name and the file's location.
 - [ ] Element order matches the notation order (including `Needs` at the top).
 - [ ] Every `**` ends at its opener's depth (dedent, or an optional `***`); every `()` has its `() goto … until …`.
 - [ ] Declared slots (`++`) vs updated slots (`++` / `++!`) match `Memory(name, …)`
       vs `Memory(update(), name, …)` in the code.
 - [ ] Every `** if COND` maps to a `when(cond)` on the same element; a bare `**` maps to `Branch(SUBTREE)` with no `when`.
 - [ ] Every `m.branch.X` / `Needs("X")` in code has a named `X` in the sketch.
-- [ ] Every `.mjs` element cites a notation line (no orphan code).
-- [ ] The header comment still says "generated from `<file>.md`".
+- [ ] Every element cites a notation line (no orphan code).
+- [ ] The header still describes the code you just changed.
 
 ## Where this is enforced
 
-KAT cannot enforce it — the `.md` is prose. This workspace's convention *does*:
-the taste file treats a stale doc as a defect to fix, not a note to leave, and a
-spec that has drifted behind the code is closed up in the same change that
-touched the code.
+KAT cannot enforce it — the header is a comment. This workspace's convention
+*does*: the taste file treats a stale doc as a defect to fix, not a note to
+leave, and a spec that has drifted behind the code is closed up in the same
+change that touched the code. The BOB harness's `scripts/spec-lint.ts` reads the
+header of every `*.prod.mjs` tree.
 
 ## See also
 
@@ -193,5 +180,3 @@ touched the code.
   authoritative notation spec and the translation rules.
 - [`../examples/notation/notation.md`](../examples/notation/notation.md) — a
   worked line→element example.
-- [`pitfalls.md`](pitfalls.md#patching-the-mjs-without-the-md) — the drift this
-  page prevents.

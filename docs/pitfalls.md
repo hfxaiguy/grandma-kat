@@ -309,14 +309,14 @@ that makes progress. If the body can't change the value the condition reads,
 you get `max` iterations and a throw. Prefer a condition over a fixed count,
 and keep `max` as the guard, not the plan.
 
-## Patching the `.mjs` without the `.md`
+## Patching the code without its header
 
-**Symptom:** the sketch and the code disagree; the next translator regenerates
-old behavior.
+**Symptom:** the tree's header and its elements disagree; the next reader (or
+translator) regenerates old behavior.
 
-The `.md` notation is the **source of truth**; the `.mjs` is its translation.
-Change the sketch first, then regenerate — see [`spec-parity.md`](spec-parity.md)
-and [`authoring.md`](authoring.md).
+The header comment is the **spec**, and the code sits directly below it. Change
+them together — see [`spec-parity.md`](spec-parity.md) and
+[`authoring.md`](authoring.md).
 
 ## Over-guarding
 

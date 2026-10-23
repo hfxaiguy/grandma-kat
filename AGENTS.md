@@ -64,11 +64,10 @@ Tree(
 - **Reference trees by name — never import the tree module.** Attach another
   tree with `From('name')`; declare a hook with `Hook(trigger, 'name')`; call a
   tree tool by name. Import directly only your own non-tree code (`./src/*`)
-  and the engine (`grandma-kat`). Why: the loader resolves a name to that
-  tree's **pinned prod**, so a snapshot stays isolated — a relative import of
-  `foo/tree.mjs` binds the *draft* and silently leaks edits through a pinned
-  tree. (Test harnesses must register the named trees themselves, mirroring
-  the host's discovery.)
+  and the engine (`grandma-kat`). Why: the loader resolves a name through the
+  host's own discovery, while a relative import binds a file path at import
+  time and bypasses that resolution. (Test harnesses must register the named
+  trees themselves, mirroring the host's discovery.)
 - `Prompt(fn)` — defines the LLM prompt; `fn` receives memory and returns
   the prompt string
 - Memory is keyed by branch name (`m.branch.navigate`) — a parent tree

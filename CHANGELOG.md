@@ -2,6 +2,16 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-23 — docs: the tree's header comment is the spec
+
+The authoring docs drop the two-file (`.spec.md` + `.mjs`) model. A tree is one
+file: the notation in its leading comment block is the spec, and the elements
+below it are the execution; git is the version history. `docs/spec-parity.md`
+is rewritten around that rule (header ↔ code audits; the `## Guide` host
+contract still lives in an app README), `docs/pitfalls.md` retitles the drift
+trap to "patching the code without its header", and the notation guide and
+`AGENTS.md` no longer describe drafts or a pinned prod snapshot.
+
 ## 2026-10-22 — needs error names the call shape
 
 A declared input that does not resolve now says what the caller actually sent
