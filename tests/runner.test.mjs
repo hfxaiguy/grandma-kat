@@ -157,6 +157,60 @@ test('needs: missing at runtime (scope chain miss) throws loudly', async () => {
     /needs 'late', but it does not resolve in scope/);
 });
 
+test('needs: a static-branch miss names the declared inputs', async () => {
+  const pattern = Tree(name('root2')
+    , Branch(Tree(name('needy2'), Needs('late'), Prompt(m => 'x')))
+    , Prompt('late', m => 'too late'));
+
+  await assert.rejects(
+    grandma.knit(pattern, mockRuntime(scripted(['x', 'too late']))),
+    /needs 'late', but it does not resolve in scope\. The tree declares inputs: late — nothing in the scope chain provides it\./);
+});
+
+test('needs: a tree-tool call with the wrong key shows the shape it must send', async () => {
+  const tc = (n, a) => ({ id: n, function: { name: n, arguments: JSON.stringify(a ?? {}) } });
+  const app = Tree(name('insight_tool'), Needs('question'), Return((m) => m.question));
+  const trunk = Tree(name('trunk_tool'), Tools('insight'),
+    Prompt('main', () => 'why?'),
+    Return((m) => m.branch.main ?? null));
+  const handler = scripted([
+    { content: '', tool_calls: [tc('insight', { input: 'why did it fail?' })] },
+    { content: 'done' },
+  ]);
+
+  await grandma.knit(trunk, mockRuntime(handler, {
+    tools: { insight: { description: 'insight', parameters: {}, tree: app } },
+  }));
+
+  const toolMsg = handler.calls[1].messages.find((m) => m.role === 'tool');
+  const wire = String(toolMsg?.content ?? '');
+  assert.match(wire, /needs 'question', but it does not resolve in scope/);
+  assert.match(wire, /The call sent /);
+  assert.match(wire, /but the tree declares/);
+  assert.match(wire, /call it like: insight\(/);
+});
+
+test('needs: a tree-tool call with no arguments says so', async () => {
+  const tc = (n, a) => ({ id: n, function: { name: n, arguments: JSON.stringify(a ?? {}) } });
+  const app = Tree(name('insight_tool2'), Needs('question'), Return((m) => m.question));
+  const trunk = Tree(name('trunk_tool2'), Tools('insight'),
+    Prompt('main', () => 'why?'),
+    Return((m) => m.branch.main ?? null));
+  const handler = scripted([
+    { content: '', tool_calls: [tc('insight', {})] },
+    { content: 'done' },
+  ]);
+
+  await grandma.knit(trunk, mockRuntime(handler, {
+    tools: { insight: { description: 'insight', parameters: {}, tree: app } },
+  }));
+
+  const toolMsg = handler.calls[1].messages.find((m) => m.role === 'tool');
+  const wire = String(toolMsg?.content ?? '');
+  assert.match(wire, /The call sent no arguments but the tree declares/);
+  assert.match(wire, /call it like: insight\(/);
+});
+
 test('model resolution: tree Model() overrides runtime default', async () => {
   const usedBy = { a: 0, b: 0 };
   const models = {

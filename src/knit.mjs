@@ -593,6 +593,36 @@ function treeNameMatches(name, want) {
   return name === want || String(name).replace(/\.v[0-9]+$/, "") === want;
 }
 
+/** `{ "a": "…", "b": "…" }` — the call shape a tree's declared inputs expect. */
+function shapeOf(names) {
+  return `{${names.map((n) => `${JSON.stringify(n)}: "…"`).join(', ')}}`;
+}
+
+/**
+ * The actionable tail on the needs error. A tree entered as a TOOL carries
+ * `scope.callInfo` (what the caller sent, stamped in runTreeTool), so the
+ * message can name the mismatch and show the expected call shape — otherwise
+ * the miss came from a static branch whose template/seed never defined it.
+ * The leading sentence is left verbatim: hosts and tests match on it.
+ */
+function needsErrorHint(tree, need, scope) {
+  const declared = tree.needs ?? [];
+  const call = scope.callInfo;
+  if (!call) {
+    return (
+      ` The tree declares inputs: ${declared.join(', ')} —` +
+      ` nothing in the scope chain provides it.`
+    );
+  }
+  const sent = call.keys.length
+    ? `The call sent ${shapeOf(call.keys)}`
+    : 'The call sent no arguments';
+  return (
+    ` ${sent} but the tree declares ${shapeOf(declared)};` +
+    ` call it like: ${call.tool}(${shapeOf(declared)}).`
+  );
+}
+
 async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
   // Declared inputs must resolve via the scope chain. For a static branch
   // the child scope is empty, so this is the parent chain; for a tree tool
@@ -602,7 +632,10 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
     for (const need of tree.needs) {
       if (optionalNeeds.has(need)) continue; // declared but may be absent
       if (lookupChain(scope, need) === undefined) {
-        throw new KnitError(`tree '${tree.name}' needs '${need}', but it does not resolve in scope`);
+        throw new KnitError(
+          `tree '${tree.name}' needs '${need}', but it does not resolve in scope.` +
+          needsErrorHint(tree, need, scope),
+        );
       }
     }
   }
@@ -1437,6 +1470,18 @@ async function runTreeTool(exec, toolName, tool, args, scope, resumeState = null
   }
   if (!resumeState || childScope.parent !== scope) {
     logEvent(exec, 'scope_init', { scopeId: childScope.id, parentScopeId: scope.id }, childScope);
+  }
+  // What the CALLER sent (keys only). A fresh invocation whose args miss a
+  // declared input gets an actionable needs error that names this shape —
+  // a resume replays the seeded scope, so it skips the check entirely.
+  if (!resumeState) {
+    childScope.callInfo = {
+      tool: toolName,
+      keys:
+        args && typeof args === 'object' && !Array.isArray(args)
+          ? Object.keys(args).filter((k) => k !== 'fresh')
+          : [],
+    };
   }
   if (args && typeof args === 'object' && !Array.isArray(args)) {
     for (const [k, v] of Object.entries(args)) {

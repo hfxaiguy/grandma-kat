@@ -2,6 +2,23 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-22 — needs error names the call shape
+
+A declared input that does not resolve now says what the caller actually sent
+and what shape the tree expects, e.g.:
+
+    tree 'insight' needs 'question', but it does not resolve in scope. The call
+    sent {"input": "…"} but the tree declares {"question": "…"}; call it like:
+    insight({"question": "…"}).
+
+A tree-tool call with no args says "The call sent no arguments…"; a static
+branch (From-attached, no call args) says "The tree declares inputs: late —
+nothing in the scope chain provides it." The leading sentence is unchanged, so
+hosts that classify on it (BOB's `isDroppableContinuationError`) and the
+existing runner test keep working. `runTreeTool` stamps a fresh call's tool
+name and argument keys on the child scope; the hint reads them only to phrase
+the miss. Tests: `tests/runner.test.mjs` pins all three shapes.
+
 ## 2026-10-22 — Each records carry ready-made refs (`itemRefs`)
 
 An `Each` record now ships the finished `ref://<name>.<seq>` handle for every
