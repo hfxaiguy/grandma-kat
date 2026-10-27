@@ -35,6 +35,7 @@ export { name, Model, Tools, Needs, Human, Prompt, Memory, Register, Branch, Eac
 export { when, flag, update, keep, memory, version, goback, goto, max, calls, parameters, disableAuto, runAfterTool, onHuman, onEmit, toolBefore, toolAfter, description, optional, readFromMemoryOnce, isWhen, isFlag, isUpdate, isKeep, isReadFromMemoryOnce, isMemory, isVersion, isGoback, isGoto, isMax, isCalls, isParameters, isDisableAuto, isRunAfterTool, isHookTrigger, isDescription, isOptional, DEFAULT_MAX } from './markers.mjs';
 export { knit, resume, KnitError, PauseSignal } from './knit.mjs';
 export { createLogger } from './logger.mjs';
+export { createSessionLogStore, LOG_TABLES } from './logstore.mjs';
 export { runLogTools, runLogToolFromQuery, listRuns, readEvents } from './runlog.mjs';
 export { inspectMemoryTool, DEFAULT_SAMPLE, DEFAULT_MAX_CHARS } from './inspect.mjs';
 

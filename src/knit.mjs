@@ -251,10 +251,6 @@ export async function resume(checkpointId, runtime) {
           execScope.prev.unshift({ childIndex: c.childIndex, name: c.child, value: c.value });
           execScope.prevRaw.unshift({ childIndex: c.childIndex, name: c.child, record: rec });
         }
-      } else if (ev.kind === 'memory' && !c.update) {
-        // Legacy rows: memory writes used to be logged as their own kind, and
-        // old checkpoints must still resume from them.
-        scope.slots[c.child] = c.value;
       } else if (ev.kind === 'check') {
         scope.error = c.pass ? undefined : c.feedback;
       } else if (ev.kind === 'human') {

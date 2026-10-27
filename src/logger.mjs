@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { LOG_TABLES } from './logstore.mjs';
 
 let runCounter = 0;
 export function createRunId() {
@@ -161,23 +162,13 @@ function truncate(s, max) {
 // and a whole-table `GROUP BY run_id, kind` becomes an index-only ordered
 // pass (rowid is the trailing column, so MAX(seq) per group needs no table
 // rows).
+// `idx_calls_kind` serves whole-log kind filters — `read_runs { type: ... }`
+// scans recent rows by kind on a log that grows unboundedly (hundreds of MB
+// in real deployments) — and makes the legacy-row migration's existence
+// guard an index seek, so an already-converted log costs one lookup per
+// open instead of a full table scan.
 const CREATE_TABLES = `
-CREATE TABLE IF NOT EXISTS calls (
-  run_id TEXT NOT NULL,
-  definition_id TEXT NOT NULL,
-  seq INTEGER PRIMARY KEY AUTOINCREMENT,
-  branch_path TEXT,
-  iteration INTEGER,
-  scope_id INTEGER,
-  kind TEXT NOT NULL,
-  content TEXT
-);
-CREATE TABLE IF NOT EXISTS checkpoints (
-  id TEXT PRIMARY KEY,
-  run_id TEXT NOT NULL,
-  seq INTEGER NOT NULL,
-  resume_positions TEXT NOT NULL
-);
+${LOG_TABLES}
 CREATE TABLE IF NOT EXISTS runs (
   run_id TEXT PRIMARY KEY,
   session_id TEXT,
@@ -185,7 +176,8 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id);
 CREATE INDEX IF NOT EXISTS idx_calls_run ON calls(run_id);
-CREATE INDEX IF NOT EXISTS idx_calls_run_kind ON calls(run_id, kind)`;
+CREATE INDEX IF NOT EXISTS idx_calls_run_kind ON calls(run_id, kind);
+CREATE INDEX IF NOT EXISTS idx_calls_kind ON calls(kind)`;
 
 class SqliteLogger {
   constructor(dbPath) {
@@ -199,6 +191,22 @@ class SqliteLogger {
     this.db.exec('PRAGMA busy_timeout = 5000');
     this.db.exec('PRAGMA journal_mode = WAL');
     this.db.exec(CREATE_TABLES);
+    // Legacy rows: memory writes used to be logged with their own kind
+    // ('memory') before record rows carried an op flag (2026-09-21). Convert
+    // them once so resume and the log readers only ever see the current
+    // encoding: kind 'record', op 'memory' — or 'memoryUpdate' for a legacy
+    // truthy `update` flag — with patch: true preserving the old replay
+    // semantics (the slot is set, no prev/raw entry is pushed — what the
+    // removed legacy resume branch used to do).
+    if (this.db.prepare("SELECT 1 x FROM calls WHERE kind = 'memory' LIMIT 1").get()) {
+      this.db.exec(`
+        UPDATE calls SET kind = 'record', content = json_remove(json_set(content,
+          '$.op', CASE WHEN json_extract(content, '$.update') IS NOT NULL
+                            AND json_extract(content, '$.update') != 0
+                       THEN 'memoryUpdate' ELSE 'memory' END,
+          '$.patch', json('true')), '$.update')
+        WHERE kind = 'memory'`);
+    }
     this.insert = this.db.prepare(
       'INSERT INTO calls (run_id, definition_id, branch_path, iteration, scope_id, kind, content) VALUES (?, ?, ?, ?, ?, ?, ?)');
     this.insertCp = this.db.prepare(

@@ -20,6 +20,43 @@ Tests: `tests/llm-dsml.test.mjs` — single and multiple invokes, untyped JSON,
 unknown names, the no-tools strip, prose around the block, and the HTTP
 `callLlm` path.
 
+## 2026-10-26 — portable session log store: checkpoint shadows + restore over async drivers
+
+`createSessionLogStore({ driver, allocateSeq, onEvent, onError, flushDelayMs })`
+is the engine's synchronous logger contract over an asynchronous durable
+driver. It owns the in-memory replica knit needs (`log` returns the row's seq
+before any write; `readRow` resolves `ref://`), shadows call rows and
+checkpoints, and restores a paused run after a process restart:
+
+- `log()`/`readRow()`/`saveCheckpoint()`/`getCheckpoint()` stay synchronous.
+- a checkpoint's shadow write is enqueued only after every call row it depends
+  on, so "the checkpoint exists on disk" implies "its replay window does".
+- `restore(checkpoint)` loads the run's rows up to `cp.seq`, validates that the
+  pause row is present, hydrates memory, and leaves `resume()` synchronous.
+- `flush()` settles rows + checkpoint shadows; `ready` seeds the seq counter
+  from `driver.headSeq()` when the host allocates elsewhere.
+
+`LOG_TABLES` (calls + checkpoints) is exported as the one schema, and
+`SqliteLogger` now builds its tables from it — hosts no longer mirror the DDL.
+`tests/logstore.test.mjs` pins the sync surface, shadow ordering,
+restore/resume across stores, checkpoint consumption, torn-flush refusal, and
+seq seeding. Hosts keep policy: BOB resolves which checkpoint a chat resumes
+from its own turn markers.
+
+## 2026-10-23 — logger: legacy `memory` rows are converted to records on open
+
+Before record rows carried an `op` flag (2026-09-21), memory writes were
+logged with their own kind (`memory`). The resume path kept a legacy branch
+that still read that encoding, while the log readers never did. `SqliteLogger`
+now converts such rows once on open — kind `record`, `op` `memory` (or
+`memoryUpdate` when a legacy truthy `update` flag marks a patch write), with
+`patch: true` preserving the old replay semantics (the slot is set, no
+prev/raw entry is pushed) — and the legacy resume branch is gone, so the log
+has one encoding everywhere. A `calls(kind)` index keeps the conversion's
+existence guard an index seek on already-converted logs, and serves
+`read_runs`' whole-log kind filters. Tests: `tests/logger.test.mjs` pins the
+conversion, payload/seq stability, and that reopening converts nothing.
+
 ## 2026-10-23 — docs: the tree's header comment is the spec
 
 The authoring docs drop the two-file (`.spec.md` + `.mjs`) model. A tree is one

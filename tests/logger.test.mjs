@@ -134,10 +134,70 @@ test('an existing log DB from before the index gets it on open', () => {
   const db = new DatabaseSync(p, { readOnly: true });
   try {
     const idx = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'calls' ORDER BY name").all();
-    assert.deepEqual(idx.map((r) => r.name), ['idx_calls_run', 'idx_calls_run_kind'], 'opening an old log must build the indexes');
+    assert.deepEqual(
+      idx.map((r) => r.name),
+      ['idx_calls_kind', 'idx_calls_run', 'idx_calls_run_kind'],
+      'opening an old log must build the indexes',
+    );
   } finally {
     db.close();
     logger.close();
+    fs.rmSync(p, { force: true });
+    fs.rmSync(p + '-wal', { force: true });
+    fs.rmSync(p + '-shm', { force: true });
+  }
+});
+
+test('legacy kind-memory rows are converted to record rows on open', () => {
+  const p = tmpDbPath();
+  const legacy = new DatabaseSync(p);
+  legacy.exec(`
+    CREATE TABLE calls (
+      run_id TEXT NOT NULL, definition_id TEXT NOT NULL,
+      seq INTEGER PRIMARY KEY AUTOINCREMENT, branch_path TEXT,
+      iteration INTEGER, scope_id INTEGER, kind TEXT NOT NULL, content TEXT
+    );
+    INSERT INTO calls (run_id, definition_id, kind, content) VALUES
+      ('old', 'd1', 'memory', '{"child":"reply","value":"hi"}'),
+      ('old', 'd1', 'memory', '{"child":"history","update":true,"value":[1,2]}')`);
+  legacy.close();
+
+  const logger = createLogger(p, 'none');
+  const db = new DatabaseSync(p, { readOnly: true });
+  try {
+    const rows = db.prepare('SELECT seq, kind, content FROM calls ORDER BY seq').all();
+    const shaped = rows.map((r) => {
+      const c = JSON.parse(r.content);
+      return [r.kind, c.op, c.patch, c.update];
+    });
+    assert.deepEqual(
+      shaped,
+      [['record', 'memory', true, undefined], ['record', 'memoryUpdate', true, undefined]],
+      'legacy rows must land in the current encoding with their old replay semantics',
+    );
+    assert.deepEqual(
+      rows.map((r) => JSON.parse(r.content).value),
+      ['hi', [1, 2]],
+      'the payload survives the conversion',
+    );
+    assert.deepEqual(rows.map((r) => r.seq), [1, 2], 'seqs are addresses — the conversion must not renumber');
+  } finally {
+    db.close();
+    logger.close();
+    // Files stay: the reopen below must see the converted rows.
+  }
+
+  // Opening again is a no-op: nothing is left to convert, and the guard must
+  // not re-touch anything.
+  const again = createLogger(p, 'none');
+  const db2 = new DatabaseSync(p, { readOnly: true });
+  try {
+    const kinds = db2.prepare('SELECT DISTINCT kind FROM calls').all().map((r) => r.kind);
+    assert.deepEqual(kinds, ['record'], 'the conversion must not leave legacy rows behind');
+    assert.equal(db2.prepare('SELECT COUNT(*) n FROM calls').get().n, 2, 'the conversion must not duplicate rows');
+  } finally {
+    db2.close();
+    again.close();
     fs.rmSync(p, { force: true });
     fs.rmSync(p + '-wal', { force: true });
     fs.rmSync(p + '-shm', { force: true });
