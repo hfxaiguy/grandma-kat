@@ -2,6 +2,24 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-27 — llm: recover tool calls from the DSML text envelope
+
+Some DeepSeek endpoints return their tool-call markup as plain `content`
+instead of lifting it into `message.tool_calls` — a deepseek-v4.1-flash
+session returned a compaction step as a `<|DSML| …>` envelope (the bar is
+U+FF5C) of `invoke name="…"` blocks with `parameter name="…" string="true"`
+children. `parseDsmlToolCalls()` reads that envelope into the same
+`tool_calls` shape as the OpenAI path (string parameters keep their text,
+untyped ones parse as JSON when they can), strips the envelope from
+`content` — including when no tools were offered, the compaction case that
+leaked — and ignores names the prompt was not offered. `callLlm` runs it
+before the short-text recovery, so the leak cannot reach the caller as prose
+or poison a compaction loop.
+
+Tests: `tests/llm-dsml.test.mjs` — single and multiple invokes, untyped JSON,
+unknown names, the no-tools strip, prose around the block, and the HTTP
+`callLlm` path.
+
 ## 2026-10-23 — docs: the tree's header comment is the spec
 
 The authoring docs drop the two-file (`.spec.md` + `.mjs`) model. A tree is one

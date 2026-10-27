@@ -155,6 +155,19 @@ export async function callLlm(model, messages, { tools } = {}) {
     }
   }
 
+  // ── DSML envelope recovery (common) ─────────────────────────────────
+  // Some DeepSeek endpoints return their tool-call markup as plain content
+  // instead of lifting it into message.tool_calls. Parse the envelope when a
+  // tool set is offered; with no tools, at least strip it so the markup cannot
+  // leak into the caller's text (the failed compaction case).
+  if (!tool_calls?.length && content) {
+    const dsml = parseDsmlToolCalls(content, tools);
+    if (dsml) {
+      tool_calls = dsml.tool_calls.length ? dsml.tool_calls : tool_calls;
+      content = dsml.content;
+    }
+  }
+
   // ── Text-to-tool-call recovery (common) ─────────────────────────────
   // Small models (1-3B) often output tool calls as plain text like
   // "navigate https://example.com" instead of using the function calling
@@ -288,6 +301,72 @@ async function callOllama(model, messages, { tools } = {}) {
     tool_calls,
     raw: data,
   };
+}
+
+// Parse DeepSeek's DSML tool-call envelope out of plain content. Some
+// endpoints return the calls as text instead of lifting them into
+// message.tool_calls; the envelope is XML-ish, with `|` as U+FF5C (the
+// fullwidth bar DeepSeek wraps special tokens in).
+//
+// Returns { tool_calls, content } when at least one offered tool matched,
+// else null. String parameters keep their raw text; untyped ones are parsed
+// as JSON when possible.
+const DSML_BAR = "\uFF5C";
+const DSML_OPEN = `<${DSML_BAR}DSML${DSML_BAR}`;
+const DSML_CLOSE = `</${DSML_BAR}DSML${DSML_BAR}`;
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+export function parseDsmlToolCalls(text, tools) {
+  if (typeof text !== "string" || !text.includes(`${DSML_OPEN} invoke`)) return null;
+  const offered = new Set((tools ?? []).map((t) => t.function?.name).filter(Boolean));
+
+  const invokeRe = new RegExp(
+    `${escapeRe(DSML_OPEN)}\\s+invoke\\s+name=["']([^"']+)["']\\s*>([\\s\\S]*?)${escapeRe(DSML_CLOSE)}\\s+invoke>`,
+    "g",
+  );
+  const parameterRe = new RegExp(
+    `${escapeRe(DSML_OPEN)}\\s+parameter\\s+name=["']([^"']+)["'](?:\\s+string=["'](true|false)["'])?\\s*>([\\s\\S]*?)${escapeRe(DSML_CLOSE)}\\s+parameter>`,
+    "g",
+  );
+
+  const tool_calls = [];
+  let invoke;
+  while ((invoke = invokeRe.exec(text))) {
+    const name = invoke[1];
+    if (!offered.has(name)) continue;
+    const args = {};
+    let param;
+    parameterRe.lastIndex = 0;
+    while ((param = parameterRe.exec(invoke[2]))) {
+      const key = param[1];
+      const raw = param[3].trim();
+      if (param[2] === "true") {
+        args[key] = raw;
+        continue;
+      }
+      try {
+        args[key] = JSON.parse(raw);
+      } catch {
+        args[key] = raw; // untyped but not JSON — keep the text
+      }
+    }
+    tool_calls.push({
+      id: `dsml_${tool_calls.length}`,
+      type: "function",
+      function: { name, arguments: JSON.stringify(args) },
+    });
+  }
+  // Strip the envelope from the content. Remove the whole calls block when
+  // there is one; otherwise remove the invoke blocks themselves. A block with
+  // no offered-tool match still strips — the markup must not leak as text.
+  const callsRe = new RegExp(
+    `${escapeRe(DSML_OPEN)}\\s+calls>[\\s\\S]*?${escapeRe(DSML_CLOSE)}\\s+calls>`,
+    "g",
+  );
+  const hasBlock = callsRe.test(text);
+  if (tool_calls.length === 0 && !hasBlock) return null;
+  const content = hasBlock ? text.replace(callsRe, "") : text.replace(invokeRe, "");
+  return { tool_calls, content: content.trim() };
 }
 
 // Try to parse tool invocations from plain text. Only matches when the
