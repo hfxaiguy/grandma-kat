@@ -1132,6 +1132,13 @@ async function execPrompt(exec, child, scope, promptResume = null) {
       const resolved = resolveTool(exec, scope, ref.name);
       if (!resolved) throw new KnitError(`unknown tool '${ref.name}'`);
       const treeSpec = resolved.kind === 'register' ? resolved.entry.tree : resolved.tool?.tree;
+      // Announce the call BEFORE executing it, so a live event stream (the web
+      // UI) can show the tool that is running right now. Refused/unknown
+      // calls above never get here; the completed `tool_result` below carries
+      // the payload, this row only names the call.
+      logEvent(exec, 'tool_start', {
+        child: child.name, round: rounds, tool: ref.name, args: ref.args,
+      }, scope);
       if (treeSpec !== undefined) {
         // A tree tool — from the runtime registry or a tree-backed Register:
         // run the tree in a child scope seeded with the call args; its
@@ -1329,6 +1336,9 @@ async function execCall(exec, child, scope, callResume = null) {
   const resolved = resolveTool(exec, scope, ref.name);
   if (!resolved) throw new KnitError(`unknown tool '${ref.name}' (called from '${child.name}')`);
   const treeSpec = resolved.kind === 'register' ? resolved.entry.tree : resolved.tool?.tree;
+  // Same in-flight visibility as the auto-loop path: name the call before it
+  // executes; `tool_call`/`tool_error` below carry the outcome.
+  logEvent(exec, 'tool_start', { child: child.name, tool: ref.name, args: ref.args }, scope);
   if (treeSpec !== undefined) {
     // A Call() to a tree tool (runtime registry or a tree-backed Register) runs
     // the subtree in place — the argument is the tree's name (a registered/

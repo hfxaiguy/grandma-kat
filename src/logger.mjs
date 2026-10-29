@@ -28,12 +28,13 @@ export function definitionId(rootDef) {
 
 const nullLogger = { log() {}, close() {}, startRun() {}, saveCheckpoint() {}, getCheckpoint() { return null; }, deleteCheckpoint() {}, getEvents() { return []; } };
 
-const INFO_KINDS = new Set(['llm_start', 'llm_call', 'llm_error', 'tool_call', 'tool_error', 'tool_result', 'flow']);
+const INFO_KINDS = new Set(['llm_start', 'llm_call', 'llm_error', 'tool_start', 'tool_call', 'tool_error', 'tool_result', 'flow']);
 
 const KIND_LABELS = {
   llm_start: 'LLM…',
   llm_call: 'LLM',
   llm_error: 'LLM-ERR',
+  tool_start: 'tool…',
   tool_call: 'tool',
   tool_error: 'tool-ERR',
   tool_result: 'result',
@@ -83,6 +84,9 @@ class ConsoleLogger {
         } else {
           console.error(`  ${label}${path}${iter}: ${c.model ?? '?'}${c.round > 1 ? ` round ${c.round}` : ''}${c.content ? ` → ${truncate(c.content, 80)}` : ''}${c.toolCalls?.length ? ` (tool calls: ${c.toolCalls.map(t => t.name ?? t.function?.name ?? '?').join(', ')})` : ''}`);
         }
+        break;
+      case 'tool_start':
+        console.error(`  ${label}${path}: ${c.tool ?? c.child ?? '?'}${c.args ? `(${truncate(JSON.stringify(c.args), 60)})` : ''} — running`);
         break;
       case 'tool_call':
         console.error(`  ${label}${path}: ${c.tool ?? c.child ?? '?'}${c.args ? `(${truncate(JSON.stringify(c.args), 60)})` : ''}`);

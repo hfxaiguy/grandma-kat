@@ -2,6 +2,20 @@
 
 Newest first. One dated section per change.
 
+## 2026-10-28 — knit: `tool_start` event before a tool executes
+
+`tool_call`/`tool_result` are logged after execution — each carries the
+result — so a live event stream could not show which tool was running right
+now, only which one had finished. Both execution paths (the model auto-loop's
+`runCall` and the tree's `execCall`, including tree-backed tools) now log
+`tool_start` with `{ child, round?, tool, args }` immediately before dispatch,
+after the call is validated against the prompt's Tools() scope. Refused and
+unknown calls still throw without a start row. The start row is also included
+in the logger's info-level console output (`tool…`).
+
+Tests: `npm test` (338 passing; the new row rides the existing auto-tools and
+tree-tools resume paths).
+
 ## 2026-10-27 — llm: recover tool calls from the DSML text envelope
 
 Some DeepSeek endpoints return their tool-call markup as plain `content`
