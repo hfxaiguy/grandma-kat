@@ -279,10 +279,48 @@ function takeLimit(limit) {
   return Number.isInteger(limit) && limit > 0 ? limit : DEFAULT_LIMIT;
 }
 
-/** `type` may be one kind or a list; absent means "every kind". */
+/**
+ * `type` may be one kind or a list; absent means "every kind".
+ *
+ * Models often JSON-encode the list ("[\"tool_call\",…]") or quote a single
+ * kind ("\"human\""). Treating that as one literal kind matches nothing, and
+ * the empty result then reads as "the log has no such rows". Recover the
+ * intended kinds when the string is valid JSON; otherwise keep it literal.
+ */
 function normalizeTypes(type) {
   const list = Array.isArray(type) ? type : type == null ? [] : [type];
-  return list.map((t) => String(t)).filter(Boolean);
+  const out = [];
+  const add = (value) => {
+    const s = String(value ?? '').trim();
+    if (s) out.push(s);
+  };
+  for (const item of list) {
+    if (typeof item !== 'string') {
+      add(item);
+      continue;
+    }
+    const s = item.trim();
+    if (!s) continue;
+    const encoded =
+      (s.startsWith('[') && s.endsWith(']')) || (s.startsWith('"') && s.endsWith('"'));
+    if (encoded) {
+      try {
+        const parsed = JSON.parse(s);
+        if (Array.isArray(parsed)) {
+          for (const p of parsed) add(p);
+          continue;
+        }
+        if (typeof parsed === 'string') {
+          add(parsed);
+          continue;
+        }
+      } catch {
+        // Not JSON after all — the literal string is the kind.
+      }
+    }
+    add(s);
+  }
+  return [...new Set(out)];
 }
 
 function intOrNull(value, name) {
@@ -352,7 +390,8 @@ const READ_RUNS_DESCRIPTION =
   'Recall what the agent actually did — and what the user said — from the run log. ' +
   'mode "condensed" (default): the most recent log rows of ALL kinds, newest first, ' +
   'with basic filters — `type` (one kind or a list: "emit" for what the bot told the user, ' +
-  '"human" for what the user said, "tool_call"/"record"/"llm_call" for internals), ' +
+  '"human" for what the user said, "tool_call"/"record"/"llm_call" for internals; pass a list ' +
+  'as a real array, never a JSON-encoded string), ' +
   '`id` (one row by its seq), `run_id` (one run), `limit`, and `before`/`after` (seq bounds). ' +
   'For "what have we been doing", "who did I talk to recently", "what did you save / update", ' +
   'call with `type:"emit"` (the bot\'s own summaries, so recall does not depend on spelling). ' +
@@ -379,7 +418,7 @@ const readRunsParameters = (defaultLimit) => ({
     type: {
       oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }],
       description:
-        'condensed: row kind(s) to include — e.g. "emit" (what the bot said), "human" (what the user said), "tool_call", "record", "llm_call". Omit for every kind.',
+        'condensed: row kind(s) to include — e.g. "emit" (what the bot said), "human" (what the user said), "tool_call", "record", "llm_call". Pass several kinds as a real array (["emit", "human"]), never a JSON-encoded string. Omit for every kind.',
     },
     id: { type: 'integer', description: 'condensed: return just the row with this seq.' },
     limit: {

@@ -101,6 +101,34 @@ test('type filters by kind (one, or a list)', () => {
   }
 });
 
+test('type also accepts a JSON-encoded list or a quoted kind', () => {
+  const dbPath = tmpDbPath();
+  const { seq } = seed(dbPath);
+  try {
+    // Models send this shape after stringifying the array; it must not become
+    // one literal kind (which would silently match zero rows).
+    const encoded = readRuns(dbPath).execute({ type: '["emit", "human"]' }).rows;
+    assert.equal(encoded.length, 5);
+    assert.ok(encoded.every((r) => r.kind === 'emit' || r.kind === 'human'));
+    assert.ok(encoded.some((r) => r.seq === seq.answer && r.text === 'Rhonda, go ahead'));
+
+    // A double-encoded single kind is unwrapped.
+    const quoted = readRuns(dbPath).execute({ type: '"human"' }).rows;
+    assert.ok(quoted.length > 0);
+    assert.ok(quoted.every((r) => r.kind === 'human'));
+
+    // A plain kind is still literal, and a non-JSON string stays literal.
+    assert.ok(readRuns(dbPath).execute({ type: 'emit' }).rows.every((r) => r.kind === 'emit'));
+    assert.equal(readRuns(dbPath).execute({ type: '[not json' }).rows.length, 0);
+
+    // Duplicates collapse without changing the match set.
+    const dupes = readRuns(dbPath).execute({ type: ['emit', 'emit'] }).rows;
+    assert.ok(dupes.length > 0 && dupes.every((r) => r.kind === 'emit'));
+  } finally {
+    cleanup(dbPath);
+  }
+});
+
 test('id, before/after and run_id are exact filters', () => {
   const dbPath = tmpDbPath();
   const { runA, runB, seq } = seed(dbPath);

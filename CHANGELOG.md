@@ -2,6 +2,18 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-01 — read_runs: recover a JSON-encoded type filter
+
+Models sometimes send `type` as `"[\"tool_call\", …]"` or `"\"human\""`.
+`normalizeTypes()` took the string literally, so `kind IN (?)` matched no row
+and the caller read the empty result as "the log has no such rows". It now
+recovers a JSON list or quoted string when the value parses as JSON, trims and
+de-duplicates kinds, and leaves a genuinely literal kind alone. The parameter
+description says to pass a real array.
+
+Tests: `npm test` (339 passing; the new case covers an encoded list, a quoted
+kind, a plain kind, a non-JSON string, and duplicates).
+
 ## 2026-10-28 — knit: `tool_start` event before a tool executes
 
 `tool_call`/`tool_result` are logged after execution — each carries the
