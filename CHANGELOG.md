@@ -2,6 +2,22 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-02 — resume survives a tree edited while paused
+
+A checkpoint saves child indexes from the build that paused. Editing the
+pattern during a pause — the common case is a seed update adding a `Memory()`
+before the trunk's `Human()` — shifted those indexes: the reply re-entered the
+Human and was lost, and a later `Memory(update(), 'hook_actions')` threw
+because the new declaration had never run. Resume now re-anchors each level by
+name: the innermost level resumes past the same Human and ancestor levels
+re-enter the branch/map that led deeper, falling back to the saved index when
+a name no longer exists. Declarations the rebuilt tree added before the pause
+point are seeded before hooks run, so an update can rely on its slot.
+
+Tests: `tests/resume-shape-change.test.mjs` (a Memory inserted before the
+paused Human, and an onHuman hook added in the new build); `npm test` (341
+passing).
+
 ## 2026-11-01 — read_runs: recover a JSON-encoded type filter
 
 Models sometimes send `type` as `"[\"tool_call\", …]"` or `"\"human\""`.

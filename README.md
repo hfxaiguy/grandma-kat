@@ -1144,3 +1144,10 @@ through the continuation token. A successful resume consumes the checkpoint
 pauses/resumes are supported. If the resumed run throws, the checkpoint is
 kept — the pause is still the last good state — so the same continuation can
 be retried.
+
+A checkpoint stores child indexes from the build that paused. If the tree is
+edited while the session is parked, resume re-anchors by name: the innermost
+level resumes past the same `Human()` (wherever it moved) and ancestors
+re-enter the same branch/map. Memory() declarations the new build added
+before the pause point are initialized first, so a later
+`Memory(update(), …)` cannot fail with a missing slot.

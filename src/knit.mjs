@@ -174,6 +174,70 @@ export async function knit(rootInput, runtime = {}) {
 
 // --- resume from checkpoint ---
 
+/** The child index a checkpoint saved for one stack level. */
+function savedResumeIndex(saved) {
+  const index = typeof saved === 'number' ? saved : Number(saved?.index);
+  return Number.isFinite(index) ? index : 0;
+}
+
+/** The first child with this name (and optionally this kind). */
+function childIndexNamed(tree, name, kind = null) {
+  if (!name) return -1;
+  return (tree.children ?? []).findIndex(
+    (child) => child.name === name && (kind == null || child.kind === kind),
+  );
+}
+
+/**
+ * Re-anchor a saved child index against the current build. Returns the index
+ * to resume at, or the saved one when the name no longer resolves (a renamed
+ * Human or branch keeps the old positional fallback).
+ */
+function resolveResumeStart(tree, saved, { innermost, humanSlot, nextTreeName }) {
+  const index = savedResumeIndex(saved);
+  // Innermost: resume just past the SAME Human, wherever it moved to.
+  if (innermost) {
+    const human = childIndexNamed(tree, humanSlot, 'human');
+    if (human >= 0) return human + 1;
+  } else if (nextTreeName) {
+    // Ancestor: the child that led to the next tree level. Branch() and Each()
+    // carry the subtree by name; a Call() names its tool slot, so this matches
+    // only when the names agree and otherwise keeps the positional index.
+    const matches = [];
+    (tree.children ?? []).forEach((child, i) => {
+      if (child.kind !== 'branch' && child.kind !== 'map' && child.kind !== 'call') return;
+      if (child.name === nextTreeName || child.tree?.name === nextTreeName) matches.push(i);
+    });
+    if (matches.length === 1) return matches[0];
+  }
+  return index;
+}
+
+/**
+ * A checkpoint rebuilds slots from `record` rows, but a tree edited while the
+ * session was parked may have gained a Memory() initializer BEFORE the pause
+ * point. That initializer never ran (the resume skips past it), so a later
+ * Memory(update(), …) would throw "slot does not exist". Seed those missing
+ * declarations from the current build before hooks or delivery run.
+ */
+async function seedMissingMemory(exec, tree, scope, beforeIndex) {
+  const limit = Math.min(beforeIndex, tree.children?.length ?? 0);
+  for (let i = 0; i < limit; i += 1) {
+    const child = tree.children[i];
+    if (child.kind !== 'memory') continue;
+    if (Object.prototype.hasOwnProperty.call(scope.slots, child.name)) continue;
+    const view = makeView(scope);
+    if (child.gate != null && !(await evalPredicate(exec, child.gate, scope, view, `gate of '${child.name}'`))) {
+      continue;
+    }
+    // Not logged: this is recovery of state the rebuilt tree already implies,
+    // not a child outcome. In particular it must not count as a write for
+    // Human(readFromMemoryOnce()) or appear in m.prev.
+    scope.slots[child.name] = await callFn(child.fn, view, `memory fn of '${child.name}'`, scope.slots[child.name]);
+    scope.raw[child.name] = { content: scope.slots[child.name] };
+  }
+}
+
 export async function resume(checkpointId, runtime) {
   const logger = createLogger(runtime.logger ?? false, runtime.logLevel ?? 'none');
   const callerOwnsLogger = typeof runtime.logger === 'object' && runtime.logger !== null && typeof runtime.logger.log === 'function';
@@ -361,13 +425,25 @@ export async function resume(checkpointId, runtime) {
         // Nothing resolved (e.g. the root itself): surface the original error.
         tree = await resolveTreeForResume(stored, runtime);
       }
+      // The saved position is a child INDEX in the build that paused. If the
+      // tree was edited while the session was parked (the usual case: a new
+      // Memory() declared before the Human), that index now names a different
+      // child and the reply lands on the wrong element — or the Human pauses
+      // again and the delivery is lost. Re-anchor by name: the paused Human
+      // for the innermost level, the branch/map that led deeper for ancestors.
+      const resumeChildStart = resolveResumeStart(tree, resumePositions[idx], {
+        innermost: idx === treeNames.length - 1,
+        humanSlot: humanEvent.content?.child ?? 'main_input',
+        nextTreeName: treeNames[idx + 1] ?? null,
+      });
+      resumePositions[idx] = resumeChildStart;
       stack.push({
         name: tree.name ?? stored,
         tree,
         childIndex: 0,
         pass: 0,
         edgeCounters: new Map(),
-        resumeChildStart: resumePositions[idx],
+        resumeChildStart,
       });
     }
 
@@ -436,6 +512,13 @@ export async function resume(checkpointId, runtime) {
       seq: cp.seq,
       tools: { ...(runtime.tools ?? {}) },
     };
+    // Recover declarations the rebuilt tree added before each resume point
+    // (see seedMissingMemory) — before hooks, which may write those slots.
+    for (let idx = 0; idx < stack.length; idx += 1) {
+      const scope = resumeState.levelScopes[idx];
+      if (!scope) continue;
+      await seedMissingMemory(exec, stack[idx].tree, scope, stack[idx].resumeChildStart ?? 0);
+    }
     logger.startRun?.(exec.runId, runtime.sessionId);
     // onHuman hooks fire before delivery: a hook may redirect (Goto) the reply
     // to an ancestor Human instead of the paused slot. A reply that exactly
