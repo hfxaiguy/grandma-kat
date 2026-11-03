@@ -2,6 +2,27 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-03 — an LLM call can no longer hang a turn
+
+The call deadline used to stop at the response headers: `postJsonWithRetry`
+cleared its AbortController timer as soon as `fetch` resolved, so a provider
+that accepted the connection and then stalled mid-body left the body read
+awaiting forever — in the web app, a turn spinner that never resolved.
+
+The deadline now covers the whole call (connect, headers and body), and once
+body bytes start flowing a 30s idle window aborts a stalled stream instead of
+waiting out the full budget. A timeout is now `LlmTimeoutError` (`code:
+'llm_timeout'`) rather than a bare AbortError, so it is distinguishable from a
+user stop and can be retried: hung calls get one retry regardless of
+`maxAttempts` (four hung attempts would outlast any run watchdog). Truncated
+bodies are retried as transport failures too, and the OpenAI-compatible path
+now honours a per-model `timeout` like the Ollama path already did; both
+accept `idleTimeout` to tune the body window.
+
+Tests: `tests/llm-retry.test.mjs` (headers never arrive, mid-body stall,
+truncated body, a slow trickle bounded by the whole-call deadline); `npm test`
+(349 passing).
+
 ## 2026-11-02 — resume survives a tree edited while paused
 
 A checkpoint saves child indexes from the build that paused. Editing the

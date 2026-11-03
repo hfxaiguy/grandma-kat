@@ -7,6 +7,12 @@
 // `{ reasoning_effort }` on the OpenAI-compatible path, `{ think, options }`
 // on the native Ollama path.
 //
+// Optional call bounds: `timeout` (ms) is the whole-call deadline — headers
+// and body — defaulting to 2 min (OpenAI-compatible) or 10 min (Ollama);
+// `idleTimeout` (ms) is the max gap between body bytes, default 30s. A call
+// that exceeds either fails with `llm_timeout` (see LlmTimeoutError) instead
+// of hanging the turn.
+//
 // The `transform` hook on the model entry (optional) runs after all
 // built-in handling (thinking-model extraction, text-to-tool-call
 // recovery) and before the response is returned. See the inline
@@ -16,12 +22,89 @@
 // Providers rate-limit (429) and occasionally return 5xx; a single failure
 // used to abort a whole turn — or a hook that maintains context. Retry these
 // with exponential backoff + jitter, honouring a Retry-After header or a
-// provider-suggested delay. Timeouts (AbortError) are NOT retried: a hung
-// server would usually just hang again, and 4×120s is a very long stall.
+// provider-suggested delay.
+//
+// A hung provider is retried too, but at most once: the first attempt has
+// already burned the call's full timeout, and four hung attempts would stall
+// a turn for longer than any host's run watchdog tolerates. A stop (the
+// caller aborting through a wrapped fetch) is never retried — its AbortError
+// arrives while *our* controller is still un-aborted, which is how the two
+// abort paths are told apart.
 const RETRYABLE_STATUS = new Set([408, 409, 425, 429, 500, 502, 503, 504]);
 const DEFAULT_MAX_ATTEMPTS = 4;
+/** Timeouts get one retry regardless of `maxAttempts` (see above). */
+const MAX_TIMEOUT_ATTEMPTS = 2;
+/** Max gap between body bytes once the body starts; a stalled stream aborts
+ *  in this window instead of waiting out the whole-call timeout. */
+const DEFAULT_IDLE_TIMEOUT_MS = 30_000;
 const MAX_BACKOFF_MS = 30_000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** A call that hit its deadline or stalled mid-body. Carries the
+ *  `llm_timeout` code so hosts can tell it from a user stop (an AbortError)
+ *  and offer a retry. */
+export class LlmTimeoutError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'LlmTimeoutError';
+    this.code = 'llm_timeout';
+  }
+}
+
+/** A body that parsed as neither JSON nor a complete payload — usually a
+ *  connection cut mid-response. Retried like a transport failure. */
+class LlmBodyError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'LlmBodyError';
+    this.code = 'llm_bad_body';
+  }
+}
+
+/** Read a response body as text, aborting `controller` when the body has
+ *  started but no chunk arrives for `idleMs`. A non-streaming endpoint that
+ *  flushes headers early and then computes is bounded by the whole-call timer;
+ *  once bytes are flowing, real silence fails fast instead of burning the full
+ *  budget. */
+async function readBodyText(res, { controller, idleMs, timeoutMs, kind, baseURL }) {
+  if (!res.body || typeof res.body.getReader !== 'function') {
+    return res.text();
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  let idle = false;
+  let idleTimer;
+  const idleBudget = Math.min(idleMs, timeoutMs);
+  const arm = () => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      idle = true;
+      controller.abort();
+    }, idleBudget);
+  };
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        text += decoder.decode();
+        return text;
+      }
+      text += decoder.decode(value, { stream: true });
+      arm();
+    }
+  } catch (err) {
+    if (idle) {
+      throw new LlmTimeoutError(
+        `${kind} stalled: no response bytes for ${(idleBudget / 1000).toFixed(1)}s (${baseURL})`,
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(idleTimer);
+    try { reader.releaseLock(); } catch { /* already released */ }
+  }
+}
 
 /** A server-suggested delay in ms: the Retry-After header, or a JSON body's
  *  retry_strategy.suggested_initial_delay_s (Neuralwatt-style). */
@@ -48,39 +131,82 @@ function backoffMs(attempt, hinted) {
 }
 
 /**
- * POST a JSON body and return the Response, retrying transient failures.
- * `baseURL` is only for the error messages; the fetch uses `url`. `maxAttempts`
- * may be overridden per model entry (`model.retries`).
+ * POST a JSON body and return the parsed response, retrying transient
+ * failures. The timeout covers *the whole call* — connect, headers and body —
+ * so a provider that accepts the connection then stops sending cannot leave
+ * the caller awaiting a response that never arrives. `baseURL` is only for
+ * the error messages; the fetch uses `url`. `maxAttempts` may be overridden
+ * per model entry (`model.retries`).
  */
-async function postJsonWithRetry(url, { headers, body, timeoutMs, baseURL, kind, maxAttempts }) {
+async function postJsonWithRetry(url, {
+  headers, body, timeoutMs, idleTimeoutMs, baseURL, kind, maxAttempts,
+}) {
   const attempts = Math.max(1, Number(maxAttempts) || DEFAULT_MAX_ATTEMPTS);
+  const idleMs = Number.isFinite(idleTimeoutMs) && idleTimeoutMs > 0
+    ? idleTimeoutMs
+    : DEFAULT_IDLE_TIMEOUT_MS;
   let lastErr;
+  let timeouts = 0;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    let res;
+    let expired = false;
+    const timer = setTimeout(() => {
+      expired = true;
+      controller.abort();
+    }, timeoutMs);
     try {
-      res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal });
-    } catch (err) {
-      clearTimeout(timer);
-      if (err && err.name === 'AbortError') {
-        throw new Error(`${kind} timed out after ${timeoutMs / 1000}s (${baseURL})`);
+      const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        // Bound reading the error body too — an error page that stalls is the
+        // same hang as a success page that stalls.
+        const text = await readBodyText(res, { controller, idleMs, timeoutMs, kind, baseURL });
+        const err = new Error(`${kind} failed (${res.status}): ${text}`);
+        err.status = res.status;
+        if (!RETRYABLE_STATUS.has(res.status) || attempt >= attempts) throw err;
+        lastErr = err;
+        await sleep(backoffMs(attempt, suggestedDelayMs(res, text)));
+        continue;
       }
-      lastErr = err;
-      if (attempt >= attempts) throw err;
+
+      const text = await readBodyText(res, { controller, idleMs, timeoutMs, kind, baseURL });
+      try {
+        return JSON.parse(text);
+      } catch {
+        throw new LlmBodyError(`${kind} returned a truncated body (${baseURL})`);
+      }
+    } catch (err) {
+      const aborted = expired || controller.signal.aborted;
+      const callerStop = !aborted && (err?.name === 'AbortError' || err?.name === 'AgentStoppedError');
+      // A stop from the caller's signal (a wrapped fetch / merged AbortSignal)
+      // leaves our controller un-aborted; rethrow it untouched so the engine
+      // unwinds as a stop instead of retrying.
+      if (callerStop) throw err;
+      // Anything that is neither a deadline/stall nor a transport failure is
+      // a programming/provider error: surface it rather than re-running it.
+      const transport = err instanceof LlmBodyError || err instanceof TypeError || err?.name === 'TimeoutError';
+      if (!aborted && !transport) throw err;
+
+      const timeoutErr = err instanceof LlmTimeoutError
+        ? err
+        : new LlmTimeoutError(`${kind} timed out after ${timeoutMs / 1000}s (${baseURL})`);
+      if (aborted) {
+        timeouts += 1;
+        lastErr = timeoutErr;
+        if (timeouts >= MAX_TIMEOUT_ATTEMPTS) throw timeoutErr;
+      } else {
+        lastErr = err;
+      }
+      if (attempt >= attempts) throw lastErr;
       await sleep(backoffMs(attempt, null));
-      continue;
+    } finally {
+      clearTimeout(timer);
     }
-    clearTimeout(timer);
-
-    if (res.ok) return res;
-
-    const text = await res.text().catch(() => '');
-    const err = new Error(`${kind} failed (${res.status}): ${text}`);
-    err.status = res.status;
-    if (!RETRYABLE_STATUS.has(res.status) || attempt >= attempts) throw err;
-    lastErr = err;
-    await sleep(backoffMs(attempt, suggestedDelayMs(res, text)));
   }
   throw lastErr;
 }
@@ -120,16 +246,18 @@ export async function callLlm(model, messages, { tools } = {}) {
       headers.Authorization = `Bearer ${model.apiKey}`;
     }
 
-    const res = await postJsonWithRetry(`${baseURL}/chat/completions`, {
+    const data = await postJsonWithRetry(`${baseURL}/chat/completions`, {
       headers,
       body,
-      timeoutMs: 120_000,
+      // Per-model timeout (ms); default 2 min. Covers the whole call, so the
+      // old header-only deadline cannot leave the body read unbounded.
+      timeoutMs: typeof model.timeout === 'number' && model.timeout > 0 ? model.timeout : 120_000,
+      idleTimeoutMs: model.idleTimeout,
       baseURL,
       kind: 'LLM request',
       maxAttempts: model.retries,
     });
 
-    const data = await res.json();
     const message = data.choices?.[0]?.message ?? {};
     content = message.content ?? '';
     reasoning = message.reasoning ?? message.reasoning_content ?? '';
@@ -265,20 +393,21 @@ async function callOllama(model, messages, { tools } = {}) {
   }
 
   // Per-model timeout (ms); default 10 min. Ollama can be slow on large
-  // prompts or deep-reasoning queries, so the default is generous.
+  // prompts or deep-reasoning queries, so the default is generous. The
+  // deadline covers the body read as well as the headers.
   const timeoutMs = typeof model.timeout === 'number' && model.timeout > 0
     ? model.timeout
     : 600_000;
-  const res = await postJsonWithRetry(`${baseURL}/api/chat`, {
+  const data = await postJsonWithRetry(`${baseURL}/api/chat`, {
     headers,
     body,
     timeoutMs,
+    idleTimeoutMs: model.idleTimeout,
     baseURL,
     kind: 'Ollama request',
     maxAttempts: model.retries,
   });
 
-  const data = await res.json();
   const msg = data.message ?? {};
 
   // Map Ollama tool_calls to OpenAI shape: stringify arguments, add IDs.
