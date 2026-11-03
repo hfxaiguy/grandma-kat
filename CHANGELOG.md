@@ -23,6 +23,21 @@ Tests: `tests/llm-retry.test.mjs` (headers never arrive, mid-body stall,
 truncated body, a slow trickle bounded by the whole-call deadline); `npm test`
 (349 passing).
 
+## 2026-11-02 — `max(count)` may resolve its cap from memory
+
+A loop budget was fixed at build time. `max()` now also accepts a function of
+memory as its count and re-evaluates it at every edge, so a tree can grow its
+own budget as work succeeds — `Until(cond, max(m => m.max_passes))`, and the
+same form on `Check(goback(..., max(fn)))` and `Prompt(max(fn), ...)`. A
+dynamic count must return a positive integer; anything else fails with a
+`KnitError` naming the loop and the bad value instead of silently using a
+default. Static `max(n)` behavior is unchanged.
+
+Tests: `tests/until-tree.test.mjs` (Until grows mid-loop, Check grows
+mid-loop, invalid dynamic count fails), `tests/auto-tools.test.mjs` (a register
+extends an auto-loop budget mid-run), `tests/builder.test.mjs`;
+`npm test` (345 passing).
+
 ## 2026-11-02 — resume survives a tree edited while paused
 
 A checkpoint saves child indexes from the build that paused. Editing the

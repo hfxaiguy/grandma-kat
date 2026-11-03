@@ -120,8 +120,12 @@ export function goto(target, maxMarker) {
 export const isGoto = (v) => v != null && v[GOTO] === true;
 
 export function max(count, errFn) {
-  if (!Number.isInteger(count) || count < 1) {
-    throw new TypeError('max(count) expects a positive integer');
+  // A count is normally a positive integer. A function of memory is evaluated
+  // again on every pass, so a loop can grow its own budget from a live slot
+  // (`Until(..., max(m => m.max_passes))`). The function must return a
+  // positive integer each time; knit() fails loudly when it does not.
+  if (typeof count !== 'function' && (!Number.isInteger(count) || count < 1)) {
+    throw new TypeError('max(count) expects a positive integer or a function of memory returning one');
   }
   // errFn may be a function (called with the memory view) or a Tree/element
   // (run paused-free; its value becomes the message). Normalized in knit().

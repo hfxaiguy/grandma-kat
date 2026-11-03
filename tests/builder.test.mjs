@@ -62,6 +62,7 @@ test('markers validate their arguments', () => {
   assert.throws(() => max(0), /positive integer/);
   assert.throws(() => max(3, 'nope'), /function/);
   assert.doesNotThrow(() => goback(1, max(3)));
+  assert.doesNotThrow(() => max((m) => m.max_passes));
 });
 
 test('Check() defaults to goback(1) with default max', () => {

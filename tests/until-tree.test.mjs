@@ -12,6 +12,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import grandma, {
   Tree, name, Model, Prompt, Until, max, Return, Human, disableAuto,
+  Memory, update, Check, goback,
 } from '../src/index.mjs';
 import { scripted, mockRuntime } from './helpers.mjs';
 
@@ -53,6 +54,57 @@ test('Until(tree): a never-true condition tree exhausts with the built-in messag
   await assert.rejects(
     () => grandma.knit(tree, mockRuntime(scripted(['x']))),
     /exhausted after 2 iterations/,
+  );
+});
+
+// ── runtime: the cap may grow from memory ────────────────────────────────
+
+test('Until(max(fn)): a dynamic cap is re-read each pass and can grow mid-loop', async () => {
+  const tree = Tree(
+    name('growing_loop'),
+    Model('default'),
+    Memory('budget', (m, cur) => (typeof cur === 'number' ? cur : 2)),
+    Memory('pass', (m, cur) => (typeof cur === 'number' ? cur : 0)),
+    Memory(update(), 'pass', (m, cur) => (cur ?? 0) + 1),
+    // After the first pass the loop raises its own budget from 2 to 4.
+    Memory(update(), 'budget', (m, cur) => ((m.pass ?? 0) >= 2 ? 4 : cur)),
+    Until(() => false, max((m) => m.budget)),
+    Return(() => 'never'),
+  );
+  await assert.rejects(
+    () => grandma.knit(tree, mockRuntime(scripted(['x']))),
+    /exhausted after 4 iterations/,
+  );
+});
+
+test('Check(goback(max(fn))): a dynamic retry cap is re-read each pass', async () => {
+  let cap = 1;
+  const tree = Tree(
+    name('growing_check'),
+    Model('default'),
+    Prompt(disableAuto(), 'step', () => 'x'),
+    // The first failure raises the cap; a cap read once at entry (1) would
+    // fail on the next pass, while a per-pass read allows one more retry.
+    Check(() => { cap = 2; return false; }, goback(1, max(() => cap))),
+    Return(() => 'never'),
+  );
+  await assert.rejects(
+    () => grandma.knit(tree, mockRuntime(scripted(['x']))),
+    /failed after 2 retries/,
+  );
+});
+
+test('max(fn): an invalid dynamic cap fails the tree loudly', async () => {
+  const tree = Tree(
+    name('bad_cap'),
+    Model('default'),
+    Memory('cap', () => 'lots'),
+    Until(() => false, max((m) => m.cap)),
+    Return(() => 'never'),
+  );
+  await assert.rejects(
+    () => grandma.knit(tree, mockRuntime(scripted(['x']))),
+    /max count must resolve to a positive integer/,
   );
 });
 

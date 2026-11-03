@@ -280,7 +280,9 @@ Check(
 - `goback(1)` rewinds to the child just before the check; `m.prev` rewinds
   with it (named slots persist until overwritten).
 - `max(3)` = 1 initial run + 3 retries, then a loud `KnitError`. The
-  optional `errFn` controls the failure message.
+  optional `errFn` controls the failure message. A function of memory
+  (`max(m => m.max_passes)`) is re-read every pass, so a loop can grow its
+  own budget from a live slot.
 - `Until(cond, max(k))` is the same primitive at container scope: re-run
   all children until `cond` passes. Omit `max()` and a documented default
   cap (3) applies.
@@ -1099,8 +1101,9 @@ import { when, goback, max, calls, parameters, DEFAULT_MAX } from 'grandma-kat';
 - **`goback(n, max?)`** — the flow marker for `Check(...)`: rewind `n`
   children (positive integer). `n` counts children, not the check.
 - **`max(count, errFn?)`** — bounds a backward edge: `count` = maximum
-  backward jumps (positive integer; the initial run doesn't count, so
-  `max(3)` = 1 run + 3 retries). `errFn` returns the exhaustion error
+  backward jumps (positive integer, or a function of memory re-read each
+  pass; the initial run doesn't count, so `max(3)` = 1 run + 3 retries).
+  `errFn` returns the exhaustion error
   message — `m.error` holds the last check feedback there. `errFn` may be a
   function `(memory) => string` or a **Tree** (a bare element or `Tree(...)`
   def; its exported value is the message, and it is asserted pause-free).

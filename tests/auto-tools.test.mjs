@@ -144,6 +144,25 @@ test('max() bounds the loop; exhaustion throws with the errFn message', async ()
   assert.equal(handler.calls.length, 2, 'exactly max(2) rounds ran before giving up');
 });
 
+test('max(fn): the auto loop re-reads its cap and a register can extend it mid-run', async () => {
+  const handler = scripted([
+    { content: '', tool_calls: [tc('bump', {})] },
+    { content: '', tool_calls: [tc('search', { q: 'x' })] },
+    { content: '', tool_calls: [tc('search', { q: 'x' })] },
+  ]);
+  const pattern = Tree(name('agent')
+    , Memory('limit', () => 1)
+    , Register('bump', 'raise the round budget', () => ({ value: 'ok', memory: { limit: 3 } }))
+    , Tools('bump', 'search')
+    , Prompt(max((m) => m.limit), m => 'go'));
+
+  await assert.rejects(
+    grandma.knit(pattern, mockRuntime(handler, { tools: { search: tool(async () => 'x') } })),
+    /auto tool loop exhausted after 3 round/,
+  );
+  assert.equal(handler.calls.length, 3, 'the grown cap allowed two more rounds');
+});
+
 // Text-recovered tool calls (small models that emit `tool args` as plain
 // text) arrive from callLlm already normalized into tool_calls, so the loop
 // treats them like native ones — no loop-side code distinguishes them. The

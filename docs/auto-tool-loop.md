@@ -21,7 +21,9 @@ A `Prompt()` with tools runs a **local conversation** by default:
    call — it records it, and the tree runs the chosen tool via a gated
    `Call(...)` (which accepts a function for the tool name, so a model-chosen
    name dispatches directly). `max(n[, errFn])` bounds the rounds — default
-   `DEFAULT_MAX` (3) — and exhaustion throws `KnitError`. Positional
+   `DEFAULT_MAX` (3); `n` may be a function of memory re-read every round,
+   so tools can extend their own budget — and exhaustion throws
+   `KnitError`. Positional
    `Hook(toolBefore()/toolAfter(), [when(cond)], tree)` trees run per call,
    seeded with `call`; mutation-by-return; throws abort (see the README's
    *Tool hooks*). For a fully explicit loop, see *Explicit loops* below.

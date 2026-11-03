@@ -290,14 +290,19 @@ child; `goback(2)` re-runs the two previous children. Both `goback()` and
 **`max(count, errFn?)`** — bounds a backward edge (an exported marker, not
 an options bag). `count` = max backward jumps (so `max(3)` = 1 initial run
 + 3 retries); counters are per-edge and reset when the container is re-run
-by an outer loop. Exhaustion **fails loudly** — the `errFn` only controls
-*what the parent sees*, not whether it fails:
+by an outer loop. A **function of memory** is also accepted and re-read on
+every pass, so a loop can grow its own budget from a live slot
+(`Until(..., max(m => m.max_passes))`); it must return a positive integer
+each time. Exhaustion **fails loudly** — the `errFn` only controls *what
+the parent sees*, not whether it fails:
 
 - `max(3)` bare → framework default failure message (names the check, the
   count, the last feedback).
 - `max(3, m => \`...: ${m.error}\`)` → authored message. `m` is the
   container's memory at exhaustion: `m.error` holds the last check
   feedback, `m.prev` the current path — genuinely diagnostic messages.
+- `max(m => m.max_passes)` → dynamic count, evaluated per pass; a bad
+  return value fails the tree with an actionable error.
 - Omitted entirely → documented framework default cap (the "no unbounded
   loops" rule), overridable per-edge.
 

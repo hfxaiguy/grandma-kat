@@ -783,10 +783,11 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         const key = `check:${i}`;
         const used = (state.edgeCounters.get(key) ?? 0) + 1;
         state.edgeCounters.set(key, used);
-        if (used > child.flow.max.count) {
+        const cap = await evaluateMaxCount(child.flow.max, view, `check '${child.name}'`);
+        if (used > cap) {
           logEvent(exec, 'flow', { type: 'exhausted', child: child.name, used }, scope);
           throw new KnitError(await exhaustionMessage(child.flow.max, view,
-            `check '${child.name}' failed after ${child.flow.max.count} retries: ${scope.error}`, exec, scope));
+            `check '${child.name}' failed after ${cap} retries: ${scope.error}`, exec, scope));
         }
         if (child.flow.type === 'goto') {
           const targetIdx = tree.children.findIndex(c => c.name === child.flow.target);
@@ -982,10 +983,11 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         const key = `until:${i}`;
         const used = (state.edgeCounters.get(key) ?? 0) + 1;
         state.edgeCounters.set(key, used);
-        if (used > child.max.count) {
+        const cap = await evaluateMaxCount(child.max, view, `until '${child.name}'`);
+        if (used > cap) {
           logEvent(exec, 'flow', { type: 'exhausted', child: child.name, used }, scope);
           throw new KnitError(await exhaustionMessage(child.max, view,
-            `until '${child.name}' exhausted after ${child.max.count} iterations: ${scope.error}`, exec, scope));
+            `until '${child.name}' exhausted after ${cap} iterations: ${scope.error}`, exec, scope));
         }
 
         // Compute jump target.
@@ -1379,7 +1381,8 @@ async function execPrompt(exec, child, scope, promptResume = null) {
       });
     }
 
-    if (rounds >= bound.count) {
+    const cap = await evaluateMaxCount(bound, view, `prompt '${child.name}'`);
+    if (rounds >= cap) {
       const last = toolCalls.map((tc) => tc.function?.name).filter(Boolean).join(', ');
       const message = await exhaustionMessage(bound, view,
         `auto tool loop exhausted after ${rounds} round(s) — the model kept calling tools (last: ${last})`, exec, scope);
@@ -2381,6 +2384,23 @@ async function callFn(fn, view, label, ...extra) {
   } catch (err) {
     throw new KnitError(`${label} threw: ${err.message}`, { cause: err });
   }
+}
+
+/**
+ * Resolve a max rule's count for the current pass. A static positive integer
+ * is used as written; a function receives the live memory view and is called
+ * again at every edge, so a loop can extend its own budget as work succeeds
+ * (`Until(..., max(m => m.max_passes))`). An invalid dynamic result fails the
+ * tree loudly instead of silently falling back to a default.
+ */
+async function evaluateMaxCount(maxRule, view, label) {
+  const count = typeof maxRule?.count === 'function'
+    ? await callFn(maxRule.count, view, `${label} max count`)
+    : maxRule?.count;
+  if (!Number.isInteger(count) || count < 1) {
+    throw new KnitError(`${label}: max count must resolve to a positive integer (got ${String(count)})`);
+  }
+  return count;
 }
 
 async function exhaustionMessage(maxRule, view, fallback, exec, scope) {
