@@ -2,6 +2,29 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-03 — human rows say who spoke; `read_runs` gains a transcript
+
+A delivered `human` row used to look identical whether the host handed the
+engine a real reply (`runtime.humanInput`) or the tree filled the slot itself
+(`Human(readFromMemoryOnce())`, an armed `Goto`/redirect). A reader — notably
+the insight tree — could not tell the user's words from memory.
+
+Delivered rows now carry `source`: `human` for a direct reply, `memory` for a
+slot value delivered by `readFromMemoryOnce()`, and `goto` for an armed
+Goto/redirect. The memory case also names `via` and the write `seq`; a pause
+row has no source. Legacy delivered rows without `source` read as `human`.
+
+`read_runs` surfaces this in condensed rows (`source` for human rows,
+`channel: 'user' | 'machine'` for emits) and adds `mode: 'transcript'`: the
+conversation as the user experienced it, oldest first — direct human replies
+plus every emit, each `{ seq, speaker, source | channel, text }`. Memory/goto
+deliveries and internals stay out. Machine emits are kept and labeled, and
+`run_id`, `limit`, and `before`/`after` page a long conversation.
+
+Tests: `tests/transcript.test.mjs` (chronological entries, exclusions,
+paging, condensed source/channel, async parity), `tests/human-log.test.mjs`
+(direct vs memory vs Goto source), and the existing runlog suite.
+
 ## 2026-11-03 — an LLM call can no longer hang a turn
 
 The call deadline used to stop at the response headers: `postJsonWithRetry`

@@ -349,8 +349,12 @@ test('the tool description advertises every mode and the type filter', () => {
   assert.match(description, /expanded/);
   assert.match(description, /deps/);
   assert.match(description, /readers/);
+  assert.match(description, /transcript/);
+  assert.match(description, /source/);
+  assert.match(description, /channel/);
   assert.match(description, /type/);
   assert.match(description, /CURRENT state/i);
   assert.equal(parameters.properties.mode.enum.includes('readers'), true);
+  assert.equal(parameters.properties.mode.enum.includes('transcript'), true);
   assert.equal(parameters.properties.slot.type, 'string');
 });

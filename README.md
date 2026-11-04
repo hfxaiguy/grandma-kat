@@ -540,6 +540,27 @@ slots). Framework keys (`prev`, `branch`, `raw`, `error`) are not reads. A
 `Memory(update(), 'list', m => [...m.list, x])` reads its own slot — a
 self-edge you can ignore.
 
+### The user-facing transcript
+
+`read_runs({ mode: 'transcript' })` reconstructs the conversation from the
+user's point of view: delivered direct human replies plus every `emit`,
+oldest first. Each entry is
+`{ seq, when, run_id, speaker: 'user' | 'bot', source | channel, text }`.
+`channel` is `user` for a normal emit and `machine` for engine narration
+(`{ machine }` or `flag('machine')`); machine emits are kept, not hidden.
+Memory/goto deliveries and all internal rows (`llm_call`, `tool_call`,
+`record`, `flow`, …) are excluded.
+
+A delivered human row carries `source`:
+
+- `human` — the host passed the value as `runtime.humanInput` (a reply);
+- `memory` — `Human(name, readFromMemoryOnce())` took a new slot value;
+- `goto` — an armed `Goto`/redirect supplied the value.
+
+Only `source: 'human'` is the user speaking. A pause row has no `source`.
+`read_runs` condensed rows carry the same `source`/`channel` fields, and
+`run_id`, `limit`, and `before`/`after` page a long transcript.
+
 ### Handles attest their name
 
 Every value-bearing row carries `content.refName`: the tool (`tool_result`), the

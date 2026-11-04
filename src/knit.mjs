@@ -533,6 +533,10 @@ export async function resume(checkpointId, runtime) {
     // Log it here (reusing the pause row's path/scope) so read_runs
     // { type: 'human' } can recall inputs, not only waits. An armed/redirected
     // delivery is logged by execHuman itself — don't double up.
+    //
+    // `source` is how a reader tells a human reply from a value the tree
+    // delivered out of memory. Here the host handed us `runtime.humanInput`,
+    // i.e. a direct reply.
     if (!redirect && runtime.humanInput != null) {
       exec.logger.log({
         run_id: exec.runId,
@@ -541,7 +545,12 @@ export async function resume(checkpointId, runtime) {
         iteration: humanEvent.iteration ?? 0,
         scope_id: humanEvent.scope_id ?? null,
         kind: 'human',
-        content: { child: resumeState.humanSlot, delivered: true, value: runtime.humanInput },
+        content: {
+          child: resumeState.humanSlot,
+          delivered: true,
+          source: 'human',
+          value: runtime.humanInput,
+        },
       });
     }
     try {
@@ -918,10 +927,15 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
         // per write, so a loop's rewind (same write) pauses again.
         let hasDelivery = false;
         let delivered;
+        let deliverySource;
+        let deliveryVia;
+        let deliverySeq;
         if (scope.armed && Object.prototype.hasOwnProperty.call(scope.armed, child.name)) {
           delivered = scope.armed[child.name];
           delete scope.armed[child.name];
           hasDelivery = true;
+          deliverySource = 'goto';
+          deliveryVia = 'goto';
         } else if (child.readFromMemoryOnce) {
           const owner = slotOwner(scope, child.name);
           const value = owner ? owner.slots[child.name] : undefined;
@@ -931,12 +945,26 @@ async function execTreeInner(exec, tree, scope, parentScope, resumeState) {
             scope.consumedWrites[child.name] = seq;
             delivered = value;
             hasDelivery = true;
+            deliverySource = 'memory';
+            deliveryVia = 'readFromMemoryOnce';
+            deliverySeq = seq;
           }
         }
         if (hasDelivery) {
           scope.slots[child.name] = delivered;
           scope.raw[child.name] = { content: delivered };
-          logEvent(exec, 'human', { child: child.name, delivered: true, value: delivered }, scope);
+          // The row says where the delivered value came from. A direct human
+          // reply is logged on resume with source 'human'; a value the tree
+          // supplied (an armed Goto, or a slot read by readFromMemoryOnce) is
+          // not something the user said and must not be reconstructed as such.
+          logEvent(exec, 'human', {
+            child: child.name,
+            delivered: true,
+            source: deliverySource,
+            ...(deliveryVia ? { via: deliveryVia } : {}),
+            ...(deliverySeq != null ? { seq: deliverySeq } : {}),
+            value: delivered,
+          }, scope);
           outcome = { value: delivered, record: { content: delivered }, _delivered: true };
         } else {
         const context = child.contextFn

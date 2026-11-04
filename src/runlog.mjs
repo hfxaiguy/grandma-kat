@@ -20,6 +20,10 @@
 //   readers   — the rows that read a given memory slot (forward provenance):
 //               every record/llm_call whose `reads` names the slot — the
 //               staleness probe ("what depends on this?").
+//   transcript — the conversation as the user saw it: direct human replies
+//               (`human` rows with source "human") plus every `emit`, oldest
+//               first, each labeled speaker user/bot and channel user/machine.
+//               Memory/goto deliveries and internals are excluded.
 //
 // The read is by `seq` (the table's primary key); condensed returns each row's
 // seq so it can be handed to expanded.
@@ -43,6 +47,24 @@ const parse = (raw) => {
 };
 
 /**
+ * A readable one-line summary of a `{ machine }` narration payload. A machine
+ * emit is for the operator, not the user, but it must still read as a sentence
+ * rather than raw JSON in the log/transcript.
+ */
+function machineText(machine) {
+  if (machine == null || typeof machine !== 'object' || Array.isArray(machine)) return '';
+  const str = (v) => (typeof v === 'string' ? v.trim() : '');
+  const detail = str(machine.detail);
+  if (detail) return detail;
+  let line = [str(machine.tree), str(machine.doing)].filter(Boolean).join(' ');
+  const at = str(machine.at);
+  const priority = str(machine.priority);
+  if (at) line += `${line ? ' ' : ''}at ${at}`;
+  if (priority) line += `${line ? ' — ' : ''}${priority}`;
+  return line;
+}
+
+/**
  * The readable text of an event row. Emits carry value.text; a delivered human
  * reply carries value (what the user said); tool results carry result; llm
  * calls carry content (the model's output); records carry value; failures carry
@@ -52,7 +74,13 @@ const parse = (raw) => {
 function eventText(content) {
   const c = parse(content);
   if (c == null || typeof c !== 'object') return String(c ?? '');
-  if (typeof c.value?.text === 'string') return c.value.text;
+  if (c.value && typeof c.value === 'object' && !Array.isArray(c.value)) {
+    if (c.value.machine != null) {
+      const line = machineText(c.value.machine);
+      if (line) return line;
+    }
+    if (typeof c.value.text === 'string') return c.value.text;
+  }
   if (c.value !== undefined) return typeof c.value === 'string' ? c.value : JSON.stringify(c.value);
   if (c.result !== undefined) return typeof c.result === 'string' ? c.result : JSON.stringify(c.result);
   if (typeof c.content === 'string') return c.content;
@@ -60,6 +88,36 @@ function eventText(content) {
   // A Human() pause row: { child, context, buttons } with no value yet.
   if (c.child !== undefined && c.buttons !== undefined) return `(waiting at ${c.child})`;
   return JSON.stringify(c);
+}
+
+/**
+ * Where a delivered human row's value came from:
+ *   human  — the host's direct reply (runtime.humanInput);
+ *   memory — a slot value delivered by Human(readFromMemoryOnce());
+ *   goto   — a programmatic Goto/redirect armed the slot.
+ * A pause row has no value and therefore no source. Delivered rows written
+ * before this field existed are treated as direct human replies (they predate
+ * readFromMemoryOnce's log marker).
+ */
+function humanSource(content) {
+  const c = parse(content);
+  if (!c || typeof c !== 'object' || c.delivered !== true) return null;
+  if (typeof c.source === 'string' && c.source.trim()) return c.source.trim();
+  return 'human';
+}
+
+/**
+ * Who an emit was for: `machine` narration (`{ machine }` or
+ * `Emit(..., flag("machine"))`) or the user-facing `user` channel.
+ */
+function emitChannel(content) {
+  const c = parse(content);
+  if (!c || typeof c !== 'object') return null;
+  const v = c.value;
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return 'user';
+  if (v.machine != null) return 'machine';
+  if (v.level === 'machine') return 'machine';
+  return 'user';
 }
 
 /** The child/tool an event is associated with, for the trace view. */
@@ -101,15 +159,21 @@ const SQL = {
 };
 
 /** A row in the recent-rows view — any kind, reduced to a readable line. */
-const shapeRow = (r) => ({
-  seq: r.seq,
-  when: when(r.run_id),
-  run_id: r.run_id,
-  definition_id: r.definition_id,
-  kind: r.kind,
-  child: eventChild(r.content),
-  text: truncate(eventText(r.content)),
-});
+const shapeRow = (r) => {
+  const source = r.kind === 'human' ? humanSource(r.content) : null;
+  const channel = r.kind === 'emit' ? emitChannel(r.content) : null;
+  return {
+    seq: r.seq,
+    when: when(r.run_id),
+    run_id: r.run_id,
+    definition_id: r.definition_id,
+    kind: r.kind,
+    child: eventChild(r.content),
+    ...(source ? { source } : {}),
+    ...(channel ? { channel } : {}),
+    text: truncate(eventText(r.content)),
+  };
+};
 
 const shapeTraceEvent = (r) => ({
   seq: r.seq,
@@ -118,8 +182,27 @@ const shapeTraceEvent = (r) => ({
   snippet: truncate(eventText(r.content)),
 });
 
-// ── deps mode: the read-graph (provenance) ──────────────────────────────
+/**
+ * One entry of the user-facing transcript. `speaker` is the only role a person
+ * saw; `source` says a human row was a direct reply (memory/goto deliveries are
+ * filtered out of transcript mode), and `channel` separates a user-facing emit
+ * from machine narration.
+ */
+const shapeTranscriptEntry = (r) => {
+  const source = r.kind === 'human' ? humanSource(r.content) ?? 'human' : null;
+  const channel = r.kind === 'emit' ? emitChannel(r.content) ?? 'user' : null;
+  return {
+    seq: r.seq,
+    when: when(r.run_id),
+    run_id: r.run_id,
+    speaker: r.kind === 'human' ? 'user' : 'bot',
+    ...(source ? { source } : {}),
+    ...(channel ? { channel } : {}),
+    text: truncate(eventText(r.content)),
+  };
+};
 
+// ── deps mode: the read-graph (provenance) ──────────────────────────────
 const MAX_DEPTH = 8;
 // Cap the walk's fan-out too: each edge costs a row lookup, and one record can
 // read dozens of slots.
@@ -366,6 +449,58 @@ function buildRecent(args = {}) {
   return { sql, params };
 }
 
+/**
+ * Transcript mode: the conversation as the user experienced it, oldest first.
+ * Only rows that a person saw are included — a delivered human row whose value
+ * came directly from the user (`source: "human"`; legacy rows without a source
+ * count too), and every emit (user-facing or machine). A memory/goto delivery
+ * is not something the user said, so it stays out. All internals (llm/tool/
+ * record/flow) stay out by design.
+ */
+const TRANSCRIPT_FILTER =
+  "(kind = 'emit' OR (json_valid(content) " +
+  "AND json_extract(content, '$.delivered') = 1 " +
+  "AND (json_extract(content, '$.source') IS NULL OR json_extract(content, '$.source') = 'human')))";
+
+function buildTranscript(args = {}) {
+  const where = [TRANSCRIPT_FILTER];
+  const params = [];
+  const before = intOrNull(args.before, 'before');
+  if (before != null) {
+    where.push('seq < ?');
+    params.push(before);
+  }
+  const after = intOrNull(args.after, 'after');
+  if (after != null) {
+    where.push('seq > ?');
+    params.push(after);
+  }
+  if (args.run_id) {
+    where.push('run_id = ?');
+    params.push(args.run_id);
+  }
+  const sql = `${SELECT_ROWS} WHERE ${where.join(' AND ')} ORDER BY seq DESC LIMIT ?`;
+  params.push(takeLimit(args.limit));
+  return { sql, params };
+}
+
+function transcriptResult(rows, args, maxSeq) {
+  const entries = rows.slice().reverse().map(shapeTranscriptEntry);
+  const first = entries[0]?.seq ?? null;
+  const last = entries[entries.length - 1]?.seq ?? null;
+  return {
+    mode: 'transcript',
+    entries,
+    count: entries.length,
+    meta: {
+      max_seq: Number.isFinite(maxSeq) ? maxSeq : null,
+      from_seq: first,
+      to_seq: last,
+      ...(args.run_id ? { run_id: args.run_id } : {}),
+    },
+  };
+}
+
 /** The [from, to] seq span for expanded: the enclosing step, or ±window. */
 function spanFor(seq, prev, next, window) {
   if (Number.isInteger(window) && window > 0) return [seq - window, seq + window];
@@ -393,6 +528,13 @@ const READ_RUNS_DESCRIPTION =
   '"human" for what the user said, "tool_call"/"record"/"llm_call" for internals; pass a list ' +
   'as a real array, never a JSON-encoded string), ' +
   '`id` (one row by its seq), `run_id` (one run), `limit`, and `before`/`after` (seq bounds). ' +
+  'A human row carries `source`: "human" for a direct reply, "memory" for a slot delivered by ' +
+  'Human(readFromMemoryOnce()), "goto" for an armed Goto/redirect. An emit carries `channel`: ' +
+  '"user" (what the person saw) or "machine" (engine narration). ' +
+  'mode "transcript": reconstruct the conversation from the user\'s point of view — delivered ' +
+  'direct human replies plus every emit, oldest first, each as { seq, speaker, source|channel, text }. ' +
+  'Memory/goto deliveries and all internals are excluded. Use `run_id`, `limit`, and `before`/`after` ' +
+  'to page a long conversation. ' +
   'For "what have we been doing", "who did I talk to recently", "what did you save / update", ' +
   'call with `type:"emit"` (the bot\'s own summaries, so recall does not depend on spelling). ' +
   'mode "expanded": given a row seq from a condensed result, the trace around it ' +
@@ -411,23 +553,23 @@ const readRunsParameters = (defaultLimit) => ({
   properties: {
     mode: {
       type: 'string',
-      enum: ['condensed', 'expanded', 'deps', 'readers'],
+      enum: ['condensed', 'expanded', 'deps', 'readers', 'transcript'],
       description:
-        'condensed (default) = the most recent log rows, all kinds unless `type` is given; expanded = the trace around one row; deps = the memory slots one row read (backward provenance); readers = the rows that read a slot (forward provenance).',
+        'condensed (default) = the most recent log rows, all kinds unless `type` is given; expanded = the trace around one row; deps = the memory slots one row read (backward provenance); readers = the rows that read a slot (forward provenance); transcript = the user-facing conversation (direct human replies + all emits, oldest first).',
     },
     type: {
       oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }],
       description:
-        'condensed: row kind(s) to include — e.g. "emit" (what the bot said), "human" (what the user said), "tool_call", "record", "llm_call". Pass several kinds as a real array (["emit", "human"]), never a JSON-encoded string. Omit for every kind.',
+        'condensed: row kind(s) to include — e.g. "emit" (what the bot said), "human" (a human row; see `source`), "tool_call", "record", "llm_call". Pass several kinds as a real array (["emit", "human"]), never a JSON-encoded string. Omit for every kind. Ignored by transcript (it selects human replies + emits).',
     },
     id: { type: 'integer', description: 'condensed: return just the row with this seq.' },
     limit: {
       type: 'integer',
-      description: `condensed: how many rows to return (default ${defaultLimit}).`,
+      description: `condensed/transcript: how many rows/entries to return (default ${defaultLimit}); transcript keeps the newest entries and returns them oldest first.`,
     },
-    before: { type: 'integer', description: 'condensed: only rows with seq < before (older).' },
-    after: { type: 'integer', description: 'condensed: only rows with seq > after (newer).' },
-    run_id: { type: 'string', description: 'condensed: restrict to one run (e.g. a caller-list session).' },
+    before: { type: 'integer', description: 'condensed/transcript: only rows with seq < before (older).' },
+    after: { type: 'integer', description: 'condensed/transcript: only rows with seq > after (newer).' },
+    run_id: { type: 'string', description: 'condensed/transcript: restrict to one run (e.g. a caller-list session).' },
     seq: { type: 'integer', description: 'expanded/deps: the seq of the row to read (copy it from a condensed result).' },
     slot: { type: 'string', description: 'deps/readers: anchor on this memory-slot name — deps walks back from its latest write; readers lists the rows that read it.' },
     window: { type: 'integer', description: 'expanded: take ±N events around the row instead of the enclosing step.' },
@@ -463,10 +605,21 @@ function readersSync(db, args) {
   return { rows: db.prepare(sql).all(...params).map(shapeRow) };
 }
 
+function maxSeqSync(db) {
+  const row = db.prepare('SELECT COALESCE(MAX(seq), 0) m FROM calls').get();
+  return Number(row?.m ?? 0) || 0;
+}
+
+function transcriptSync(db, args) {
+  const { sql, params } = buildTranscript(args);
+  return transcriptResult(db.prepare(sql).all(...params), args, maxSeqSync(db));
+}
+
 function runSync(db, args = {}) {
   if (args.mode === 'expanded') return expandSync(db, args);
   if (args.mode === 'deps') return depsSync(db, args);
   if (args.mode === 'readers') return readersSync(db, args);
+  if (args.mode === 'transcript') return transcriptSync(db, args);
   const { sql, params } = buildRecent(args);
   return { rows: db.prepare(sql).all(...params).map(shapeRow) };
 }
@@ -506,10 +659,22 @@ async function readersAsync(query, args) {
   return { rows: rows.map(shapeRow) };
 }
 
+async function maxSeqAsync(query) {
+  const [row] = await query('SELECT COALESCE(MAX(seq), 0) m FROM calls', []);
+  return Number(row?.m ?? 0) || 0;
+}
+
+async function transcriptAsync(query, args) {
+  const { sql, params } = buildTranscript(args);
+  const rows = await query(sql, params);
+  return transcriptResult(rows, args, await maxSeqAsync(query));
+}
+
 async function runAsync(query, args = {}) {
   if (args.mode === 'expanded') return expandAsync(query, args);
   if (args.mode === 'deps') return depsAsync(query, args);
   if (args.mode === 'readers') return readersAsync(query, args);
+  if (args.mode === 'transcript') return transcriptAsync(query, args);
   const { sql, params } = buildRecent(args);
   const rows = await query(sql, params);
   return { rows: rows.map(shapeRow) };
