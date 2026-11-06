@@ -15,7 +15,7 @@
 
 import {
   isWhen, isUpdate, isKeep, isReadFromMemoryOnce, isMemory, isVersion, isGoback, isGoto, isMax, isCalls, isParameters,
-  isDisableAuto, isRunAfterTool, isDescription, isOptional, isHookTrigger, isFlag, goback, resolveMax,
+  isDisableAuto, isTemperature, isRunAfterTool, isDescription, isOptional, isHookTrigger, isFlag, goback, resolveMax,
 } from './markers.mjs';
 
 // --- tree defs ------------------------------------------------------------
@@ -125,6 +125,22 @@ export function takeAuto(args, label) {
   return auto;
 }
 
+// Splice the temperature(value) marker out of an argument list, wherever it
+// sits. Returns the number or function, or null when the prompt did not set one.
+export function takeTemperature(args, label) {
+  let temperature = null;
+  for (let i = 0; i < args.length; ) {
+    if (isTemperature(args[i])) {
+      if (temperature != null) throw new TypeError(`${label}: duplicate temperature()`);
+      temperature = args[i].value;
+      args.splice(i, 1);
+      continue;
+    }
+    i++;
+  }
+  return temperature;
+}
+
 // Splice the runAfterTool(shaper) marker out of an argument list, wherever it
 // sits. Returns the shaper (a function or a registered tree name) or null.
 export function takeRunAfterTool(args, label) {
@@ -150,6 +166,7 @@ export function promptFields(rawArgs, label) {
   const { gate, args } = takeGate(rawArgs, label);
   const auto = takeAuto(args, label);
   const runAfterTool = takeRunAfterTool(args, label);
+  const temperature = takeTemperature(args, label);
   const name = takeName(args, label);
   const value = args.shift();
   if (typeof value !== 'string' && !Array.isArray(value) && typeof value !== 'function') {
@@ -157,7 +174,7 @@ export function promptFields(rawArgs, label) {
   }
   const options = takeOptions(args, label);
   if (args.length !== 0) throw new TypeError(`${label}: too many arguments`);
-  return { name, value, gate, auto, options, runAfterTool };
+  return { name, value, gate, auto, options, runAfterTool, temperature };
 }
 
 export function branchFields(rawArgs, label) {
@@ -552,12 +569,13 @@ export function needsList(rawArgs, label) {
 //
 // The shapes knit() executes. A def that never registers must not carry the
 // key (definition ids and host session hashes are computed over the def and
-// must not churn), and a plain prompt must not carry `auto`.
+// must not churn), and a plain prompt must not carry `auto` or `temperature`.
 
-export function promptRecord({ name = null, value, gate = null, auto = null, options = {}, runAfterTool = null }) {
+export function promptRecord({ name = null, value, gate = null, auto = null, options = {}, runAfterTool = null, temperature = null }) {
   const child = { kind: 'prompt', name, prompt: value, gate, options };
   if (auto && Object.keys(auto).length) child.auto = auto;
   if (runAfterTool != null) child.runAfterTool = runAfterTool;
+  if (temperature != null) child.temperature = temperature;
   return child;
 }
 

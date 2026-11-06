@@ -1,6 +1,6 @@
 // Marker factories: when(), flag(), update(), goback(), goto(), max(), calls(),
-// parameters(), disableAuto(), onEmit(), onHuman(), toolBefore(), toolAfter(),
-// memory().
+// parameters(), disableAuto(), temperature(), onEmit(), onHuman(), toolBefore(),
+// toolAfter(), memory().
 // Each marker is a distinct type so the builder can validate argument slots
 // at build time (e.g. reject a bare function in a condition slot).
 
@@ -254,6 +254,24 @@ export function runAfterTool(shaper) {
 }
 
 export const isRunAfterTool = (v) => v != null && v[RUN_AFTER_TOOL] === true;
+
+const TEMPERATURE = Symbol('grandma-kat/temperature');
+
+/**
+ * Marker for Prompt(temperature(0.7), …) — the sampling temperature for that
+ * prompt's LLM call(s). A number, or a function of memory returning one
+ * (`temperature(m => m.temperature)`), re-evaluated for every round of the
+ * prompt's auto tool loop. Overrides the endpoint default; on the native Ollama
+ * path it is sent as `options.temperature`.
+ */
+export function temperature(value) {
+  if (typeof value !== 'function' && (typeof value !== 'number' || !Number.isFinite(value) || value < 0)) {
+    throw new TypeError('temperature(value) expects a finite number >= 0 or a function of memory returning one');
+  }
+  return Object.freeze({ [TEMPERATURE]: true, value });
+}
+
+export const isTemperature = (v) => v != null && v[TEMPERATURE] === true;
 
 const DISABLE_AUTO = Symbol('grandma-kat/disableAuto');
 

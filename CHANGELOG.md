@@ -2,6 +2,25 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-05 — a prompt can set its own temperature
+
+`Prompt(temperature(0.7), …)` now sets the sampling temperature for that
+prompt's LLM call(s). The marker accepts a finite number `>= 0` or a function
+of memory returning one; a function is re-evaluated for every round of the auto
+tool loop, and the slots it reads join the prompt's provenance. It sits anywhere
+among the Prompt arguments, like `when()`/`max()`.
+
+The OpenAI-compatible path sends the value as `body.temperature` (default stays
+`0` when the marker is absent). The native Ollama path sends it as
+`options.temperature`, overriding a configured `thinking.options.temperature`
+but preserving the other options. The resolved value is carried on `llm_start`,
+`llm_call`, and `llm_error` log rows, and on each `record.calls` round. A prompt
+without the marker keeps its exact old record shape, so definition hashes do
+not churn.
+
+Tests: `tests/llm-temperature.test.mjs` (marker parsing/validation, OpenAI and
+Ollama request bodies, mock handler context, per-round dynamic evaluation).
+
 ## 2026-11-03 — human rows say who spoke; `read_runs` gains a transcript
 
 A delivered `human` row used to look identical whether the host handed the

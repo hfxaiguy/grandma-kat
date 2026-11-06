@@ -472,9 +472,10 @@ await grandma.knit(pattern, {
 
 Model entries are either an OpenAI-compatible endpoint
 (`{ baseURL, apiKey, model }`) or a mock (`{ model, handler }`) — see
-testing below. The endpoint flavor sends `temperature: 0` with a 120s
-timeout, handles thinking-model `<think>` tag leakage, and can even rescue
-tool calls that small models emit as plain text.
+testing below. The endpoint flavor sends `temperature: 0` (unless the prompt
+sets `temperature(...)`) with a 120s timeout, handles thinking-model
+`<think>` tag leakage, and can even rescue tool calls that small models emit
+as plain text.
 
 Optional endpoint fields: `transform(response, ctx)` post-processes a reply
 (strip model-specific tags, populate `reasoning`); `protocol: 'ollama'` uses
@@ -759,12 +760,23 @@ Prompt-argument markers tune it:
   recorded but never fed back.
 - **`max(n[, errFn])`** — bound the rounds (default `DEFAULT_MAX`, 3);
   exhaustion throws `KnitError` with the `errFn(m)` message.
+- **`temperature(n | fn)`** — sampling temperature for this prompt's LLM
+  call(s): a finite number `>= 0`, or `(memory) => number`, re-evaluated for
+  every round of the auto tool loop. It overrides the endpoint default
+  (OpenAI-compatible calls otherwise send `0`); on the native Ollama path it
+  is sent as `options.temperature`. The resolved value is on each logged
+  `llm_call` and on the prompt record's `calls` entries.
 - Positional tool hooks — `Hook(toolBefore(), [when(cond)], tree)` /
   `Hook(toolAfter(), …)` — observe and rewrite each call (see *Tool hooks*
   below).
 - **`runAfterTool(fn | 'tree')`** *(deprecated)* — shape each auto-loop result
   for the model (the tree still reads the full result). Being phased out in
   favour of an explicit loop; see `docs/auto-tool-loop.md`.
+
+```js
+Prompt(temperature(0.2), m => `Extract JSON: ${m.input}`)
+Prompt(temperature(m => m.creative ? 1 : 0), m => `Draft: ${m.task}`)
+```
 
 Options: `{ tools: [...] }` — per-prompt tool whitelist, replacing the
 inherited one (`{ tools: [] }` opts out of tools entirely). Unknown option

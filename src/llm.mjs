@@ -7,6 +7,10 @@
 // `{ reasoning_effort }` on the OpenAI-compatible path, `{ think, options }`
 // on the native Ollama path.
 //
+// A per-call `temperature` option overrides the endpoint default (0 on the
+// OpenAI-compatible path); on the native Ollama path it is sent as
+// `options.temperature`. When absent, the existing behaviour is unchanged.
+//
 // Optional call bounds: `timeout` (ms) is the whole-call deadline — headers
 // and body — defaulting to 2 min (OpenAI-compatible) or 10 min (Ollama);
 // `idleTimeout` (ms) is the max gap between body bytes, default 30s. A call
@@ -211,9 +215,13 @@ async function postJsonWithRetry(url, {
   throw lastErr;
 }
 
-export async function callLlm(model, messages, { tools } = {}) {
+export async function callLlm(model, messages, { tools, temperature } = {}) {
   if (typeof model.handler === 'function') {
-    return model.handler(messages, { tools, model: model.model });
+    return model.handler(messages, {
+      tools,
+      ...(temperature != null ? { temperature } : {}),
+      model: model.model,
+    });
   }
 
   let content, reasoning, tool_calls, raw;
@@ -225,7 +233,7 @@ export async function callLlm(model, messages, { tools } = {}) {
     // OpenAI's { choices: [{ message: { ... } }] }. Tool args come back
     // as objects (not JSON strings) and tool call IDs are absent — we
     // synthesise both.
-    const r = await callOllama(model, messages, { tools });
+    const r = await callOllama(model, messages, { tools, temperature });
     content = r.content;
     reasoning = r.reasoning;
     tool_calls = r.tool_calls;
@@ -233,7 +241,7 @@ export async function callLlm(model, messages, { tools } = {}) {
   } else {
     // ── OpenAI-compatible protocol (default) ────────────────────────────
     const baseURL = model.baseURL.replace(/\/$/, '');
-    const body = { model: model.model, messages, temperature: 0 };
+    const body = { model: model.model, messages, temperature: temperature ?? 0 };
     if (tools?.length) body.tools = tools;
     // Reasoning level for OpenAI-compatible endpoints (e.g. "low"/"medium"/
     // "high"), set per model entry in models.json as `thinking.reasoning_effort`.
@@ -357,11 +365,12 @@ function tokenCount(v) {
 //
 // Differences from OpenAI compat:
 //   - Endpoint: /api/chat (not /chat/completions)
-//   - Request:  { model, messages, tools, stream: false } (no temperature)
+//   - Request:  { model, messages, tools, stream: false }; temperature (when
+//               set) goes under options.temperature
 //   - Response: { message: { role, content, tool_calls? } } (not choices[])
 //   - Tool args: objects (not JSON strings) — we stringify them
 //   - Tool IDs:  absent — we generate them
-async function callOllama(model, messages, { tools } = {}) {
+async function callOllama(model, messages, { tools, temperature } = {}) {
   const baseURL = model.baseURL.replace(/\/$/, '');
   // Ollama expects tool_calls.arguments as objects, not JSON strings.
   // Convert any string arguments back to objects before sending.
@@ -383,9 +392,15 @@ async function callOllama(model, messages, { tools } = {}) {
   const body = { model: model.model, messages: ollamaMessages, stream: false };
   if (tools?.length) body.tools = tools;
   // Ollama's native `think` flag plus any extra model `options`, set per model
-  // entry in models.json as `thinking.think` / `thinking.options`.
+  // entry in models.json as `thinking.think` / `thinking.options`. A per-call
+  // temperature is an Ollama option too, and wins over a configured default.
   if (model.thinking?.think !== undefined) body.think = model.thinking.think;
-  if (model.thinking?.options) body.options = { ...(body.options || {}), ...model.thinking.options };
+  if (model.thinking?.options || temperature != null) {
+    body.options = {
+      ...(model.thinking?.options ?? {}),
+      ...(temperature != null ? { temperature } : {}),
+    };
+  }
 
   const headers = { 'Content-Type': 'application/json' };
   if (model.apiKey && model.apiKey !== 'no-key') {

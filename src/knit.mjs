@@ -1133,6 +1133,21 @@ async function withReads(scope, fn) {
   return { value, reads };
 }
 
+// Merge provenance reads (e.g. a temperature fn's) into the prompt's existing
+// list, keeping one entry per slot/owner/seq.
+function mergeReads(base, extra) {
+  if (!extra?.length) return base ?? [];
+  const out = [...(base ?? [])];
+  const seen = new Set(out.map((r) => `${r.scope}\u0000${r.name}\u0000${r.seq}`));
+  for (const r of extra) {
+    const key = `${r.scope}\u0000${r.name}\u0000${r.seq}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+  }
+  return out;
+}
+
 async function execPrompt(exec, child, scope, promptResume = null) {
   const levelEntry = exec.stack[exec.stack.length - 1];
   const replay = promptResume ? (levelEntry?.replay ?? null) : null;
@@ -1183,6 +1198,28 @@ async function execPrompt(exec, child, scope, promptResume = null) {
     return call;
   };
 
+  // The prompt's sampling temperature. A static number is used as written; a
+  // function sees the live memory view and is called again for every round of
+  // the auto tool loop, so a prompt can vary it as memory changes. Its reads
+  // join the prompt's provenance. An invalid dynamic result fails loudly.
+  const resolveTemperature = async () => {
+    const spec = child.temperature;
+    if (spec == null) return undefined;
+    let value = spec;
+    if (typeof spec === 'function') {
+      const captured = await withReads(scope, (v) =>
+        callFn(spec, v, `temperature fn of '${child.name}'`));
+      value = captured.value;
+      record.reads = mergeReads(record.reads, captured.reads);
+    }
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+      throw new KnitError(
+        `temperature of '${child.name}' must resolve to a finite number >= 0 (got ${String(value)})`,
+      );
+    }
+    return value;
+  };
+
   // The prompt's local conversation: its messages, grown round by round and
   // saved on the record for the tree (and reconstructible from the log).
   let thread = [];
@@ -1205,6 +1242,7 @@ async function execPrompt(exec, child, scope, promptResume = null) {
     }
     record.calls.push({
       round: 1,
+      ...(rc.temperature != null ? { temperature: rc.temperature } : {}),
       messages: thread.map((m) => ({ ...m })),
       response: { content: response.content, reasoning: response.reasoning, tool_calls: response.tool_calls ?? null },
     });
@@ -1292,6 +1330,8 @@ async function execPrompt(exec, child, scope, promptResume = null) {
     if (!response) {
       const c = await ensureCall();
       record.model = c.modelName;
+      const temperature = await resolveTemperature();
+      const tempField = temperature === undefined ? {} : { temperature };
       // Announce the call BEFORE awaiting it, so a live event stream (the web
       // UI) shows the model call while it is in flight, not only when it
       // returns. Kept small — the completed `llm_call` carries the payload
@@ -1302,9 +1342,10 @@ async function execPrompt(exec, child, scope, promptResume = null) {
         round: rounds + 1,
         model: c.modelName,
         tools: (c.tools ?? []).map((t) => t.function?.name ?? t.name).filter(Boolean),
+        ...tempField,
       }, scope);
       try {
-        response = await callLlm(c.modelEntry, thread, { tools: c.tools });
+        response = await callLlm(c.modelEntry, thread, { tools: c.tools, ...tempField });
       } catch (err) {
         // Record failed calls so they are diagnosable from the log DB — a
         // thrown LLM error otherwise leaves no trace. Rethrow; the tree still
@@ -1314,6 +1355,7 @@ async function execPrompt(exec, child, scope, promptResume = null) {
           round: rounds + 1,
           model: c.modelName,
           messages: thread,
+          ...tempField,
           error: err instanceof Error ? err.message : String(err),
         }, scope);
         // Tag which model slot failed (the runtime `models` key the prompt
@@ -1326,6 +1368,7 @@ async function execPrompt(exec, child, scope, promptResume = null) {
       rounds += 1;
       record.calls.push({
         round: rounds,
+        ...tempField,
         messages: thread.map((m) => ({ ...m })),
         response: { content: response.content, reasoning: response.reasoning, tool_calls: response.tool_calls ?? null },
       });
@@ -1335,6 +1378,7 @@ async function execPrompt(exec, child, scope, promptResume = null) {
         content: response.content, reasoning: response.reasoning, toolCalls: response.tool_calls ?? null,
         ...(response.usage ? { usage: response.usage } : {}),
         ...(record.reads?.length ? { reads: record.reads } : {}),
+        ...tempField,
       }, scope);
     }
 

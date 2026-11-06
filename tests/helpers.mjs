@@ -6,8 +6,8 @@
 export function scripted(responses) {
   let i = 0;
   const calls = [];
-  const handler = async (messages, { tools } = {}) => {
-    calls.push({ messages: messages.map((m) => ({ ...m })), tools });
+  const handler = async (messages, { tools, temperature } = {}) => {
+    calls.push({ messages: messages.map((m) => ({ ...m })), tools, temperature });
     const r = responses[Math.min(i, responses.length - 1)];
     i++;
     if (typeof r === 'function') return r(messages, calls.length);
