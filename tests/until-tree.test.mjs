@@ -126,6 +126,30 @@ test('max(n, tree): the errFn tree runs at exhaustion and its value is the messa
   assert.equal(capRuns, 1, 'the errFn tree ran exactly once, at exhaustion');
 });
 
+test('max(n, errFn): an empty message falls back to the built-in exhaustion error', async () => {
+  const emptyFn = Tree(
+    name('loop-empty-fn'),
+    Model('default'),
+    Until(() => false, max(2, () => '   ')),
+    Return(() => 'never'),
+  );
+  await assert.rejects(
+    () => grandma.knit(emptyFn, mockRuntime(scripted(['x']))),
+    /exhausted after 2 iterations/,
+  );
+
+  const emptyTree = Tree(
+    name('loop-empty-tree'),
+    Model('default'),
+    Until(() => false, max(2, Tree(name('msg'), Return(() => '')))),
+    Return(() => 'never'),
+  );
+  await assert.rejects(
+    () => grandma.knit(emptyTree, mockRuntime(scripted(['x']))),
+    /exhausted after 2 iterations/,
+  );
+});
+
 // ── a bare Prompt element as a condition ──────────────────────────────────
 
 test('Until(Prompt(...)): a bare element is wrapped and run', async () => {

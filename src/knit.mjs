@@ -2480,7 +2480,11 @@ async function exhaustionMessage(maxRule, view, fallback, exec, scope) {
   const value = typeof maxRule.errFn === 'function'
     ? await callFn(maxRule.errFn, view, 'max errFn')
     : await evalPredicate(exec, maxRule.errFn, scope, view, 'max errFn');
-  return String(value);
+  // An errFn that returns nothing (a cap prompt with empty content, a tree
+  // whose model answered with a tool call only) must not become KnitError(""):
+  // the caller would receive `{ error: "" }` and lose the failure entirely.
+  const text = value == null ? '' : String(value).trim();
+  return text || fallback;
 }
 
 /**
