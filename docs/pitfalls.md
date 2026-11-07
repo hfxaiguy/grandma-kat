@@ -38,11 +38,12 @@ argument — never the condition wrapping the payload.
 **Symptom:** a prompt runs with the wrong model, or is *offered tools it should
 not have* — the model calls one it shouldn't.
 
-`Model(...)` / `Tools(...)` are **directives: last match wins along the
-execution path**, and they apply from where they appear onward. A `Tools(...)`
-placed on a shared container offers those tools to *every* prompt in it,
-including ones that should be pure text. Scope the directive to the subtree
-that needs it:
+`Model(...)` is **positional: it applies from where it appears until the next
+`Model()`** in that tree. A later `Model()` does not retroactively change an
+earlier prompt. `Tools(...)` is **last-match-wins along the execution path**
+and also applies from where it appears onward; a `Tools(...)` placed on a
+shared container offers those tools to *every* prompt in it, including ones
+that should be pure text. Scope the directive to the subtree that needs it:
 
 ```js
 // ✗  the whole turn is offered the SQL tool

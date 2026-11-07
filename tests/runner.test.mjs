@@ -251,6 +251,39 @@ test('a gated Model(when(cond), name) rule switches models at resolution time', 
   assert.deepEqual(calls, ['cheap', 'cheap'], 'gate stayed false: both prompts used the default');
 });
 
+test('Model() is positional: it stays active until the next Model()', async () => {
+  const calls = [];
+  const models = {
+    cheap: { model: 'cheap', handler: async () => { calls.push('cheap'); return { content: 'cheap' }; } },
+    strong: { model: 'strong', handler: async () => { calls.push('strong'); return { content: 'strong' }; } },
+  };
+  const pattern = Tree(name('positional_models')
+    , Model('cheap')
+    , Prompt('tests', () => 'tests')
+    , Model('strong')
+    , Prompt('grow', () => 'grow')
+    , Model('cheap')
+    , Prompt('gate', () => 'gate'));
+
+  await grandma.knit(pattern, mockRuntime(null, { models }));
+  assert.deepEqual(calls, ['cheap', 'strong', 'cheap']);
+});
+
+test('a Model() declared after a branch does not leak into it', async () => {
+  const calls = [];
+  const models = {
+    default: { model: 'default', handler: async () => { calls.push('default'); return { content: 'default' }; } },
+    strong: { model: 'strong', handler: async () => { calls.push('strong'); return { content: 'strong' }; } },
+  };
+  const pattern = Tree(name('model_scope')
+    , Branch(Tree(name('sub'), Prompt(() => 'sub')))
+    , Model('strong')
+    , Prompt(() => 'root'));
+
+  await grandma.knit(pattern, mockRuntime(null, { models }));
+  assert.deepEqual(calls, ['default', 'strong']);
+});
+
 test('prompt with tools: tool call executed, result fed back', async () => {
   const executed = [];
   const tools = {

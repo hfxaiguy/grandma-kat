@@ -2,6 +2,25 @@
 
 Newest first. One dated section per change.
 
+## 2026-11-07 — Model() is positional
+
+`Model('cheap')` now applies from its point in the child walk until the next
+`Model()` in the same tree. A later `Model('strong')` no longer retroactively
+shadows an earlier prompt; a prompt between the two rules keeps `cheap`. Each
+model rule carries the child index where it was declared (`position`), and
+resolution only considers rules at or before the current child.
+
+Gated `Model(when(...))` rules still resolve last-match-wins among the rules
+active at that point. A rule declared after a prompt does not apply to it.
+
+The old "shadowed models rule" build warning is gone: multiple unconditional
+model rules are intentional positional steps now. Tools keep their warning
+because their runtime resolution is still last-match-wins.
+
+Definition hashes change once because model rules now carry `position`.
+Tests: `tests/runner.test.mjs` (positional sequence; a rule after a branch
+does not leak into it; the existing gated-model test still passes).
+
 ## 2026-11-05 — a prompt can set its own temperature
 
 `Prompt(temperature(0.7), …)` now sets the sampling temperature for that

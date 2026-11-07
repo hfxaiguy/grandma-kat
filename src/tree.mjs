@@ -63,7 +63,13 @@ function applyElement(def, el) {
     case 'name':
       return next(def, (d) => { d.name = el.value; });
     case 'model':
-      return next(def, (d) => { d.models.push({ cond: el.gate, value: el.value }); });
+      // Positional like Tools/Register: the rule applies from the point it is
+      // declared until the next Model() in this tree. `position` is the index
+      // of the next child to run, so a Model() before a prompt applies to it
+      // and one declared after it does not.
+      return next(def, (d) => {
+        d.models.push({ cond: el.gate, value: el.value, position: d.children.length });
+      });
     case 'tools':
       // `position` is the index of the next child to run: the rule applies
       // from that point onward, and so do the register names it may

@@ -54,7 +54,7 @@ Do not use export. Define \`const pattern = Tree(...)\`.
 ## Elements
 - name('id')            register the tree under a name (sub-branches may stay anonymous)
 - Needs('x', ...)       declare inputs given to this tree; checked when it starts
-- Model('name')         model for steps from here on (default: inherit; last rule wins)
+- Model('name')         model for steps from here until the next Model() (default: inherit)
 - Tools('t', ...)       tools the model may call from here on (default: none)
 - Branch([when(g),] subtree)          attach a subtree (gate at the attachment site)
 - From([when(g),] 'name'[, memory(m => ({ ... }))])  attach a registered tree (see below)
@@ -144,7 +144,8 @@ You are not authoring blind. During this step you can, and should:
    is the whole-container version. A retried prompt only learns what went
    wrong if it reads \${m.error ?? ''} — make every prompt that can be
    retried include it.
-5. Gates are explicit: when(m => ...). Config rules (Model, Tools, Until) are
+5. Gates are explicit: when(m => ...). Model is positional: it applies from
+   where it appears until the next Model(). Tools and Until are
    last-match-wins — defaults first, exceptions after (the reverse of pattern
    matching). Doing elements (Prompt/Branch/From/Check/Call/Memory/Return/Each)
    all run, in order.

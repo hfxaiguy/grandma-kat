@@ -86,7 +86,7 @@ it had none).
 | A retry ignored the feedback | `check { pass: false }` not followed by an `llm_call` whose messages contain the feedback | the prompt doesn't fold in `m.error` |
 | The model "ignored the format" | the last `llm_call.content` | the prompt never *forced* the format (see `examples/notation/README.md`'s boolean gotcha) |
 | A tool call was refused | `tool_error`, or no `tool_call` for it | the tool was not offered to that prompt — `Tools(...)` scoping missed it |
-| The wrong model ran | `llm_call.model` | `Model(...)` is **last-match-wins** up the execution path; a broader `Model(...)` above is being overridden — or a header `Model(...)` leaked where you didn't want it |
+| The wrong model ran | `llm_call.model` | `Model(...)` is **positional**: it applies until the next `Model()` in that tree, and the nearest active rule up the execution path wins. Check whether the prompt sits before the rule you meant, or inside a branch that inherited an outer rule |
 | Nothing at all after a pause | `human` with no later rows | the run is waiting for a human (resume it) |
 
 ## Recipes

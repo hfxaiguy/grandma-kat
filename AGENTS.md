@@ -998,10 +998,12 @@ distinct type, so the parser rejects a bare function in the condition slot
 at build time with "did you mean `when()`?" — loud, specific errors for the
 mistake LLM authors will make.
 
-**Semantics: last match wins (conditional assignment).** Rules apply in
-declared order; each matching rule overwrites the previous value.
-`Model('x'), Model('y')` → `'y'` — same as normal assignment, each with
-a gate. The override pattern puts defaults first:
+**Semantics: `Model` is positional; `Tools`/`Until` are last match wins.**
+A model rule applies from its point in the child walk until the next
+`Model()`: a prompt between `Model('x')` and `Model('y')` sees `'x'`, and a
+prompt after both sees `'y'`. `Tools` and `Until` still apply in declared
+order with the last matching rule winning. The override pattern puts
+defaults first:
 
 ```js
 Model('cheap-model')                                                    // default first
@@ -1021,8 +1023,8 @@ may import either convention by habit.
 
 **Two flavors of elements:**
 
-- *Selective (config)* — one value is chosen: `Model`, `Until`. Last
-  matching rule wins.
+- *Selective (config)* — one value is chosen: `Model` is positional (active
+  until the next `Model()`); `Tools` and `Until` are last-match-wins.
 - *Accumulative (doing)* — every element applies, in declared order:
   `Branch(when(cond), child)`, `Prompt(...)`, `Call(...)`, `Check(...)`,
   `Memory(...)`, `Return(...)`.
@@ -1047,9 +1049,10 @@ Containers).
    case, and `Until(true, check)` is actively misleading since both slots
    are `memory => boolean`. Bonus: `when()` can later grow labels,
    `when(cond, 'retry case')`, so logs can name which rule matched.
-2. *Shadowed rules* — a conditional rule followed by an unconditional rule
-   is dead code (the unconditional one always overwrites it). Build-time
-   warning.
+2. *Shadowed rules* — for the last-match-wins rules (`Tools`, `Until`), a
+   conditional rule followed by an unconditional rule is dead code (the
+   unconditional one always overwrites it). Build-time warning. `Model`
+   rules are positional, so a later `Model()` is intentional, not a shadow.
 3. *Attachment-site vs tree-owned conditions (resolved)* — gates live at
    the attachment site **only**: `Branch(when(cond), child)`. Tree-owned /
    intrinsic gating is expressed with a `Check(...)` child inside the tree

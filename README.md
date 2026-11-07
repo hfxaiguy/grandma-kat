@@ -210,7 +210,8 @@ name — `Prompt('outline', m => ...)` — positional auto-names shift when
 you insert siblings.
 
 **Doing elements accumulate; config rules select.** Two `Prompt(...)`
-elements both run. Two `Model(...)` rules resolve to the last match.
+elements both run. A `Model(...)` rule applies from its point onward until the
+next `Model()`; later rules do not retroactively change earlier prompts.
 
 ### The children (leaves)
 
@@ -289,10 +290,12 @@ Check(
 
 ### Models per step
 
-`Model(name)` anywhere in a tree applies from that point on and is
-inherited down: step → parent → root → runtime default. Names reference the
-runtime's `models` map, so "different endpoint" and "same endpoint,
-different model" are one concept:
+`Model(name)` anywhere in a tree applies from that point on, until the next
+`Model()` in the same tree, and is inherited down: step → parent → root →
+runtime default. A rule declared after a prompt does not apply to it — this
+is positional, not a tree-wide override. Names reference the runtime's
+`models` map, so "different endpoint" and "same endpoint, different model"
+are one concept:
 
 ```js
 const pattern = Tree(
@@ -312,9 +315,10 @@ await grandma.knit(pattern, {
 ```
 
 Model rules can also be **gated** — declare the default first and
-conditional overrides later (rules are last-match-wins). The condition
-re-evaluates every time a prompt resolves its model, so the same tree can
-switch models between loop passes as memory changes:
+conditional overrides later (among the rules active at that point, the last
+match wins). The condition re-evaluates every time a prompt resolves its
+model, so the same tree can switch models between loop passes as memory
+changes:
 
 ```js
 Tree(
@@ -650,8 +654,9 @@ See [LICENSE.md](LICENSE.md).
 ## API reference (the deep end)
 
 Everything below is exact behavior, as implemented. The short version:
-**steps accumulate, rules select (last match wins), and any element may take
-a `when(cond)` gate.**
+**steps accumulate, rules select, and any element may take a `when(cond)`
+gate.** `Model` is positional (it applies until the next `Model()`); `Tools`
+and `Until` are last-match-wins.
 
 ### Building semantics
 
@@ -663,10 +668,12 @@ a `when(cond)` gate.**
   - *Steps (accumulative)* — every element applies, in declared order:
     `Branch`, `From`, `Prompt`, `Call`, `Check`, `Memory` (plain and
     `update()` form), `Return`, `Emit`, `Human`, `Each`.
-  - *Rules (selective)* — one value is chosen; the **last matching rule
-    wins**: `Model`, `Tools`, `Until`. Put defaults first, gated overrides
-    later. An unconditional rule after conditional ones shadows them →
-    build-time warning.
+  - *Rules (selective)* — one value is chosen. `Model` is **positional**: it
+    applies from its point until the next `Model()`, so a later rule never
+    retroactively changes an earlier prompt. `Tools` and `Until` are
+    **last-match-wins** along the execution path. Put defaults first, gated
+    overrides later. For `Tools`, an unconditional rule after conditional
+    ones shadows them → build-time warning.
 - **Gates.** Any element may take `when(cond)` anywhere among its arguments.
   Gates re-evaluate lazily whenever the child is reached — including on
   every loop pass. A gated-out child simply doesn't run: a skip is a
@@ -994,14 +1001,16 @@ Each('ratings', m => m.branch.candidates,
 // m.branch.ratings = ['likely', 'unlikely', ...]
 ```
 
-### `Model([when], name)` — rule (last match wins)
+### `Model([when], name)` — positional rule
 
-Adds a model rule, applied from where it appears. Resolution order for a
-prompt: the **innermost** tree on the execution stack with a matching rule
-(last matching rule within that tree wins), then the runtime default (the
-`default` entry in `models`, or the only entry). Every referenced name is
-validated against the runtime `models` map at `knit()` start — a typo there
-fails before any LLM call.
+Adds a model rule, applied from where it appears until the next `Model()` in
+the same tree. Resolution order for a prompt: the **innermost** tree on the
+execution stack with an active rule (among the rules declared at or before
+the prompt, the last matching one wins), then the runtime default (the
+`default` entry in `models`, or the only entry). A rule declared after a
+prompt does not apply to it. Every referenced name is validated against the
+runtime `models` map at `knit()` start — a typo there fails before any LLM
+call.
 
 ### `Tools([when], ...names)` — rule (last match wins)
 

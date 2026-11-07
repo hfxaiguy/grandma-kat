@@ -19,7 +19,7 @@ test('the caller-list fixture builds from elements', () => {
   assert.equal(callerList.kind, 'tree');
   assert.equal(callerList.name, 'caller_list');
   assert.deepEqual(callerList.needs, ['input']);
-  assert.deepEqual(callerList.models, [{ cond: null, value: 'strong' }]);
+  assert.deepEqual(callerList.models, [{ cond: null, value: 'strong', position: 0 }]);
 
   const registerNames = callerList.registers.map((r) => r.name);
   assert.deepEqual(registerNames, [

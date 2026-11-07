@@ -28,8 +28,9 @@
   always explicit (`when(cond)`); argless `when()` is rejected — no implicit
   default gate.
 - **`Model("strong")` is a positioned directive element** — model rules apply
-  from where they appear (gateable, last match wins up the execution path),
-  never a tree header.
+  from where they appear until the next `Model()` in the same tree (gateable;
+  among the active rules, the last match wins up the execution path), never a
+  tree header.
 - **Records are the canonical IR**: one validation/construction path. The
   chain becomes a compatibility front-end that keeps only its positional
   grammar; record shapes are unchanged, so def JSON — and therefore

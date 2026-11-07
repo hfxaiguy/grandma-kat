@@ -110,7 +110,7 @@ test('element directives patch the definition', () => {
   const tree = Tree(name('el_directives'), Model('cheap'), Tools('a', 'b'), Needs('input'));
   assert.ok(Tree.has('el_directives'), 'name(...) registers the tree');
   assert.equal(Tree.from('el_directives'), tree);
-  assert.deepEqual(tree.models, [{ cond: null, value: 'cheap' }]);
+  assert.deepEqual(tree.models, [{ cond: null, value: 'cheap', position: 0 }]);
   assert.deepEqual(tree.tools, [{ cond: null, value: ['a', 'b'], position: 0 }]);
   assert.deepEqual(tree.needs, ['input']);
 });

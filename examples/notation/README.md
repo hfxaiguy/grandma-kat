@@ -139,9 +139,9 @@ Chunks fall into three member classes, and the elements mirror them:
   `Call`, `Check`, `Memory` writes, `Branch`, `Each`, `Return`, `Until`).
 - **Declarations** belong to the whole subtree: `Register` (per `#->`) and
   `Needs` (per `!!`). A `Register` never takes `when()`.
-- **Directives** apply from the position where they appear (last match wins up
-  the execution path): `name`, `Model`, `Tools`. Write them where the covered
-  steps start — never as a tree header.
+- **Directives** apply from the position where they appear: `Model` until the
+  next `Model()`; `Tools` last-match-wins up the execution path. Write them
+  where the covered steps start — never as a tree header.
 
 Rules of the translation:
 

@@ -2420,10 +2420,19 @@ async function selectRule(rules, view, label) {
 async function resolveInherited(exec, kind, view) {
   for (let i = exec.stack.length - 1; i >= 0; i--) {
     const frame = exec.stack[i];
-    const rules = frame.tree[kind];
-    if (rules?.length) {
-      const rule = await selectRule(rules, view, `${kind} rule condition`);
-      if (rule) return rule.value;
+    const all = frame.tree[kind];
+    if (all?.length) {
+      // Models are positional: Model("cheap") stays in force until the next
+      // Model() in the same tree. A rule declared after the child being run
+      // (a prompt, or the branch that led to this tree) does not apply to it.
+      // Rules without a position are legacy defs; they stay active from 0.
+      const rules = kind === 'models'
+        ? all.filter((rule) => (rule.position ?? 0) <= (frame.childIndex ?? 0))
+        : all;
+      if (rules.length) {
+        const rule = await selectRule(rules, view, `${kind} rule condition`);
+        if (rule) return rule.value;
+      }
     }
     // TOOLS do not cross a tool-invocation boundary: a tree entered as a tool
     // (runTreeTool) sees only its own Tools() — never the invoker's. A
@@ -2671,7 +2680,10 @@ function validateTree(tree, warnings) {
     if (errTree && typeof errTree !== 'function') validateTree(errTree, warnings);
   }
 
-  for (const kind of ['models', 'tools']) {
+  // Models are positional now: a later Model() intentionally takes over, so
+  // multiple unconditional rules are not a mistake. Tools still resolve
+  // last-match-wins, so keep the shadow warning for them.
+  for (const kind of ['tools']) {
     warnShadowedRules(tree, kind, warnings);
   }
 }
