@@ -269,6 +269,28 @@ test('Model() is positional: it stays active until the next Model()', async () =
   assert.deepEqual(calls, ['cheap', 'strong', 'cheap']);
 });
 
+test('Model() is positional inside a tree tool', async () => {
+  const calls = [];
+  const models = {
+    cheap: { model: 'cheap', handler: async () => { calls.push('cheap'); return { content: 'cheap' }; } },
+    strong: { model: 'strong', handler: async () => { calls.push('strong'); return { content: 'strong' }; } },
+  };
+  const child = Tree(name('model_child')
+    , Model('cheap')
+    , Prompt('tests', () => 'tests')
+    , Model('strong')
+    , Prompt('grow', () => 'grow'));
+  const host = Tree(name('model_host')
+    , Model('strong')
+    , Call('run', 'model_child_tool', () => ({})));
+
+  await grandma.knit(host, mockRuntime(null, {
+    models,
+    tools: { model_child_tool: { description: 'run the child', parameters: {}, tree: child } },
+  }));
+  assert.deepEqual(calls, ['cheap', 'strong']);
+});
+
 test('a Model() declared after a branch does not leak into it', async () => {
   const calls = [];
   const models = {
